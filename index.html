@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="description" content="Game mô phỏng xe khách giường nằm Việt Nam" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <title>CoachVN - Mô Phỏng Xe Khách Việt Nam</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="modulepreload" href="js/main.js" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <canvas id="game-canvas"></canvas>
+    
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="overlay visible">
+      <div class="panel loading-panel">
+        <div class="loading-logo">🚌</div>
+        <h1>CoachVN</h1>
+        <p id="loading-message">Đang khởi tạo...</p>
+        <progress id="loading-progress" value="0" max="100"></progress>
+        <div class="loading-version">v11.0</div>
+      </div>
+    </div>
+
+    <!-- Main Menu -->
+    <div id="main-menu" class="overlay">
+      <div class="panel main-menu-panel">
+        <div class="menu-header">
+          <div class="menu-logo">🚌</div>
+          <h1>CoachVN</h1>
+          <p class="menu-subtitle">Mô Phỏng Xe Khách Việt Nam</p>
+        </div>
+        <div class="menu-buttons">
+          <button id="btn-continue" class="btn-primary menu-btn">
+            <span class="btn-icon">🔄</span>
+            <span class="btn-text">Tiếp Tục</span>
+            <span class="btn-hint" id="continue-hint">Không có dữ liệu lưu</span>
+          </button>
+          <button id="btn-new-game" class="btn-primary menu-btn">
+            <span class="btn-icon">▶</span>
+            <span class="btn-text">Chơi Mới</span>
+          </button>
+          <button id="btn-load" class="btn-secondary menu-btn">
+            <span class="btn-icon">💾</span>
+            <span class="btn-text">Load Game</span>
+          </button>
+          <button id="btn-settings" class="btn-secondary menu-btn">
+            <span class="btn-icon">⚙</span>
+            <span class="btn-text">Cài Đặt</span>
+          </button>
+          <button id="btn-help" class="btn-secondary menu-btn">
+            <span class="btn-icon">📖</span>
+            <span class="btn-text">Hướng Dẫn</span>
+          </button>
+          <button id="btn-exit" class="btn-danger menu-btn">
+            <span class="btn-icon">🚪</span>
+            <span class="btn-text">Thoát Game</span>
+          </button>
+        </div>
+        <div class="menu-footer">
+          <span class="version-text">CoachVN v11.0</span>
+          <span class="theme-toggle" id="theme-toggle">🌙 Dark</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="settings-panel" class="overlay">
+      <div class="panel settings-panel">
+        <div class="settings-header">
+          <h2>Cài Đặt</h2>
+          <button class="btn-close" id="btn-close-settings">✕</button>
+        </div>
+        <div class="settings-tabs">
+          <button class="settings-tab active" data-tab="gameplay">🎮 Gameplay</button>
+          <button class="settings-tab" data-tab="appearance"> Giao Diện</button>
+          <button class="settings-tab" data-tab="audio">🔊 Âm Thanh</button>
+          <button class="settings-tab" data-tab="graphics">🖥 Đồ Họa</button>
+        </div>
+        <div class="settings-content active" id="settings-gameplay">
+          <div class="settings-group">
+            <label>Độ nhạy Camera <span class="settings-value" id="cam-sens-value">50</span></label>
+            <input type="range" id="cam-sensitivity" min="10" max="100" value="50" />
+          </div>
+          <div class="settings-group">
+            <label>Độ nhạy Chuột <span class="settings-value" id="mouse-sens-value">50</span></label>
+            <input type="range" id="mouse-sensitivity" min="10" max="100" value="50" />
+          </div>
+          <div class="settings-group">
+            <label>Field of View <span class="settings-value" id="fov-value">70°</span></label>
+            <input type="range" id="fov-slider" min="50" max="100" value="70" />
+          </div>
+          <div class="settings-group checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="invert-x" />
+              <span>Đảo hướng X</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="invert-y" />
+              <span>Đảo hướng Y</span>
+            </label>
+          </div>
+        </div>
+        <div class="settings-content" id="settings-appearance">
+          <div class="settings-group">
+            <label>Chế độ giao diện</label>
+            <div class="theme-options">
+              <button class="theme-btn active" data-theme="dark">🌙 Dark</button>
+              <button class="theme-btn" data-theme="light">☀ Light</button>
+              <button class="theme-btn" data-theme="system">🌓 System</button>
+            </div>
+          </div>
+          <div class="settings-group">
+            <label>Kích thước UI <span class="settings-value" id="ui-scale-value">100%</span></label>
+            <input type="range" id="ui-scale" min="80" max="120" value="100" />
+          </div>
+        </div>
+        <div class="settings-content" id="settings-audio">
+          <div class="settings-group">
+            <label>Âm lượng chính <span class="settings-value" id="master-vol-value">80%</span></label>
+            <input type="range" id="master-volume" min="0" max="100" value="80" />
+          </div>
+          <div class="settings-group">
+            <label>Âm nhạc <span class="settings-value" id="music-vol-value">60%</span></label>
+            <input type="range" id="music-volume" min="0" max="100" value="60" />
+          </div>
+          <div class="settings-group">
+            <label>Hiệu ứng <span class="settings-value" id="sfx-vol-value">70%</span></label>
+            <input type="range" id="sfx-volume" min="0" max="100" value="70" />
+          </div>
+        </div>
+        <div class="settings-content" id="settings-graphics">
+          <div class="settings-group">
+            <label>Chất lượng đồ họa</label>
+            <div class="quality-options">
+              <button class="quality-btn" data-quality="low">Thấp</button>
+              <button class="quality-btn active" data-quality="medium">Trung bình</button>
+              <button class="quality-btn" data-quality="high">Cao</button>
+              <button class="quality-btn" data-quality="ultra">Rất cao</button>
+            </div>
+          </div>
+          <div class="settings-group">
+            <label>Khoảng cách render <span class="settings-value" id="render-dist-value">12</span></label>
+            <input type="range" id="render-distance" min="4" max="20" value="12" />
+          </div>
+          <div class="settings-group checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="enable-shadows" checked />
+              <span>Bóng đổ</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="enable-bloom" checked />
+              <span>Hiệu ứng Bloom</span>
+            </label>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="btn-secondary" id="btn-reset-settings">Khôi phục mặc định</button>
+          <button class="btn-primary" id="btn-apply-settings">Áp dụng</button>
+        </div>
+      </div>
+    </div>
+    <div class="settings-group">
+    <label>Khoảng cách camera ngoài <span class="settings-value" id="outside-dist-value">12m</span></label>
+    <input type="range" id="outside-distance" min="5" max="20" value="12" />
+</div>
+
+<div class="settings-group">
+    <label for="ray-tracing-toggle">
+        <input type="checkbox" id="ray-tracing-toggle" />
+        Ray Tracing (Ultra Realistic)
+    </label>
+    <span class="settings-note">Mặc định: OFF, chỉ bật khi GPU mạnh</span>
+</div>
+
+    <!-- Pause Menu -->
+    <div id="pause-menu" class="overlay">
+      <div class="panel pause-panel">
+        <h2>⏸ Tạm Dừng</h2>
+        <div class="pause-buttons">
+          <button id="btn-resume" class="btn-primary">▶ Tiếp Tục</button>
+          <button id="btn-save" class="btn-secondary">💾 Lưu Game</button>
+          <button id="btn-main-menu" class="btn-secondary">🏠 Về Menu Chính</button>
+          <button id="btn-quit" class="btn-danger"> Thoát</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- HUD -->
+    <div id="hud" class="hidden">
+      <div class="hud-panel hud-left">
+        <div class="hud-row">
+          <span class="hud-label">Tốc độ</span>
+          <span class="hud-value" id="hud-speed">0 km/h</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">Xăng</span>
+          <span class="hud-value" id="hud-fuel">100%</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">Tiền</span>
+          <span class="hud-value" id="hud-money">0₫</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">Khách</span>
+          <span class="hud-value" id="hud-passengers">0/24</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">Thời gian</span>
+          <span class="hud-value" id="hud-time">06:30</span>
+        </div>
+        <div class="hud-row">
+          <span class="hud-label">FPS</span>
+          <span class="hud-value" id="hud-fps">60</span>
+        </div>
+      </div>
+      <div class="hud-panel hud-center">
+        <div id="area-name">Quốc lộ 1A</div>
+        <div id="route-hint">Hướng về Sài Gòn</div>
+      </div>
+      <div class="hud-panel hud-right">
+        <canvas id="minimap" width="180" height="180"></canvas>
+      </div>
+      <div class="hud-panel hud-bottom">
+        <div id="camera-mode"> Camera: Tài xế</div>
+        <div id="controls-hint">Giữ chuột trái + kéo để xoay | C: Đổi camera | F: Đèn | K: Cửa | P: Bay</div>
+      </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-root"></div>
+  </div>
+
+  <noscript><p>Bật JavaScript để chạy game.</p></noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
