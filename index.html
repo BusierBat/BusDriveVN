@@ -221,6 +221,32 @@
         <div id="toast-root"></div>
     </div>
 
+    <!-- Thêm vào index.html (trước thẻ </body>) - OPTIONAL -->
+<div id="steering-debug-panel" style="
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: rgba(0, 0, 0, 0.8);
+    color: #00ff00;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 10px;
+    border-radius: 5px;
+    z-index: 1000;
+    display: none;
+    pointer-events: none;
+">
+    <div style="color: #ffff00; font-weight: bold; margin-bottom: 5px;">
+        🎯 STEERING DEBUG
+    </div>
+    <div id="steer-angle">Angle: --</div>
+    <div id="steer-heading">Heading: --</div>
+    <div id="steer-radius">Turn Radius: --</div>
+    <div id="steer-omega">Angular Vel: --</div>
+    <div id="steer-speed">Speed: --</div>
+    <div id="steer-stability">Stability: --</div>
+</div>
+
     <noscript><p>Bật JavaScript để chạy game.</p></noscript>
     <script type="module" src="js/main.js"></script>
 </body>

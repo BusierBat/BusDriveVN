@@ -454,38 +454,45 @@ export function debounce(fn, wait = 0) {
   return debounced;
 }
 
-export function createMovingAverage(size = 30) {
-  const capacity = Math.max(1, size | 0);
-  const values = new Float32Array(capacity);
+// js/utils.js - SỬA createMovingAverage
 
-  let index = 0;
-  let count = 0;
-  let sum = 0;
-
-  return {
-    add(value) {
-      const v = Number.isFinite(value) ? value : 0;
-
-      sum -= values[index];
-      values[index] = v;
-      sum += v;
-
-      index = (index + 1) % capacity;
-
-      if (count < capacity) count++;
-    },
-
-    get value() {
-      return count === 0 ? 0 : sum / count;
-    },
-
-    reset() {
-      values.fill(0);
-      index = 0;
-      count = 0;
-      sum = 0;
-    }
-  };
+export function createMovingAverage(windowSize = 30) {
+    const samples = new Float32Array(windowSize);
+    let index = 0;
+    let count = 0;
+    let sum = 0;
+    
+    return {
+        add(value) {
+            // Remove old value nếu buffer full
+            if (count === windowSize) {
+                sum -= samples[index];
+            } else {
+                count++;
+            }
+            
+            // Add new value
+            samples[index] = value;
+            sum += value;
+            
+            // Move index
+            index = (index + 1) % windowSize;
+            
+            return this.get();
+        },
+        
+        get() {
+            if (count === 0) return 0;
+            return sum / count;
+        },
+        
+        reset() {
+            samples.fill(0);
+            index = 0;
+            count = 0;
+            sum = 0;
+        }
+    };
 }
 
 function disposeMaterial(material) {

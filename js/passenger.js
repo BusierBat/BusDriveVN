@@ -1,279 +1,668 @@
-// js/passenger.js - HỆ THỐNG ĐÓN KHÁCH THẬT SỰ (FIX NOTIFICATION SPAM)
+// js/passenger.js - PASSENGER SYSTEM v2.0
+// Features: Beacon effects (không dùng PointLight), spawn tại bến xe + dọc tuyến
+// Pickup logic, economy system, minimap integration hooks
+
 import * as THREE from "three";
+import { getNode, getRouteNodes } from "./map/data/roadNetworkData.js";
+
+// ============================================================
+// CONFIGURATION
+// ============================================================
+
+const PASSENGER_CONFIG = {
+    // === CAPACITY ===
+    MAX_PASSENGERS: 24,           // Xe có 24 giường
+    MAX_WAITING_DISPLAY: 50,      // Max waiting passengers hiển thị
+    
+    // === PICKUP ===
+    PICKUP_RANGE: 12,             // Khoảng cách để đón khách (meters)
+    PICKUP_DOOR_REQUIRED: true,   // Phải mở cửa để đón
+    
+    // === ECONOMY ===
+    PRICE_PER_PASSENGER: 420000,  // 420,000 VND per passenger
+    
+    // === SPAWN ===
+    STATION_SPAWN_COUNT: [8, 15], // [min, max] khách tại bến
+    ROUTE_SPAWN_CHANCE: 0.4,      // 40% chance mỗi điểm dọc tuyến
+    ROUTE_SPAWN_COUNT: [1, 3],    // [min, max] khách mỗi điểm dọc tuyến
+    
+    // === BEACON VISUALS ===
+    BEACON_HEIGHT: 3.0,           // Chiều cao cột sáng
+    BEACON_RADIUS: 0.12,          // Bán kính cột sáng (mảnh)
+    BEACON_OPACITY: 0.35,         // Độ trong suốt
+    BEACON_COLOR: 0x00ccff,       // Màu xanh dương
+    
+    RING_RADIUS_INNER: 0.4,       // Vòng sáng trong
+    RING_RADIUS_OUTER: 0.7,       // Vòng sáng ngoài
+    RING_OPACITY: 0.5,            // Độ trong suốt vòng
+    
+    // === ANIMATION ===
+    PULSE_SPEED: 2.0,             // Tốc độ nhấp nháy
+    PULSE_MIN: 0.2,               // Min opacity
+    PULSE_MAX: 0.5,               // Max opacity
+    
+    // === NPC MODEL ===
+    NPC_HEIGHT: 1.65,             // Chiều cao người Việt trung bình
+    NPC_HEIGHT_VARIATION: 0.15,   // ±15cm variation
+};
+
+// ============================================================
+// SHARED RESOURCES (TỐI ƯU - CHỈ TẠO 1 LẦN)
+// ============================================================
+
+const _resources = {};
+
+function getResources() {
+    if (_resources.initialized) return _resources;
+    
+    // === BEACON MATERIALS ===
+    // Cột sáng - dùng MeshBasicMaterial với AdditiveBlending (nhẹ hơn PointLight)
+    _resources.beaconMaterial = new THREE.MeshBasicMaterial({
+        color: PASSENGER_CONFIG.BEACON_COLOR,
+        transparent: true,
+        opacity: PASSENGER_CONFIG.BEACON_OPACITY,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending
+    });
+    
+    // Vòng sáng dưới chân
+    _resources.ringMaterial = new THREE.MeshBasicMaterial({
+        color: PASSENGER_CONFIG.BEACON_COLOR,
+        transparent: true,
+        opacity: PASSENGER_CONFIG.RING_OPACITY,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending
+    });
+    
+    // === GEOMETRIES ===
+    // Cột sáng (CylinderGeometry - open ended để nhẹ)
+    _resources.beaconGeometry = new THREE.CylinderGeometry(
+        PASSENGER_CONFIG.BEACON_RADIUS,
+        PASSENGER_CONFIG.BEACON_RADIUS,
+        PASSENGER_CONFIG.BEACON_HEIGHT,
+        8,     // radialSegments - thấp để tối ưu
+        1,     // heightSegments
+        true   // openEnded - không cần cap
+    );
+    
+    // Vòng sáng (RingGeometry)
+    _resources.ringGeometry = new THREE.RingGeometry(
+        PASSENGER_CONFIG.RING_RADIUS_INNER,
+        PASSENGER_CONFIG.RING_RADIUS_OUTER,
+        16,    // thetaSegments
+        1      // phiSegments
+    );
+    
+    // === NPC BODY GEOMETRIES ===
+    _resources.bodyGeometry = new THREE.CapsuleGeometry(0.16, 0.55, 4, 8);
+    _resources.headGeometry = new THREE.SphereGeometry(0.11, 8, 8);
+    _resources.legGeometry = new THREE.CylinderGeometry(0.05, 0.06, 0.6, 6);
+    _resources.luggageGeometry = new THREE.BoxGeometry(0.25, 0.35, 0.15);
+    
+    // === NPC MATERIALS (cached by color) ===
+    _resources.npcMaterialCache = new Map();
+    
+    _resources.initialized = true;
+    return _resources;
+}
+
+/**
+ * Lấy material cho NPC (cached)
+ */
+function getNpcMaterial(color, cache) {
+    const key = `mat_${color}`;
+    if (!cache.has(key)) {
+        cache.set(key, new THREE.MeshStandardMaterial({
+            color: color,
+            roughness: 0.8,
+            metalness: 0.0
+        }));
+    }
+    return cache.get(key);
+}
+
+// ============================================================
+// COLORS
+// ============================================================
+
+const SKIN_COLORS = [
+    0xe8c9a0, 0xd4a574, 0xc4956a, 0xf5d6b8, 0xb8876a
+];
+
+const CLOTH_COLORS = [
+    0x4a6fa5, 0xd64545, 0x2d7d46, 0x8b6b4a, 
+    0x5d7f9c, 0x7c5f8f, 0x9a4444, 0x3a5a3a
+];
+
+const LUGGAGE_COLORS = [
+    0x8B4513, 0x654321, 0x2F2F2F, 0x4a4a6a
+];
+
+function randomColor(colors) {
+    return colors[Math.floor(Math.random() * colors.length)];
+}
+
+// ============================================================
+// CREATE PASSENGER SYSTEM
+// ============================================================
+
 export function createPassengerSystem({ scene, map, npc, bus, ui }) {
-const passengerGroup = new THREE.Group();
-passengerGroup.name = "passengers";
-scene.add(passengerGroup);
-let waitingPassengers = [];
-let onboardPassengers = [];
-const MAX_PASSENGERS = 24;
-const PICKUP_RANGE = 10;
-// PATCH: Track notification state to prevent spam
-let passengerNotified = false;
-let lastNearCount = 0;
-// Màu sắc ngẫu nhiên cho hành khách
-const SKIN_COLORS = [0xe8c9a0, 0xd4a574, 0xc4956a, 0xf5d6b8];
-const CLOTH_COLORS = [0x4a6fa5, 0xd64545, 0x2d7d46, 0x8b6b4a, 0x5d7f9c, 0x7c5f8f];
-// Hiệu ứng glow
-const glowCanvas = document.createElement('canvas');
-glowCanvas.width = 64;
-glowCanvas.height = 64;
-const gctx = glowCanvas.getContext('2d');
-const gradient = gctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-gradient.addColorStop(0, 'rgba(0, 200, 255, 0.8)');
-gradient.addColorStop(0.3, 'rgba(0, 180, 255, 0.4)');
-gradient.addColorStop(1, 'rgba(0, 150, 255, 0)');
-gctx.fillStyle = gradient;
-gctx.fillRect(0, 0, 64, 64);
-const glowTexture = new THREE.CanvasTexture(glowCanvas);
-const glowMaterial = new THREE.SpriteMaterial({
-map: glowTexture,
-transparent: true,
-blending: THREE.AdditiveBlending,
-opacity: 0,
-depthWrite: false,
-color: 0x00ccff
-});
-// Tạo model hành khách
-function createPassengerModel(color1, color2) {
-const group = new THREE.Group();
-// Thân
-const body = new THREE.Mesh(
-new THREE.CapsuleGeometry(0.14, 0.25, 4, 6),
-new THREE.MeshStandardMaterial({ color: color1 || 0x4a6fa5, roughness: 0.8 })
-);
-body.position.y = 0.25;
-group.add(body);
-// Đầu
-const head = new THREE.Mesh(
-new THREE.SphereGeometry(0.09, 6, 6),
-new THREE.MeshStandardMaterial({ color: color2 || 0xe8c9a0, roughness: 0.7 })
-);
-head.position.y = 0.6;
-group.add(head);
-// Va li
-const luggage = new THREE.Mesh(
-new THREE.BoxGeometry(0.1, 0.12, 0.06),
-new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.9 })
-);
-luggage.position.set(0.15, 0.08, 0);
-group.add(luggage);
-return group;
+    if (!scene) {
+        console.warn("⚠️ PassengerSystem: scene is undefined");
+        return null;
+    }
+    
+    const res = getResources();
+    
+    // === STATE ===
+    const passengerGroup = new THREE.Group();
+    passengerGroup.name = "passengers";
+    scene.add(passengerGroup);
+    
+    let waitingPassengers = [];
+    let onboardPassengers = [];
+    let totalEarned = 0;
+    let pickupEffectTimer = 0;
+    
+    // ============================================================
+    // NPC MODEL CREATION (scale đúng 1.65m)
+    // ============================================================
+    
+    function createPassengerModel() {
+        const group = new THREE.Group();
+        
+        // Random height variation
+        const heightScale = PASSENGER_CONFIG.NPC_HEIGHT * 
+            (1 + (Math.random() - 0.5) * (PASSENGER_CONFIG.NPC_HEIGHT_VARIATION / PASSENGER_CONFIG.NPC_HEIGHT));
+        
+        // Scale factor từ geometry base (base height = 1.0)
+        const scale = heightScale / 1.0;
+        
+        const skinColor = randomColor(SKIN_COLORS);
+        const clothColor = randomColor(CLOTH_COLORS);
+        const luggageColor = randomColor(LUGGAGE_COLORS);
+        
+        // === BODY (thân trên) ===
+        const body = new THREE.Mesh(
+            res.bodyGeometry,
+            getNpcMaterial(clothColor, res.npcMaterialCache)
+        );
+        body.position.y = 0.85 * scale;
+        body.scale.setScalar(scale);
+        group.add(body);
+        
+        // === HEAD ===
+        const head = new THREE.Mesh(
+            res.headGeometry,
+            getNpcMaterial(skinColor, res.npcMaterialCache)
+        );
+        head.position.y = 1.45 * scale;
+        head.scale.setScalar(scale);
+        group.add(head);
+        
+        // === LEGS (chân) ===
+        const legMaterial = getNpcMaterial(0x333333, res.npcMaterialCache);
+        for (let i = 0; i < 2; i++) {
+            const leg = new THREE.Mesh(res.legGeometry, legMaterial);
+            leg.position.set(
+                i === 0 ? -0.08 * scale : 0.08 * scale,
+                0.3 * scale,
+                0
+            );
+            leg.scale.setScalar(scale);
+            group.add(leg);
+        }
+        
+        // === LUGGAGE (va li) ===
+        const luggage = new THREE.Mesh(
+            res.luggageGeometry,
+            getNpcMaterial(luggageColor, res.npcMaterialCache)
+        );
+        luggage.position.set(0.35 * scale, 0.18 * scale, 0);
+        luggage.scale.setScalar(scale * 0.9);
+        group.add(luggage);
+        
+        // Random rotation
+        group.rotation.y = Math.random() * Math.PI * 2;
+        
+        return group;
+    }
+    
+    // ============================================================
+    // BEACON CREATION (cột sáng + vòng sáng)
+    // ============================================================
+    
+    function createBeacon(x, z) {
+        const beaconGroup = new THREE.Group();
+        
+        // === CỘT SÁNG (Beacon Column) ===
+        const beacon = new THREE.Mesh(
+            res.beaconGeometry,
+            res.beaconMaterial.clone() // Clone để có thể animate opacity riêng
+        );
+        beacon.position.set(0, PASSENGER_CONFIG.BEACON_HEIGHT / 2, 0);
+        beaconGroup.add(beacon);
+        
+        // === VÒNG SÁNG DƯỚI CHÂN (Ground Ring) ===
+        const ring = new THREE.Mesh(
+            res.ringGeometry,
+            res.ringMaterial.clone()
+        );
+        ring.rotation.x = -Math.PI / 2; // Nằm phẳng trên đất
+        ring.position.set(0, 0.05, 0);
+        beaconGroup.add(ring);
+        
+        // Position beacon group
+        beaconGroup.position.set(x, 0, z);
+        
+        return {
+            group: beaconGroup,
+            beacon: beacon,
+            ring: ring,
+            phase: Math.random() * Math.PI * 2 // Random phase để không nhấp nháy đồng bộ
+        };
+    }
+    
+    // ============================================================
+    // SPAWN LOGIC
+    // ============================================================
+    
+    /**
+     * Spawn khách tại bến xe
+     */
+    function spawnAtStation(stationId, count = null) {
+        const stationNode = getNode(stationId);
+        if (!stationNode) {
+            console.warn(`⚠️ Station not found: ${stationId}`);
+            return;
+        }
+        
+        const spawnCount = count || 
+            Math.floor(
+                PASSENGER_CONFIG.STATION_SPAWN_COUNT[0] + 
+                Math.random() * (PASSENGER_CONFIG.STATION_SPAWN_COUNT[1] - PASSENGER_CONFIG.STATION_SPAWN_COUNT[0])
+            );
+        
+        // Khu vực spawn trong bến xe (dựa trên size của station)
+        const stationWidth = stationNode.size?.width || 100;
+        const stationDepth = stationNode.size?.depth || 60;
+        
+        for (let i = 0; i < spawnCount; i++) {
+            // Vị trí random trong khu vực bến
+            const offsetX = (Math.random() - 0.5) * (stationWidth * 0.6);
+            const offsetZ = (Math.random() - 0.5) * (stationDepth * 0.5);
+            
+            const x = stationNode.position.x + offsetX;
+            const z = stationNode.position.z + offsetZ;
+            
+            spawnPassenger(x, z, stationNode.name);
+        }
+        
+        console.log(`👥 Spawned ${spawnCount} passengers at ${stationNode.name}`);
+    }
+    
+    /**
+     * Spawn khách dọc tuyến tại các điểm đón
+     */
+    function spawnAlongRoute() {
+        const routeNodes = getRouteNodes();
+        if (!routeNodes || routeNodes.length === 0) return;
+        
+        // Chọn các node phù hợp làm điểm đón (không phải junction/tunnel)
+        const pickupPoints = routeNodes.filter(node => 
+            node.type === 'highway_node' || 
+            node.type === 'rest_stop' ||
+            node.type === 'urban_node'
+        );
+        
+        for (const point of pickupPoints) {
+            // Random chance để có khách tại điểm này
+            if (Math.random() > PASSENGER_CONFIG.ROUTE_SPAWN_CHANCE) continue;
+            
+            const count = Math.floor(
+                PASSENGER_CONFIG.ROUTE_SPAWN_COUNT[0] + 
+                Math.random() * (PASSENGER_CONFIG.ROUTE_SPAWN_COUNT[1] - PASSENGER_CONFIG.ROUTE_SPAWN_COUNT[0])
+            );
+            
+            for (let i = 0; i < count; i++) {
+                // Spawn gần đường (offset nhỏ)
+                const offsetX = (Math.random() - 0.5) * 8;
+                const offsetZ = (Math.random() - 0.5) * 8;
+                
+                const x = point.position.x + offsetX;
+                const z = point.position.z + offsetZ;
+                
+                spawnPassenger(x, z, point.name);
+            }
+        }
+    }
+    
+    /**
+     * Spawn một passenger cụ thể
+     */
+    function spawnPassenger(x, z, locationName = '') {
+        if (waitingPassengers.length >= PASSENGER_CONFIG.MAX_WAITING_DISPLAY) return;
+        
+        // Tạo NPC model
+        const model = createPassengerModel();
+        model.position.set(x, 0, z);
+        
+        // Tạo beacon effects
+        const beacon = createBeacon(x, z);
+        
+        // Add to scene
+        passengerGroup.add(model);
+        passengerGroup.add(beacon.group);
+        
+        // Create passenger data
+        const passenger = {
+            id: `p_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            model: model,
+            beacon: beacon,
+            x: x,
+            z: z,
+            y: 0,
+            picked: false,
+            locationName: locationName,
+            spawnTime: Date.now(),
+            destination: getRandomDestination(),
+            // Pickup state
+            inRange: false,
+            pickupProgress: 0
+        };
+        
+        waitingPassengers.push(passenger);
+        
+        return passenger;
+    }
+    
+    function getRandomDestination() {
+        const destinations = [
+            'Sài Gòn', 'Nha Trang', 'Phan Thiết', 'Bình Thuận', 
+            'Phan Rang', 'Khánh Hòa', 'Đà Lạt'
+        ];
+        return destinations[Math.floor(Math.random() * destinations.length)];
+    }
+    
+    // ============================================================
+    // UPDATE LOGIC (MỖI FRAME)
+    // ============================================================
+    
+    function updatePassengers(busPos, busHeading = 0) {
+        if (!busPos) return;
+        
+        const now = performance.now() / 1000;
+        
+        for (let i = waitingPassengers.length - 1; i >= 0; i--) {
+            const p = waitingPassengers[i];
+            
+            if (p.picked) continue;
+            
+            // === 1. CHECK DISTANCE TO BUS ===
+            const dx = p.x - busPos.x;
+            const dz = p.z - busPos.z;
+            const distSq = dx * dx + dz * dz;
+            const rangeSq = PASSENGER_CONFIG.PICKUP_RANGE * PASSENGER_CONFIG.PICKUP_RANGE;
+            
+            const wasInRange = p.inRange;
+            p.inRange = distSq < rangeSq;
+            
+            // === 2. BEACON ANIMATION ===
+            _animateBeacon(p, now, p.inRange);
+            
+            // === 3. AUTO PICKUP (nếu gần + điều kiện) ===
+            if (p.inRange && !wasInRange) {
+                // Vừa vào range - show hint
+                if (ui?.toast) {
+                    ui.toast(`👥 Khách chờ tại ${p.locationName} - Mở cửa [K] để đón`);
+                }
+            }
+            
+            // Auto pickup nếu điều kiện đúng
+            if (p.inRange && _canPickup()) {
+                pickUpPassenger(p);
+            }
+        }
+    }
+    
+    /**
+     * Animate beacon effects (pulse)
+     */
+    function _animateBeacon(passenger, time, isNear) {
+        const beacon = passenger.beacon;
+        if (!beacon) return;
+        
+        // Pulse effect
+        const pulseFactor = Math.sin(time * PASSENGER_CONFIG.PULSE_SPEED + beacon.phase);
+        const t = (pulseFactor + 1) / 2; // Normalize to 0-1
+        
+        // Beacon column opacity
+        const baseOpacity = PASSENGER_CONFIG.PULSE_MIN + 
+            t * (PASSENGER_CONFIG.PULSE_MAX - PASSENGER_CONFIG.PULSE_MIN);
+        
+        // Nếu gần bus → sáng hơn
+        const boostFactor = isNear ? 1.5 : 1.0;
+        
+        beacon.beacon.material.opacity = Math.min(0.8, baseOpacity * boostFactor);
+        beacon.ring.material.opacity = Math.min(0.7, baseOpacity * boostFactor);
+        
+        // Scale ring nhẹ
+        const ringScale = 1 + Math.sin(time * PASSENGER_CONFIG.PULSE_SPEED + beacon.phase) * 0.1;
+        beacon.ring.scale.set(ringScale, ringScale, 1);
+    }
+    
+    /**
+     * Check có thể pickup không
+     */
+    function _canPickup() {
+        // Check capacity
+        if (onboardPassengers.length >= PASSENGER_CONFIG.MAX_PASSENGERS) {
+            return false;
+        }
+        
+        // Check door (nếu required)
+        if (PASSENGER_CONFIG.PICKUP_DOOR_REQUIRED && bus && !bus.doorOpen) {
+            return false;
+        }
+        
+        // Check bus speed (phải chậm/dừng)
+        if (Math.abs(vehiclePhysics?.currentSpeedKmh || 0) > 5) {
+            return false;
+        }
+        
+        return true;
+    }
+    
+    // ============================================================
+    // PICKUP LOGIC
+    // ============================================================
+    
+    function pickUpPassenger(passenger) {
+        if (passenger.picked) return;
+        if (onboardPassengers.length >= PASSENGER_CONFIG.MAX_PASSENGERS) {
+            ui?.toast("⚠️ Xe đã đầy!");
+            return;
+        }
+        
+        passenger.picked = true;
+        
+        // === 1. REMOVE BEACON EFFECTS ===
+        if (passenger.beacon) {
+            passengerGroup.remove(passenger.beacon.group);
+            // Dispose cloned materials
+            passenger.beacon.beacon.material.dispose();
+            passenger.beacon.ring.material.dispose();
+            passenger.beacon = null;
+        }
+        
+        // === 2. REMOVE NPC MODEL (khách lên xe) ===
+        passengerGroup.remove(passenger.model);
+        
+        // === 3. ADD TO ONBOARD ===
+        onboardPassengers.push({
+            id: passenger.id,
+            destination: passenger.destination,
+            pickupTime: Date.now(),
+            pickupLocation: passenger.locationName
+        });
+        
+        // === 4. ECONOMY (+420,000 VND) ===
+        totalEarned += PASSENGER_CONFIG.PRICE_PER_PASSENGER;
+        
+        // === 5. UI FEEDBACK ===
+        if (ui?.toast) {
+            ui.toast(`✅ Đón khách! +${(PASSENGER_CONFIG.PRICE_PER_PASSENGER / 1000).toFixed(0)}k VND`);
+        }
+        
+        // === 6. REMOVE FROM WAITING LIST ===
+        const idx = waitingPassengers.indexOf(passenger);
+        if (idx > -1) {
+            waitingPassengers.splice(idx, 1);
+        }
+        
+        console.log(`👥 Passenger picked up. Onboard: ${onboardPassengers.length}/${PASSENGER_CONFIG.MAX_PASSENGERS}`);
+    }
+    
+    // ============================================================
+    // DROPOFF LOGIC
+    // ============================================================
+    
+    function dropOffPassengers(locationName) {
+        if (onboardPassengers.length === 0) return 0;
+        
+        // Tìm khách có destination trùng location
+        const toDrop = onboardPassengers.filter(p => 
+            p.destination === locationName || locationName === 'end'
+        );
+        
+        for (const p of toDrop) {
+            const idx = onboardPassengers.indexOf(p);
+            if (idx > -1) {
+                onboardPassengers.splice(idx, 1);
+                
+                ui?.toast(`👋 Trả khách tại ${locationName}`);
+            }
+        }
+        
+        return toDrop.length;
+    }
+    
+    // ============================================================
+    // MINIMAP DATA API
+    // ============================================================
+    
+    /**
+     * Lấy data cho minimap render
+     * Format: [{x, z, type: 'waiting_passenger'}, ...]
+     */
+    function getMinimapData() {
+        return waitingPassengers
+            .filter(p => !p.picked)
+            .map(p => ({
+                x: p.x,
+                z: p.z,
+                type: 'waiting_passenger',
+                id: p.id
+            }));
+    }
+    
+    // ============================================================
+    // INITIALIZATION - SPAWN INITIAL PASSENGERS
+    // ============================================================
+    
+    function initialize() {
+        // Spawn tại bến xe Phú Yên
+        spawnAtStation('phuyen_station');
+        
+        // Spawn dọc tuyến
+        spawnAlongRoute();
+        
+        console.log(`👥 PassengerSystem initialized with ${waitingPassengers.length} waiting passengers`);
+    }
+    
+    // Run initialization
+    initialize();
+    
+    // ============================================================
+    // PUBLIC API
+    // ============================================================
+    
+    return {
+        // Update (called mỗi frame)
+        updatePassengers: updatePassengers,
+        
+        // Pickup/Dropoff
+        pickUpPassenger: pickUpPassenger,
+        dropOffPassengers: dropOffPassengers,
+        
+        // Getters
+        getWaitingCount: () => waitingPassengers.length,
+        getOnboardCount: () => onboardPassengers.length,
+        getMaxCapacity: () => PASSENGER_CONFIG.MAX_PASSENGERS,
+        getTotalEarned: () => totalEarned,
+        getWaitingPassengers: () => waitingPassengers.filter(p => !p.picked),
+        getOnboardPassengers: () => onboardPassengers,
+        
+        // Minimap
+        getMinimapData: getMinimapData,
+        
+        // Spawn controls
+        spawnAtStation: spawnAtStation,
+        spawnAlongRoute: spawnAlongRoute,
+        
+        // Debug
+        getDebugInfo: () => ({
+            waiting: waitingPassengers.length,
+            onboard: onboardPassengers.length,
+            capacity: PASSENGER_CONFIG.MAX_PASSENGERS,
+            totalEarned: totalEarned,
+            pricePerPassenger: PASSENGER_CONFIG.PRICE_PER_PASSENGER
+        }),
+        
+        // Cleanup
+        dispose: () => {
+            // Remove all models và beacons
+            for (const p of waitingPassengers) {
+                if (p.model) passengerGroup.remove(p.model);
+                if (p.beacon) passengerGroup.remove(p.beacon.group);
+            }
+            
+            scene.remove(passengerGroup);
+            waitingPassengers = [];
+            onboardPassengers = [];
+            totalEarned = 0;
+        }
+    };
 }
-// Tạo glow sprite cho mỗi hành khách
-function createGlow() {
-const sprite = new THREE.Sprite(glowMaterial.clone());
-sprite.scale.set(3, 3, 1);
-sprite.renderOrder = 2;
-return sprite;
-}
-// Load hành khách từ POI (bus_station, rest_stop)
-function loadPassengers() {
-const pois = map.getPointsOfInterest ? map.getPointsOfInterest() : [];
-const currentIds = new Set(waitingPassengers.map(p => p.id));
-for (const poi of pois) {
-if (poi.type !== 'bus_station' && poi.type !== 'rest_stop') continue;
-const dx = poi.position.x - bus.group.position.x;
-const dz = poi.position.z - bus.group.position.z;
-const dist = Math.hypot(dx, dz);
-if (dist > 150) continue;
-let maxPax = 0;
-if (poi.type === 'bus_station') maxPax = 5 + Math.floor(Math.random() * 6);
-else if (poi.type === 'rest_stop') maxPax = 1 + Math.floor(Math.random() * 4);
-const poiId = poi.id;
-const existingAtPoi = waitingPassengers.filter(p => p.poiId === poiId).length;
-if (existingAtPoi >= maxPax) continue;
-const toSpawn = maxPax - existingAtPoi;
-for (let i = 0; i < toSpawn; i++) {
-const id = `${poiId}_${i}_${Date.now()}`;
-const skinColor = SKIN_COLORS[Math.floor(Math.random() * SKIN_COLORS.length)];
-const clothColor = CLOTH_COLORS[Math.floor(Math.random() * CLOTH_COLORS.length)];
-const model = createPassengerModel(clothColor, skinColor);
-const angle = Math.random() * Math.PI * 2;
-const offset = 3 + Math.random() * 8;
-const px = poi.position.x + Math.cos(angle) * offset;
-const pz = poi.position.z + Math.sin(angle) * offset;
-const py = 0;
-model.position.set(px, py, pz);
-model.rotation.y = Math.random() * Math.PI * 2;
-const glow = createGlow();
-glow.position.set(px, py + 1.5, pz);
-passengerGroup.add(model);
-passengerGroup.add(glow);
-waitingPassengers.push({
-id,
-poiId,
-model,
-glow,
-x: px,
-z: pz,
-y: py,
-picked: false,
-destination: null,
-glowIntensity: 0,
-inRange: false
-});
-}
-}
-}
-function pickRandom(arr) {
-return arr[Math.floor(Math.random() * arr.length)];
-}
-// Cập nhật trạng thái hành khách
-function updatePassengers(busPos, busHeading) {
-const now = Date.now() / 1000;
-let nearCount = 0;
-let hasNearPassenger = false;
-for (const p of waitingPassengers) {
-if (p.picked) continue;
-const dx = p.x - busPos.x;
-const dz = p.z - busPos.z;
-const dist = Math.hypot(dx, dz);
-const inRange = dist < PICKUP_RANGE;
-p.inRange = inRange;
-if (inRange) {
-p.glowIntensity = Math.sin(now * 3) * 0.3 + 0.7;
-p.glow.material.opacity = p.glowIntensity * 0.8;
-p.glow.scale.set(3 + Math.sin(now * 2) * 0.5, 3 + Math.sin(now * 2) * 0.5, 1);
-nearCount++;
-if (dist < 5) {
-hasNearPassenger = true;
-}
-} else {
-p.glow.material.opacity = 0.1;
-p.glow.scale.set(2, 2, 1);
-}
-}
-// ===== FIX: Event-based notification — chỉ hiện 1 lần khi vào vùng =====
-if (hasNearPassenger && !passengerNotified) {
-ui?.toast(`🚶 Có khách chờ! Nhấn K để đón (${nearCount} người)`);
-passengerNotified = true;
-lastNearCount = nearCount;
-} else if (!hasNearPassenger && passengerNotified) {
-// Reset khi rời khỏi vùng có khách
-passengerNotified = false;
-}
-// Cập nhật hành khách trên xe
-for (const p of onboardPassengers) {
-if (p.model) {
-p.model.position.lerp(
-new THREE.Vector3(p.targetX || 0, p.targetY || 0.5, p.targetZ || 0),
-0.05
-);
-}
-}
-}
-// Đón khách
-function pickUpPassengers() {
-const busPos = bus.group.position;
-let picked = 0;
-const inRange = waitingPassengers.filter(p => !p.picked && p.inRange);
-const available = Math.min(inRange.length, MAX_PASSENGERS - onboardPassengers.length);
-for (let i = 0; i < available && i < inRange.length; i++) {
-const p = inRange[i];
-p.picked = true;
-p.glow.visible = false;
-const bedIndex = onboardPassengers.length % 20;
-const side = (Math.floor(bedIndex / 10) % 2 === 0) ? 1 : -1;
-const bayZ = [2.7, 0.9, -0.9, -2.7, -4.5];
-const tier = (bedIndex % 10) < 5 ? 0.67 : 1.67;
-const zIndex = (bedIndex % 10) % 5;
-const localPos = new THREE.Vector3(
-side * 0.75,
-tier + 0.1,
-bayZ[zIndex]
-);
-bus.group.localToWorld(localPos);
-p.model.position.copy(localPos);
-p.model.rotation.y = Math.random() * Math.PI * 2;
-p.model.scale.set(0.6, 0.6, 0.6);
-onboardPassengers.push({
-id: p.id,
-model: p.model,
-destination: p.destination,
-targetX: localPos.x,
-targetY: localPos.y,
-targetZ: localPos.z
-});
-picked++;
-}
-if (picked > 0) {
-ui?.toast(`✅ Đã đón ${picked} khách! (${onboardPassengers.length}/${MAX_PASSENGERS})`);
-passengerNotified = false; // Reset notification state
-} else if (inRange.length === 0) {
-ui?.toast("❌ Không có khách ở gần!");
-} else {
-ui?.toast(`⚠️ Xe đã đầy! (${onboardPassengers.length}/${MAX_PASSENGERS})`);
-}
-return picked;
-}
-// Trả khách tại điểm đến
-function dropOffPassengers(destination) {
-let dropped = 0;
-const remaining = [];
-for (const p of onboardPassengers) {
-if (p.destination === destination) {
-const busPos = bus.group.position;
-const dropPos = new THREE.Vector3(
-busPos.x + (Math.random() - 0.5) * 4,
-0.5,
-busPos.z + (Math.random() - 0.5) * 4
-);
-dropPos.y = map.getHeight(dropPos.x, dropPos.z) + 0.1;
-p.model.position.copy(dropPos);
-p.model.scale.set(1, 1, 1);
-p.model.rotation.y = Math.random() * Math.PI * 2;
-setTimeout(() => {
-if (p.model.parent) {
-passengerGroup.remove(p.model);
-}
-}, 1000);
-dropped++;
-} else {
-remaining.push(p);
-}
-}
-onboardPassengers = remaining;
-if (dropped > 0) {
-ui?.toast(`✅ Đã trả ${dropped} khách tại ${destination}!`);
-}
-return dropped;
-}
-// Cập nhật hành khách chờ từ NPC
-function refreshWaiting() {
-loadPassengers();
-}
-// Lấy số lượng hành khách
-function getPassengerCount() {
-return {
-waiting: waitingPassengers.filter(p => !p.picked).length,
-onboard: onboardPassengers.length,
-max: MAX_PASSENGERS
-};
-}
-// Khởi tạo
-loadPassengers();
-// Update loop
-function update(dt) {
-const busPos = bus.group.position;
-updatePassengers(busPos, bus.group.rotation.y);
-}
-// Cleanup
-function dispose() {
-scene.remove(passengerGroup);
-while(passengerGroup.children.length) {
-passengerGroup.remove(passengerGroup.children[0]);
-}
-}
-return {
-update,
-pickUpPassengers,
-dropOffPassengers,
-refreshWaiting,
-getPassengerCount,
-dispose,
-passengerGroup,
-waitingPassengers,
-onboardPassengers
-};
+
+// ============================================================
+// DISPOSE SHARED RESOURCES (khi unload module)
+// ============================================================
+
+export function disposePassengerResources() {
+    if (!_resources.initialized) return;
+    
+    // Dispose geometries
+    _resources.beaconGeometry?.dispose();
+    _resources.ringGeometry?.dispose();
+    _resources.bodyGeometry?.dispose();
+    _resources.headGeometry?.dispose();
+    _resources.legGeometry?.dispose();
+    _resources.luggageGeometry?.dispose();
+    
+    // Dispose materials
+    _resources.beaconMaterial?.dispose();
+    _resources.ringMaterial?.dispose();
+    
+    // Dispose cached NPC materials
+    if (_resources.npcMaterialCache) {
+        for (const mat of _resources.npcMaterialCache.values()) {
+            mat.dispose();
+        }
+        _resources.npcMaterialCache.clear();
+    }
+    
+    _resources.initialized = false;
 }
