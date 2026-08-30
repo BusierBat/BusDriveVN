@@ -1,4 +1,4 @@
-// js/bus.js - FULL VERSION (FIXED NPC TEXTURE AUTO-DISCOVERY + setInteriorLed)
+// js/bus.js - FULL VERSION (FIXED DOOR POSITION + UV + SLIDING ANIMATION)
 import * as THREE from "three";
 
 export const BUS_TEXTURE_URL = "assets/textures/bus/bus_final.png";
@@ -25,6 +25,11 @@ const WHEEL_WIDTH = 0.3;
 const WALL_X = W / 2 - 0.05;
 
 export const BUS_DIMENSIONS = { length: L, width: W, height: H };
+
+const sharedDark = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
+const sharedMetal = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.4, metalness: 0.8 });
+const sharedTire = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+const sharedPlate = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.6 });
 
 const U = (x) => x / TW, V = (y) => 1 - y / TH;
 const UV_REGIONS = {
@@ -156,7 +161,22 @@ function getShared() {
   g.tail = mergeGeos([pixelQuad("rear", PX.rear.tlL0, PX.rear.tlL1, PX.rear.tlTop, PX.rear.tlBot, -0.02), pixelQuad("rear", PX.rear.tlR0, PX.rear.tlR1, PX.rear.tlTop, PX.rear.tlBot, -0.02)]);
   g.indL = mergeGeos([pixelQuad("front", PX.front.indL0, PX.front.indL1, PX.front.indTop, PX.front.indBot, 0.02), pixelQuad("rear", PX.rear.tlL0, PX.rear.tlL1, PX.rear.riTop, PX.rear.riBot, -0.02)]);
   g.indR = mergeGeos([pixelQuad("front", PX.front.indR0, PX.front.indR1, PX.front.indTop, PX.front.indBot, 0.02), pixelQuad("rear", PX.rear.tlR0, PX.rear.tlR1, PX.rear.riTop, PX.rear.riBot, -0.02)]);
-  g.door = pixelQuad("right", PX.sideR.doorFront, PX.sideR.doorRear, PX.sideR.doorTop, PX.sideR.bodyBottom, 0.008);
+  
+  // ===== SỬA LỖI CỬA XE BỊ BAY =====
+  // Tạo geometry cửa dựa trên UV Map bên phải
+  const doorGeo = pixelQuad("right", PX.sideR.doorFront, PX.sideR.doorRear, PX.sideR.bodyBottom, PX.sideR.doorTop, 0.009);
+  
+  const doorPos = doorGeo.attributes.position;
+  const doorNorm = doorGeo.attributes.normal;
+  for (let i = 0; i < doorPos.count; i++) {
+    doorPos.setX(i, -doorPos.getX(i));
+    doorPos.setZ(i, doorPos.getZ(i) + 8 * S); // Nhích cửa về phía đầu xe (+Z)
+    doorNorm.setX(i, -doorNorm.getX(i));
+  }
+  doorPos.needsUpdate = true;
+  doorNorm.needsUpdate = true;
+  
+  g.door = doorGeo;
   
   const mir = []; 
   for (const side of [1, -1]) { 
@@ -193,11 +213,6 @@ function getShared() {
   SHARED = g; 
   return g;
 }
-
-const sharedDark = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.9 });
-const sharedMetal = new THREE.MeshStandardMaterial({ color: 0xb9c0c7, roughness: 0.35, metalness: 0.8 });
-const sharedTire = new THREE.MeshStandardMaterial({ color: 0x101114, roughness: 0.95 });
-const sharedPlate = new THREE.MeshStandardMaterial({ color: 0xdfe3e8, roughness: 0.6 });
 
 const textureCache = new Map();
 const materialCache = new Map();
@@ -248,11 +263,14 @@ function assembleBus(mats, withDoorPivot) {
   if (withDoorPivot) {
     doorPivot = new THREE.Group();
     doorPivot.name = "doorPivot";
-    doorPivot.position.set(W / 2 + 0.008, 0, sideZr(PX.sideR.doorFront));
-    doorPivot.add(new THREE.Mesh(G.door, mats.door));
+    // Pivot ở gốc tọa độ (0,0,0), vì geometry cửa đã chứa sẵn vị trí tuyệt đối chính xác
+    doorPivot.position.set(0, 0, 0);
+    const doorMesh = new THREE.Mesh(G.door, mats.door);
+    doorPivot.add(doorMesh);
     root.add(doorPivot);
   } else {
-    add(G.door, mats.door);
+    const doorMesh = new THREE.Mesh(G.door, mats.door);
+    root.add(doorMesh);
   }
   
   const headMesh = add(G.head, mats.head);
@@ -277,7 +295,6 @@ function assembleBus(mats, withDoorPivot) {
     }
   }
   
-  // Lưu tham chiếu đến interior để dùng trong setInteriorLed
   let interiorGroup = null;
   
   const ledInt = new THREE.Mesh(G.ledInt, mats.led);
@@ -327,6 +344,9 @@ function assembleBus(mats, withDoorPivot) {
 }
 
 function makeControl(a) {
+  // Cửa mở bằng cách trượt về phía sau
+  let doorTarget = 0;
+  let doorCurrent = 0;
   return {
     setSteering: (v) => { if(a.steerPivots) a.steerPivots.forEach(p => p.rotation.y = v); },
     setWheelRotation: (r) => {
@@ -337,7 +357,14 @@ function makeControl(a) {
         }
       }
     },
-    setDoor: (t) => { if(a.doorPivot) a.doorPivot.rotation.y = -t * 1.1; }
+    setDoor: (t) => { doorTarget = t ? 1 : 0; },
+    updateDoor: (dt) => {
+      doorCurrent += (doorTarget - doorCurrent) * Math.min(1, dt * 5);
+      if (a.doorPivot) {
+        // Trượt cửa về phía sau xe (trừ Z). Pivot bắt đầu ở 0 nên chỉ cần trừ đi độ trượt
+        a.doorPivot.position.z = -doorCurrent * 1.5;
+      }
+    }
   };
 }
 
@@ -379,7 +406,9 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   spotR.target = spotRT;
   
   let signalLeft = false, signalRight = false, hazard = false;
-  function update(t) {
+  function update(dt) {
+    c.updateDoor(dt);
+    const t = performance.now() / 1000;
     const blink = (t % 1) < 0.5;
     mats.indL.emissiveIntensity = ((signalLeft || hazard) && blink) ? 1.8 : 0.05;
     mats.indR.emissiveIntensity = ((signalRight || hazard) && blink) ? 1.8 : 0.05;
@@ -394,44 +423,33 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   function setHazard(on) { hazard = on; }
   function setIndicators(on) { signalLeft = on; signalRight = on; }
   
-  // ===== SỬA LỖI: setInteriorLed gọi được interior =====
-  let interiorRef = null; // sẽ được gán từ bên ngoài
+  let interiorRef = null; 
   function setInteriorLed(on) {
-    // Gọi interior.setInteriorLed nếu có
     if (interiorRef && typeof interiorRef.setInteriorLed === 'function') {
       interiorRef.setInteriorLed(on);
     }
-    // Bật/tắt LED ngoài
     if (a.extMeshes) {
       a.extMeshes.forEach(mesh => { 
         mesh.visible = on; 
         mesh.material.opacity = on ? 1.5 : 0; 
       });
     }
-    // Có thể còn LED khác (nếu có) nhưng không ẩn toàn bộ interior
-    // Không set interior.visible = on (vì sẽ ẩn cả nội thất)
   }
   
   function setEmergencyBrake(on) { emergencyMaterial.emissiveIntensity = on ? 1.2 : 0; emergencyMaterial.opacity = on ? 1 : 0; }
   function dispose() {}
   
-  // Expose để gán interior từ bên ngoài
   const busObj = {
     group: a.root, texture, dimensions: BUS_DIMENSIONS, wheelRadius: WHEEL_RADIUS,
     setSteering: c.setSteering, setWheelRotation: c.setWheelRotation, setDoor: c.setDoor,
     setHeadlights, setTaillights, setIndicators, setSignalLeft, setSignalRight, setHazard,
     setInteriorLed, setEmergencyBrake, update, dispose,
     areLightsOn: false, doorOpen: false, interiorLedOn: false,
-    // Thêm phương thức để gán interior
     setInteriorReference: (interior) => { interiorRef = interior; }
   };
   
   return busObj;
 }
-
-// =========================================================================
-// PHẦN QUẢN LÝ SKIN XE NPC - AUTO-DISCOVERY TỪ THƯ MỤC
-// =========================================================================
 
 let npcSkinList = null;
 let npcSkinPromise = null;
@@ -539,7 +557,6 @@ export function createNpcBus({ skinPath = null, ledColor = 0x2fb6ff } = {}) {
     setHeadlights: (on) => { if(a.headMesh) a.headMesh.material.emissiveIntensity = on ? 0.2 : 0; },
     setTaillights: (on) => { if(a.tailMesh) a.tailMesh.material.emissiveIntensity = on ? 0.9 : 0; },
     setInteriorLed: (on) => { 
-      // Cho NPC bus, chỉ bật/tắt led của chính nó (nếu có)
       const led = a.root.getObjectByName("interiorLed"); 
       if(led) led.visible = on; 
     },
