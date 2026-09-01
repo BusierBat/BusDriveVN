@@ -1,62 +1,46 @@
-// js/main.js - COACHVN v14.0 FULL INTEGRATED
-// ============================================================================
-// IMPORTS (KHÔNG TRÙNG LẶP)
-// ============================================================================
-
+// js/main.js - COACHVN OPTIMIZED PERFORMANCE EDITION (FULL FIXED)
+// Target: low-end hardware / Intel UHD-class iGPU / 4GB RAM
 import * as THREE from "three";
-
-// === UTILITIES ===
-import { clamp, createMovingAverage } from "./utils.js";
-
-// === MAP & ROAD SYSTEM ===
+import {
+    clamp,
+    createMovingAverage,
+    formatTime,
+    formatMoney,
+    formatNumber
+} from "./utils.js";
 import { createMap } from "./map.js";
-import { roadDataSegments } from "./map/data/roadData.js";
-import { getRouteNodes, getNode } from "./map/data/roadNetworkData.js";
-
-// === UI & HUD ===
 import { createUI } from "./ui.js";
-import { HUDSystem } from "./hud.js";        // ← CHỈ MỘT LẦN!
-
-// === VEHICLE SYSTEMS ===
+import { createNPC } from "./npc.js";
 import { createBus, loadNpcSkinList } from "./bus.js";
 import { createBusInterior } from "./interior.js";
 import { CameraSystem } from "./camera.js";
 import { LightingSystem } from "./lighting.js";
-import { SteeringSystem } from "./steering.js";
-
-// === NPC & TRAFFIC ===
-import { createNPC } from "./npc.js";
-import { TrafficManager } from "./traffic/TrafficManager.js";
-
-// === GAMEPLAY SYSTEMS ===
 import { createPassengerSystem } from "./passenger.js";
+import { createTrafficManager } from "./traffic/TrafficManager.js";
+import { roadDataSegments } from "./map/data/roadData.js";
+import { HUDSystem } from "./hud.js";
+import { SteeringSystem } from "./steering.js";
 import { CollisionSystem } from "./collision.js";
 import { MinimapSystem } from "./minimap.js";
+import {
+    saveGameState,
+    loadGameState,
+    hasGameState
+} from "./save.js";
 
-// === SAVE SYSTEM ===
-import { saveGameState, loadGameState, hasGameState } from "./save.js";
-
-// ============================================================================
-// VERSION & LOGGING
-// ============================================================================
-
-const MAIN_VERSION = 14.0;
+const MAIN_VERSION = 14.2;
 console.log(
-    `%c🚌 COACHVN v${MAIN_VERSION} - FULL INTEGRATED`,
-    "color:#00ff99;font-weight:bold;font-size:14px"
+    `%c🚌 COACHVN v${MAIN_VERSION} - PERFORMANCE EDITION`,
+    "color:#00ff99;font-weight:bold"
 );
 
 // ============================================================================
-// GLOBAL VARIABLES
+// GLOBAL
 // ============================================================================
-
-// Core
 let renderer = null;
 let scene = null;
 let camera = null;
 let canvas = document.getElementById("game-canvas");
-
-// Systems
 let map = null;
 let lighting = null;
 let npc = null;
@@ -65,24 +49,14 @@ let interior = null;
 let passengerSystem = null;
 let trafficManager = null;
 let ui = null;
+let hud = null;
 let cameraSystem = null;
-let steeringSystem = null;
-let collisionSystem = null;
-let minimapSystem = null;
-let hudSystem = null;
+let steering = null;
+let collision = null;
+let minimap = null;
 
-// Timing
 const clock = new THREE.Clock();
-
-// FPS tracking
-const fpsAverage = createMovingAverage(30);
-const fpsCounter = {
-    frameCount: 0,
-    lastTime: performance.now(),
-    currentFPS: 0
-};
-
-// Game state
+let fpsAverage = createMovingAverage(30);
 let gameState = "loading";
 let paused = false;
 let flyMode = false;
@@ -91,7 +65,6 @@ let consoleOpen = false;
 // ============================================================================
 // PERFORMANCE CONFIG
 // ============================================================================
-
 const PERFORMANCE = {
     targetFPS: 50,
     maxPixelRatio: 1.0,
@@ -104,71 +77,21 @@ const PERFORMANCE = {
     npcNormalInterval: 0,
     npcLowFPSInterval: 0.025,
     passengerNormalInterval: 0,
-    passengerLowFPSInterval: 0.033
+    passengerLowFPSInterval: 0.033,
+    minimapInterval: 0.05
 };
-
 let renderScale = 1.0;
 let performanceTimer = 0;
 let hudTimer = 0;
 let trafficTimer = 0;
 let npcTimer = 0;
 let passengerTimer = 0;
+let minimapTimer = 0;
 let lowPerformanceMode = false;
-
-// ============================================================================
-// VEHICLE PHYSICS CONFIG
-// ============================================================================
-
-const WORLD_UNITS_PER_KMH = 0.15;
-
-const vehiclePhysics = {
-    speed: 0,
-    maxSpeedKmh: 120,
-    maxSpeed: 120 * WORLD_UNITS_PER_KMH,
-    maxReverseSpeed: -30 * WORLD_UNITS_PER_KMH,
-    acceleration: 40.0 * WORLD_UNITS_PER_KMH,
-    shiftAcceleration: 60.0 * WORLD_UNITS_PER_KMH,
-    drag: 1.5 * WORLD_UNITS_PER_KMH,
-    braking: 35.0 * WORLD_UNITS_PER_KMH,
-    reverseAcceleration: 12.0 * WORLD_UNITS_PER_KMH,
-    currentSpeedKmh: 0,
-    isReversing: false,
-    forwardVector: new THREE.Vector3()
-};
-
-// ============================================================================
-// GAME DATA
-// ============================================================================
-
-let gameData = {
-    money: 500000,
-    fuel: 1.0,
-    fuelCapacity: 200,        // Lít
-    fuelPrice: 30000,         // VND/lít
-    passengers: 0,
-    passengerCapacity: 24,
-    totalEarned: 0,
-    currentLocation: "Bến xe Phú Yên",
-    destination: "Sài Gòn",
-    nextStop: "Trạm Đại Lãnh",
-    nextStopDistance: 2.4,    // km
-    gameTime: 360,            // Minutes (6:00 AM)
-    day: 1
-};
-
-// ============================================================================
-// INPUT
-// ============================================================================
-
-const keysPressed = new Set();
-let lastFPressTime = 0;
-let lastCameraPressTime = 0;
-let lastHornPressTime = 0;
 
 // ============================================================================
 // GAME SETTINGS
 // ============================================================================
-
 let gameSettings = {
     cameraSensitivity: 30,
     mouseSensitivity: 30,
@@ -188,894 +111,573 @@ let gameSettings = {
 };
 
 // ============================================================================
-// STEERING SYSTEM INIT
+// INPUT
 // ============================================================================
-
-function initSteering() {
-    if (steeringSystem) return;
-    
-    steeringSystem = new SteeringSystem({
-        wheelbase: 6.5,
-        trackWidth: 2.05,
-        maxSteerAngle: 0.55,
-        steeringSpeed: 2.8,
-        steeringReturn: 4.5,
-        steeringDamping: 0.85,
-        lowSpeedSteerFactor: 1.0,
-        highSpeedSteerFactor: 0.25,
-        highSpeedThreshold: 25.0,
-        slipAngle: 0.08,
-        centrifugalFactor: 0.15,
-        maxLateralAccel: 4.5,
-        brakeSteerReduction: 0.7,
-        reverseSteerFactor: 0.8,
-        straightLineDamping: 0.02,
-        wobbleThreshold: 0.005
-    });
-    
-    if (bus?.group) {
-        const pos = bus.group.position;
-        steeringSystem.setPose(pos.x, pos.z, bus.group.rotation.y);
-    }
-}
+const keysPressed = new Set();
+let lastFPressTime = 0;
+let lastCameraPressTime = 0;
+let lastHornPressTime = 0;
 
 // ============================================================================
-// VEHICLE PHYSICS UPDATE (ACKERMANN STEERING)
+// VEHICLE PHYSICS (FIXED W/S/A/D REAL DYNAMICS & FORWARD VECTOR)
 // ============================================================================
+const WORLD_UNITS_PER_KMH = 0.15;
+const vehiclePhysics = {
+    speed: 0, // Vận tốc có dấu: + là Tiến, - là Lùi
+    maxSpeedKmh: 120,
+    maxSpeed: 120 * WORLD_UNITS_PER_KMH,
+    maxReverseSpeed: -30 * WORLD_UNITS_PER_KMH,
+    acceleration: 40.0 * WORLD_UNITS_PER_KMH,
+    shiftAcceleration: 60.0 * WORLD_UNITS_PER_KMH,
+    drag: 1.5 * WORLD_UNITS_PER_KMH,
+    braking: 35.0 * WORLD_UNITS_PER_KMH,
+    reverseAcceleration: 12.0 * WORLD_UNITS_PER_KMH,
+    currentSpeedKmh: 0,
+    isReversing: false,
+    forwardVector: new THREE.Vector3()
+};
 
 function updateVehiclePhysics(deltaTime) {
     if (!bus?.group) return;
-    if (!steeringSystem) initSteering();
-    
     const phys = vehiclePhysics;
     const dt = deltaTime;
     
-    // Input
+    const isW = keysPressed.has("KeyW");
+    const isS = keysPressed.has("KeyS");
+    const isShift = keysPressed.has("ShiftLeft") || keysPressed.has("ShiftRight");
+    
+    // 1. LOGIC THROTTLE (W) VÀ BRAKE/REVERSE (S)
+    if (isW && !isS) {
+        // W: Tiến về phía trước
+        const targetSpeed = isShift ? phys.maxSpeed : phys.maxSpeed * 0.8;
+        const accel = isShift ? phys.shiftAcceleration : phys.acceleration;
+        
+        if (phys.speed < targetSpeed) {
+            phys.speed += accel * dt;
+            if (phys.speed > targetSpeed) phys.speed = targetSpeed;
+        }
+        phys.isReversing = false;
+    } else if (isS && !isW) {
+        // S: Phanh hoặc Lùi
+        if (phys.speed > 0.1) { 
+            // Đang tiến -> Phanh
+            phys.speed -= phys.braking * dt;
+        } else { 
+            // Đã dừng -> Lùi (speed âm)
+            phys.speed -= phys.reverseAcceleration * dt;
+            phys.speed = Math.max(phys.speed, phys.maxReverseSpeed);
+            phys.isReversing = true;
+        }
+    } else {
+        // Không bấm W hay S -> Đổ trượt (Drag)
+        if (Math.abs(phys.speed) > 0.01) {
+            phys.speed -= phys.drag * dt * Math.sign(phys.speed);
+        } else {
+            phys.speed = 0;
+        }
+    }
+    
+    // 2. PHANH KHẨN CẤP (Space hoặc phím V để test)
+    if (keysPressed.has("Space") || keysPressed.has("KeyV")) {
+        if (Math.abs(phys.speed) > 0.1) {
+            phys.speed -= phys.braking * 2 * dt * Math.sign(phys.speed);
+        } else {
+            phys.speed = 0; // Dừng hẳn, không lùi
+        }
+    }
+    phys.currentSpeedKmh = Math.abs(phys.speed) / WORLD_UNITS_PER_KMH;
+
+    // 3. LOGIC LÁI XE (A / D)
     let steerInput = 0;
     if (keysPressed.has("KeyA")) steerInput += 1;
     if (keysPressed.has("KeyD")) steerInput -= 1;
     
-    const isBraking = keysPressed.has("KeyS") || keysPressed.has("Space");
+    const turnRate = steerInput * 1.5 * (phys.speed / phys.maxSpeed);
+    bus.group.rotation.y += turnRate * dt;
     
-    // Speed update
-    if (keysPressed.has("ShiftLeft") || keysPressed.has("ShiftRight")) {
-        if (keysPressed.has("KeyW")) {
-            phys.speed += phys.shiftAcceleration * dt;
-            phys.speed = Math.min(phys.speed, phys.maxSpeed);
-            phys.isReversing = false;
-        }
-    } else if (keysPressed.has("KeyW")) {
-        phys.speed += phys.acceleration * dt;
-        phys.speed = Math.min(phys.speed, phys.maxSpeed);
-        phys.isReversing = false;
-    } else if (keysPressed.has("KeyS")) {
-        if (phys.speed > 0) {
-            phys.speed -= phys.braking * dt;
-            phys.speed = Math.max(phys.speed, 0);
-            phys.isReversing = false;
-        } else {
-            phys.isReversing = true;
-            phys.speed -= phys.reverseAcceleration * dt;
-            phys.speed = Math.max(phys.speed, phys.maxReverseSpeed);
-        }
-    } else if (keysPressed.has("Space")) {
-        phys.speed = 0;
-        phys.isReversing = false;
-    } else {
-        if (phys.speed > 0) {
-            phys.speed -= phys.drag * dt;
-            phys.speed = Math.max(phys.speed, 0);
-        } else if (phys.speed < 0) {
-            phys.speed += phys.drag * dt;
-            phys.speed = Math.min(phys.speed, 0);
-        }
-    }
+    // 4. DI CHUYỂN THẬT
+    const angle = bus.group.rotation.y;
+    const forwardX = Math.sin(angle); 
+    const forwardZ = Math.cos(angle); 
     
-    if (Math.abs(phys.speed) < 0.001) {
-        phys.speed = 0;
-        phys.isReversing = false;
-    }
-    
-    phys.currentSpeedKmh = phys.speed / WORLD_UNITS_PER_KMH;
-    
-    // Fuel consumption
-    if (Math.abs(phys.speed) > 0.1) {
-        const fuelConsumptionRate = 0.0001 * (Math.abs(phys.currentSpeedKmh) / 80);
-        gameData.fuel = Math.max(0, gameData.fuel - fuelConsumptionRate);
-    }
-    
-    // Steering update
-    const steerResult = steeringSystem.update(dt, phys.speed, steerInput, isBraking);
-    
-    // Apply to bus
-    bus.group.position.x = steerResult.position.x;
-    bus.group.position.z = steerResult.position.z;
-    bus.group.rotation.y = steerResult.heading;
-    
-    // Wheel animation
-    if (bus.wheels && Array.isArray(bus.wheels)) {
-        for (let i = 0; i < bus.wheels.length; i++) {
-            const wheel = bus.wheels[i];
-            if (wheel) {
-                if (i < 2) {
-                    const isLeft = i === 0;
-                    wheel.rotation.y = isLeft
-                        ? steeringSystem.getInnerWheelAngle()
-                        : steeringSystem.getOuterWheelAngle();
-                }
-                wheel.rotation.x = steeringSystem.wheelRotation;
-            }
-        }
-    }
-    
-    // Camera shake khi cua gấp
-    if (Math.abs(steerResult.angularVelocity) > 0.5 && Math.abs(phys.speed) > 10) {
-        if (cameraSystem?.addShake) {
-            cameraSystem.addShake(0.01);
-        }
-    }
-    
-    return steerResult;
+    bus.group.position.x += forwardX * phys.speed * dt;
+    bus.group.position.z += forwardZ * phys.speed * dt;
+    phys.forwardVector.set(forwardX, 0, forwardZ);
 }
 
 // ============================================================================
-// INPUT SYSTEM
+// DOOR ANIMATION (FIX J KEY - CỬA TRƯỢT THẬT)
 // ============================================================================
+let doorMeshes = [];
+function findDoorMeshes() {
+    doorMeshes = [];
+    if (!bus?.group) return;
+    bus.group.traverse((obj) => {
+        if (obj.isMesh && obj.name && (obj.name.toLowerCase().includes("door") || obj.name.toLowerCase().includes("cua"))) {
+            doorMeshes.push(obj);
+        }
+    });
+}
 
+function updateDoorAnimation(dt) {
+    if (!bus || doorMeshes.length === 0) return;
+    // Đầu xe +Z, phía sau là -Z. Cửa trượt ra sau -> targetZ = -1.5
+    const targetZ = bus.doorOpen ? -1.5 : 0; 
+    for (let mesh of doorMeshes) {
+        mesh.position.z = THREE.MathUtils.lerp(mesh.position.z, targetZ, dt * 5);
+    }
+}
+
+// ============================================================================
+// MINIMAP INTEGRATION
+// ============================================================================
+function initMinimap() {
+    minimap = new MinimapSystem({ map, bus, scene });
+    // Lấy dữ liệu road segments và destination từ map data
+    if (roadDataSegments && roadDataSegments.length > 0) {
+        minimap.setData(roadDataSegments, roadDataSegments, { x: 1230, z: -10500 });
+    }
+}
+
+// ============================================================================
+// INPUT INIT
+// ============================================================================
 function initInput() {
-    window.addEventListener(
-        "keydown",
-        (e) => {
-            // Console toggle
-            if (e.key === "/" || e.code === "Slash") {
-                e.preventDefault();
-                consoleOpen = !consoleOpen;
-                toggleConsole();
-                return;
+    window.addEventListener("keydown", (e) => {
+        if (consoleOpen && e.code !== "Escape" && e.code !== "Slash" && e.code !== "Enter") return;
+        if (e.code === "Slash") { e.preventDefault(); consoleOpen = !consoleOpen; toggleConsole(); return; }
+        if (e.code === "Escape") { togglePause(); return; }
+        
+        keysPressed.add(e.code);
+        if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
+        
+        if (gameState !== "playing") return;
+
+        if (e.code === "KeyF" && bus) {
+            const now = performance.now();
+            if (now - lastFPressTime > 150) {
+                lastFPressTime = now;
+                bus.areLightsOn = !bus.areLightsOn;
+                bus.setHeadlights?.(bus.areLightsOn);
+                bus.setTaillights?.(bus.areLightsOn);
+                hud.toast(`💡 ${bus.areLightsOn ? 'Bật đèn' : 'Tắt đèn'}`);
             }
-            
-            if (consoleOpen) return;
-            
-            if (gameState !== "playing") {
-                if (e.code === "Escape") {
-                    togglePause();
-                }
-                return;
+        }
+        if (e.code === "KeyJ" && bus) {
+            bus.doorOpen = !bus.doorOpen;
+            bus.setDoor?.(bus.doorOpen ? 1 : 0);
+            hud.toast(`🚪 ${bus.doorOpen ? 'Mở cửa' : 'Đóng cửa'}`);
+        }
+        if (e.code === "KeyK" && passengerSystem) {
+            if (typeof passengerSystem.pickUpPassengers === "function") {
+                passengerSystem.pickUpPassengers();
             }
-            
-            keysPressed.add(e.code);
-            
-            if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) {
-                e.preventDefault();
+        }
+        if (e.code === "KeyL" && bus) {
+            bus.interiorLedOn = !bus.interiorLedOn;
+            bus.setInteriorLed?.(bus.interiorLedOn);
+            hud.toast(`💡 LED ${bus.interiorLedOn ? 'ON' : 'OFF'}`);
+        }
+        if (e.code === "KeyH") {
+            const now = performance.now();
+            if (now - lastHornPressTime > 300) {
+                lastHornPressTime = now;
+                hud.toast("📯 Bim bim!");
             }
-            
-            // Headlights - F
-            if (e.code === "KeyF") {
-                const now = performance.now();
-                if (now - lastFPressTime > 150 && bus) {
-                    lastFPressTime = now;
-                    const currentLight = bus.areLightsOn || false;
-                    bus.setHeadlights?.(!currentLight);
-                    bus.setTaillights?.(!currentLight);
-                    bus.areLightsOn = !currentLight;
-                    hudSystem?.toast(bus.areLightsOn ? "💡 Bật đèn" : "💡 Tắt đèn");
-                }
+        }
+        if (e.code === "KeyC" && cameraSystem) {
+            const now = performance.now();
+            if (now - lastCameraPressTime > 200) {
+                lastCameraPressTime = now;
+                cameraSystem.cycleNext();
+                hud.toast(`📷 ${cameraSystem.getCurrentModeName()}`);
             }
-            
-            // Door - K
-            if (e.code === "KeyK" && bus) {
-                if (bus.setDoor) {
-                    const isOpen = !bus.doorOpen;
-                    bus.setDoor(isOpen ? 1 : 0);
-                    bus.doorOpen = isOpen;
-                    hudSystem?.toast(isOpen ? "🚪 Mở cửa" : "🚪 Đóng cửa");
-                }
-            }
-            
-            // Interior LED - L
-            if (e.code === "KeyL" && bus) {
-                if (bus.setInteriorLed) {
-                    const isOn = !bus.interiorLedOn;
-                    bus.setInteriorLed(isOn);
-                    bus.interiorLedOn = isOn;
-                    hudSystem?.toast(isOn ? "💡 LED ON" : "💡 LED OFF");
-                }
-            }
-            
-            // Horn - H
-            if (e.code === "KeyH") {
-                const now = performance.now();
-                if (now - lastHornPressTime > 300) {
-                    lastHornPressTime = now;
-                    hudSystem?.toast("📯 Bim bim!");
-                }
-            }
-            
-            // Camera - C
-            if (e.code === "KeyC") {
-                const now = performance.now();
-                if (now - lastCameraPressTime > 200 && cameraSystem) {
-                    lastCameraPressTime = now;
-                    cameraSystem.cycleNext();
-                    hudSystem?.toast(`📷 ${cameraSystem.getCurrentModeName()}`);
-                }
-            }
-            
-            // Fly mode - P
-            if (e.code === "KeyP") {
-                flyMode = !flyMode;
-                hudSystem?.toast(flyMode ? "✈️ Fly mode ON" : "✈️ Fly mode OFF");
-            }
-            
-            // Pause - ESC
-            if (e.code === "Escape") {
-                togglePause();
-            }
-        },
-        { passive: false }
-    );
-    
-    window.addEventListener("keyup", (e) => {
-        keysPressed.delete(e.code);
+        }
+        if (e.code === "KeyP") {
+            flyMode = !flyMode;
+            hud.toast(`✈️ Fly mode ${flyMode ? 'ON' : 'OFF'}`);
+        }
     });
     
-    window.addEventListener("blur", () => {
-        keysPressed.clear();
+    window.addEventListener("keyup", (e) => keysPressed.delete(e.code));
+    window.addEventListener("blur", () => keysPressed.clear());
+    
+    canvas?.addEventListener("click", () => {
+        if (gameState === "playing" && !paused) canvas.requestPointerLock?.();
     });
 }
 
 // ============================================================================
-// CONSOLE
+// CONSOLE SYSTEM
 // ============================================================================
-
 function toggleConsole() {
     let consoleEl = document.getElementById("command-console");
-    if (!consoleEl) {
-        consoleEl = document.createElement("div");
-        consoleEl.id = "command-console";
-        consoleEl.innerHTML = `
-            <div style="padding:8px;border-bottom:1px solid #333;display:flex;justify-content:space-between;">
-                <span>DEBUG CONSOLE</span>
-                <button id="btn-close-console" style="background:none;border:none;color:#00ff00;cursor:pointer;">✕</button>
-            </div>
-            <div id="console-output" style="height:300px;overflow-y:auto;padding:8px;"></div>
-            <input type="text" id="command-input" placeholder="Enter command..." 
-                style="width:100%;padding:8px;background:#111;border:none;color:#00ff00;font-family:monospace;" />
-        `;
-        consoleEl.style.cssText = `
-            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 500px; max-width: 90vw; background: rgba(0,0,0,0.95);
-            border: 1px solid #333; border-radius: 8px; z-index: 10000;
-            font-family: monospace; color: #00ff00; display: none;
-        `;
-        document.body.appendChild(consoleEl);
-        
-        const input = consoleEl.querySelector("#command-input");
-        const closeBtn = consoleEl.querySelector("#btn-close-console");
-        
-        closeBtn.addEventListener("click", () => {
-            consoleOpen = false;
-            consoleEl.style.display = "none";
-        });
-        
-        input.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") {
-                const cmd = input.value.trim();
-                if (cmd) {
-                    executeCommand(cmd);
-                    input.value = "";
-                }
-            }
-            e.stopPropagation();
-        });
-    }
-    
-    consoleEl.style.display = consoleOpen ? "block" : "none";
+    if (!consoleEl) { createConsole(); consoleEl = document.getElementById("command-console"); }
+    if (!consoleEl) return;
     if (consoleOpen) {
-        const input = consoleEl.querySelector("#command-input");
-        if (input) input.focus();
+        consoleEl.classList.add("visible");
+        setTimeout(() => document.getElementById("command-input")?.focus(), 30);
+    } else {
+        consoleEl.classList.remove("visible");
     }
+}
+
+function createConsole() {
+    const consoleHTML = `
+    <div id="command-console" class="overlay">
+        <div class="console-panel">
+            <div class="console-header">
+                📟 Command Console
+                <div class="btn-close" id="btn-close-console">✕</div>
+            </div>
+            <div class="console-body">
+                <div id="console-output" class="console-output"></div>
+                <input id="command-input" type="text" class="console-input" placeholder="Gõ lệnh..." />
+                <div class="console-help">Gõ "help" để xem danh sách lệnh | Enter để thực thi | Esc hoặc / để đóng</div>
+            </div>
+        </div>
+    </div>`;
+    document.body.insertAdjacentHTML("beforeend", consoleHTML);
+    const input = document.getElementById("command-input");
+    input?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { executeCommand(input.value); input.value = ""; }
+        if (e.key === "Escape") { consoleOpen = false; document.getElementById("command-console")?.classList.remove("visible"); }
+    });
+    document.getElementById("btn-close-console")?.addEventListener("click", () => {
+        consoleOpen = false; document.getElementById("command-console")?.classList.remove("visible");
+    });
+}
+
+function appendToConsole(text, type = "msg") {
+    const outputEl = document.getElementById("console-output");
+    if (!outputEl) return;
+    const el = document.createElement("div");
+    el.className = type === "cmd" ? "console-cmd" : "console-msg";
+    el.textContent = text;
+    outputEl.appendChild(el);
+    outputEl.scrollTop = outputEl.scrollHeight;
 }
 
 function executeCommand(cmd) {
-    const [command, ...args] = cmd.toLowerCase().split(" ");
-    
+    const command = cmd.trim().toLowerCase();
+    appendToConsole(`> ${cmd}`, "cmd");
+    let executed = false;
     switch (command) {
         case "help":
-            appendToConsole("Commands: help, fps, pos, speed, money, fuel, tp [x] [z], fly, debug, traffic, passenger");
-            break;
-        case "fps":
-            appendToConsole(`FPS: ${getCurrentFPS().toFixed(1)}`);
-            break;
-        case "pos":
-            if (bus?.group) {
-                appendToConsole(`Position: X=${bus.group.position.x.toFixed(2)}, Z=${bus.group.position.z.toFixed(2)}`);
-            }
-            break;
-        case "speed":
-            appendToConsole(`Speed: ${vehiclePhysics.currentSpeedKmh.toFixed(1)} km/h`);
-            break;
-        case "money":
-            appendToConsole(`Money: ${gameData.money.toLocaleString('vi-VN')} ₫`);
-            break;
-        case "fuel":
-            appendToConsole(`Fuel: ${(gameData.fuel * 100).toFixed(1)}%`);
-            break;
-        case "tp":
-            if (args.length >= 2 && bus?.group) {
-                const x = parseFloat(args[0]);
-                const z = parseFloat(args[1]);
-                if (!isNaN(x) && !isNaN(z)) {
-                    bus.group.position.set(x, 0.5, z);
-                    if (steeringSystem) {
-                        steeringSystem.setPose(x, z, bus.group.rotation.y);
-                    }
-                    appendToConsole(`Teleported to: ${x}, ${z}`);
-                }
-            }
-            break;
-        case "fly":
-            flyMode = !flyMode;
-            appendToConsole(`Fly mode: ${flyMode ? "ON" : "OFF"}`);
-            break;
-        case "debug":
-            window.STEERING_DEBUG = !window.STEERING_DEBUG;
-            appendToConsole(`Steering debug: ${window.STEERING_DEBUG ? "ON" : "OFF"}`);
-            break;
-        case "traffic":
-            if (trafficManager?.getDebugInfo) {
-                appendToConsole(JSON.stringify(trafficManager.getDebugInfo(), null, 2));
-            }
-            break;
-        case "passenger":
-            if (passengerSystem?.getDebugInfo) {
-                appendToConsole(JSON.stringify(passengerSystem.getDebugInfo(), null, 2));
-            }
-            break;
-        default:
-            appendToConsole(`Unknown command: ${command}`);
+            appendToConsole(`📋 Danh sách lệnh:
+• help - Hiển thị trợ giúp
+• time [HH:MM] - Đặt thời gian
+• speed [number] - Tốc độ
+• fuel [0-100] - Nhiên liệu
+• money [amount] - Tiền
+• teleport - Về bến xuất phát
+• clear - Xóa màn hình
+• version - Phiên bản game`);
+            executed = true; break;
+        case "clear": document.getElementById("console-output").innerHTML = ""; executed = true; break;
+        case "version": appendToConsole(`🚌 CoachVN v${MAIN_VERSION}`); executed = true; break;
+        case "teleport":
+            if (map) { const spawn = map.getSpawnPoint(); bus.group.position.set(spawn.x, spawn.y, spawn.z); appendToConsole("✅ Đã dịch chuyển"); }
+            executed = true; break;
     }
-}
-
-function appendToConsole(text) {
-    const output = document.getElementById("console-output");
-    if (!output) return;
-    
-    output.innerHTML += `<div>&gt; ${text}</div>`;
-    output.scrollTop = output.scrollHeight;
+    if (!executed && command.startsWith("time ")) {
+        const val = command.split(/\s+/)[1];
+        if (lighting) { const [h, m] = val.split(":").map(Number); lighting.setGameTime(h * 60 + m); appendToConsole(`🕒 Thời gian: ${val}`); }
+        executed = true;
+    } else if (!executed && command.startsWith("speed ")) {
+        const val = parseFloat(command.split(/\s+/)[1]);
+        if (!Number.isNaN(val)) { vehiclePhysics.speed = val * WORLD_UNITS_PER_KMH; appendToConsole(`🚍 Tốc độ: ${val} km/h`); }
+        executed = true;
+    } else if (!executed && command.startsWith("money ")) {
+        const val = parseInt(command.split(/\s+/)[1], 10);
+        if (!Number.isNaN(val)) appendToConsole(`💰 Tiền: ${formatMoney(val)}`);
+        executed = true;
+    } else if (!executed && command.startsWith("fuel ")) {
+        const val = parseFloat(command.split(/\s+/)[1]);
+        if (!Number.isNaN(val)) appendToConsole(`⛽ Nhiên liệu: ${val}%`);
+        executed = true;
+    }
+    if (!executed) appendToConsole("❌ Lệnh không hợp lệ");
 }
 
 // ============================================================================
-// PAUSE SYSTEM
+// MENU & SETTINGS
 // ============================================================================
+function showMainMenu() {
+    gameState = "menu"; paused = false;
+    ui?.showMainMenu(); hud?.hide();
+    document.exitPointerLock?.();
+    const continueBtn = document.getElementById("btn-continue");
+    if (continueBtn) continueBtn.disabled = !hasGameState();
+}
+
+function startGame() {
+    gameState = "playing"; paused = false;
+    ui?.hideMainMenu(); hud?.show();
+    canvas?.focus(); canvas.requestPointerLock?.();
+    clock.getDelta();
+}
 
 function togglePause() {
     if (gameState === "playing") {
-        paused = !paused;
-        const pauseMenu = document.getElementById("pause-menu");
-        if (pauseMenu) {
-            pauseMenu.classList.toggle("visible", paused);
-        }
-        if (paused) {
-            keysPressed.clear();
-        }
+        gameState = "paused"; paused = true;
+        ui?.showPauseMenu(); document.exitPointerLock?.();
+    } else if (gameState === "paused") {
+        gameState = "playing"; paused = false;
+        ui?.hidePauseMenu(); canvas?.focus(); canvas.requestPointerLock?.();
+        clock.getDelta();
     }
 }
 
-// ============================================================================
-// PERFORMANCE MONITORING
-// ============================================================================
-
-function getCurrentFPS() {
-    return fpsCounter.currentFPS;
-}
-
-function updatePerformance(deltaTime) {
-    // Update FPS counter
-    fpsCounter.frameCount++;
-    const now = performance.now();
-    
-    if (now - fpsCounter.lastTime >= 1000) {
-        fpsCounter.currentFPS = fpsCounter.frameCount * 1000 / (now - fpsCounter.lastTime);
-        fpsCounter.frameCount = 0;
-        fpsCounter.lastTime = now;
-        
-        if (fpsAverage && typeof fpsAverage.add === "function") {
-            fpsAverage.add(fpsCounter.currentFPS);
-        }
-    }
-    
-    // Performance monitoring
-    performanceTimer += deltaTime;
-    if (performanceTimer >= PERFORMANCE.sampleTime) {
-        const avgFPS = getCurrentFPS();
-        
-        if (avgFPS < PERFORMANCE.targetFPS * 0.7) {
-            renderScale = Math.max(PERFORMANCE.minRenderScale, renderScale - 0.05);
-            lowPerformanceMode = true;
-        } else if (avgFPS > PERFORMANCE.targetFPS * 0.95) {
-            renderScale = Math.min(PERFORMANCE.maxRenderScale, renderScale + 0.005);
-            lowPerformanceMode = false;
-        }
-        
-        if (renderer) {
-            renderer.setPixelRatio(
-                Math.min(window.devicePixelRatio, PERFORMANCE.maxPixelRatio) * renderScale
-            );
-        }
-        
-        performanceTimer = 0;
-    }
-}
-
-// js/main.js - CHỈ SỬA PHẦN INIT (phần khác giữ nguyên)
-
-async function init() {
-    console.log("🚀 Initializing CoachVN...");
-    
-    try {
-        // ===== 1. RENDERER =====
-        renderer = new THREE.WebGLRenderer({
-            canvas: canvas,
-            antialias: false,
-            powerPreference: "low-power"
-        });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERFORMANCE.maxPixelRatio));
-        renderer.shadowMap.enabled = false;
-        renderer.sortObjects = true; // Interior cần sort đúng
-        
-        // ===== 2. SCENE =====
-        scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB);
-        scene.fog = new THREE.Fog(0x87CEEB, 100, 800);
-        
-        // ===== 3. CAMERA =====
-        camera = new THREE.PerspectiveCamera(
-            70,
-            window.innerWidth / window.innerHeight,
-            0.1,
-            2000
-        );
-        camera.position.set(0, 10, 20);
-        
-        // ===== 4. LIGHTING =====
-        lighting = new LightingSystem(scene);
-        lighting.setQuality("low");
-        console.log("✅ Lighting initialized");
-        
-        // ===== 5. MAP =====
-        ui?.updateLoadingProgress?.(15, "Đang tạo bản đồ...");
-        map = createMap({ scene, seed: 20260817, lighting });
-        console.log("✅ Map initialized");
-        
-        // ===== 6. PLAYER BUS =====
-        ui?.updateLoadingProgress?.(30, "Đang tạo xe...");
-        const spawnPoint = map.getSpawnPoint();
-        
-        bus = createBus({
-            skinPath: null,  // null → dùng BUS_TEXTURE_URL mặc định
-            ledColor: 0x00aaff
-        });
-        
-        if (!bus?.group) {
-            throw new Error("Failed to create player bus!");
-        }
-        
-        bus.group.position.set(spawnPoint.x, 0.5, spawnPoint.z);
-        bus.group.rotation.y = spawnPoint.heading || 0;
-        scene.add(bus.group);
-        console.log("✅ Player bus created");
-        
-        // ===== 7. INTERIOR (SAU BUS, TRƯỚC NPC) =====
-        ui?.updateLoadingProgress?.(40, "Đang tạo nội thất...");
-        try {
-            interior = createBusInterior(bus.group);
-            
-            if (interior?.group) {
-                // Verify đã add thành công
-                const hasInterior = bus.group.children.includes(interior.group);
-                console.log("✅ Interior initialized:", {
-                    added: hasInterior,
-                    parts: interior.group.children.length,
-                    visible: interior.group.visible
-                });
-            }
-        } catch (e) {
-            console.error("❌ Interior failed:", e);
-        }
-        
-        // ===== 8. STEERING =====
-        initSteering();
-        steeringSystem.setPose(spawnPoint.x, spawnPoint.z, spawnPoint.heading || 0);
-        
-        // ===== 9. LOAD NPC SKINS (TRƯỚC TRAFFIC!) =====
-        ui?.updateLoadingProgress?.(50, "Đang tải skins...");
-        try {
-            await loadNpcSkinList();
-            console.log("✅ NPC skins loaded");
-        } catch (e) {
-            console.warn("⚠️ NPC skins failed, using fallback:", e.message);
-        }
-        
-        // ===== 10. NPC =====
-        ui?.updateLoadingProgress?.(60, "Đang tạo NPC...");
-        try {
-            npc = createNPC({
-                scene,
-                map,
-                seed: 2027,
-                playerBus: bus.group,
-                playerSpawnPos: { x: spawnPoint.x, z: spawnPoint.z }
-            });
-        } catch (e) {
-            console.warn("⚠️ NPC init failed:", e.message);
-        }
-        
-        // ===== 11. TRAFFIC =====
-        ui?.updateLoadingProgress?.(70, "Đang tạo giao thông...");
-        try {
-            trafficManager = new TrafficManager({
-                scene,
-                roadGraph: roadDataSegments,
-                busSlots: map.getBusSlots?.() || [],
-                playerRef: bus.group,
-                maxVehicles: 30
-            });
-        } catch (e) {
-            console.warn("⚠️ Traffic init failed:", e.message);
-        }
-        
-        // ... rest of init (passengers, camera, collision, minimap, hud, input) ...
-        
-    } catch (error) {
-        console.error("❌ CRITICAL INIT ERROR:", error);
-        throw error;
-    }
-}
-
-// ============================================================================
-// COLLISION HANDLER
-// ============================================================================
-
-function handleCollision(collisionInfo) {
-    if (!collisionInfo) return;
-    
-    const { type, intensity, position } = collisionInfo;
-    
-    if (type === "traffic") {
-        vehiclePhysics.speed *= (1 - intensity * 0.8);
-    } else if (type === "environment") {
-        vehiclePhysics.speed *= (1 - intensity * 0.5);
-    }
-    
-    if (cameraSystem?.addShake) {
-        cameraSystem.addShake(intensity * 0.1);
-    }
-    
-    if (hudSystem?.toast) {
-        hudSystem.toast(`💥 Va chạm! (${(intensity * 100).toFixed(0)}%)`, 'error');
-    }
-}
-
-// ============================================================================
-// WINDOW RESIZE
-// ============================================================================
-
-function onWindowResize() {
-    if (!renderer || !camera) return;
-    
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    
-    renderer.setSize(width, height);
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
-}
-
-// ============================================================================
-// SAVE/LOAD
-// ============================================================================
-
-function saveGame() {
-    const saveData = {
-        version: 2,
-        camera: {
-            x: bus?.group?.position.x || 0,
-            y: bus?.group?.position.y || 0.5,
-            z: bus?.group?.position.z || 0,
-            yaw: bus?.group?.rotation.y || 0,
-            pitch: 0
-        },
-        clock: { 
-            minutes: gameData.gameTime, 
-            day: gameData.day 
-        },
-        gameState: {
-            money: gameData.money,
-            fuel: gameData.fuel,
-            passengers: passengerSystem?.getOnboardCount?.() || 0,
-            passengerCapacity: gameData.passengerCapacity,
-            totalEarned: gameData.totalEarned,
-            currentLocation: gameData.currentLocation,
-            destination: gameData.destination
-        }
-    };
-    
-    const result = saveGameState(saveData);
-    if (result.ok) {
-        hudSystem?.toast("💾 Đã lưu game!", 'success');
-    } else {
-        hudSystem?.toast("❌ Lỗi khi lưu game!", 'error');
-    }
-}
-
-function loadGame() {
-    const result = loadGameState();
-    if (result.ok && result.state) {
-        const state = result.state;
-        
-        // Apply camera position
-        if (bus?.group && state.camera) {
-            bus.group.position.set(state.camera.x, state.camera.y, state.camera.z);
-            bus.group.rotation.y = state.camera.yaw || 0;
-            
-            if (steeringSystem) {
-                steeringSystem.setPose(state.camera.x, state.camera.z, state.camera.yaw || 0);
-            }
-        }
-        
-        // Apply game data
-        if (state.gameState) {
-            gameData.money = state.gameState.money || 500000;
-            gameData.fuel = state.gameState.fuel || 1.0;
-            gameData.totalEarned = state.gameState.totalEarned || 0;
-            gameData.currentLocation = state.gameState.currentLocation || "Bến xe Phú Yên";
-        }
-        
-        hudSystem?.toast("📂 Đã load game!", 'success');
-        return true;
-    }
-    return false;
-}
-
-// ============================================================================
-// GAME LOOP
-// ============================================================================
-
-function animate() {
-    requestAnimationFrame(animate);
-    
-    const deltaTime = clock.getDelta();
-    const currentTime = clock.elapsedTime;
-    
-    // FPS
-    updatePerformance(deltaTime);
-    
-    // Skip if paused
-    if (paused || gameState !== "playing") {
-        renderer?.render(scene, camera);
-        return;
-    }
-    
-    // Update game time
-    gameData.gameTime += deltaTime * (1 / 60); // 1 real second = 1 game minute
-    
-    // Update vehicle
-    updateVehiclePhysics(deltaTime);
-    
-    // Update camera
+function applySettings() {
     if (cameraSystem) {
-        cameraSystem.update(deltaTime);
+        const sens = gameSettings.cameraSensitivity / 30000;
+        const clampedSens = Math.max(0.0001, Math.min(0.01, sens));
+        cameraSystem.updateSettings({
+            cameraSensitivity: clampedSens,
+            invertX: gameSettings.invertX,
+            invertY: gameSettings.invertY,
+            fov: gameSettings.fov,
+            outsideDistance: gameSettings.outsideDistance
+        });
     }
-    
-    // Fly mode
-    if (flyMode && camera) {
-        const flySpeed = 20;
-        if (keysPressed.has("KeyW")) camera.position.z -= flySpeed * deltaTime;
-        if (keysPressed.has("KeyS")) camera.position.z += flySpeed * deltaTime;
-        if (keysPressed.has("KeyA")) camera.position.x -= flySpeed * deltaTime;
-        if (keysPressed.has("KeyD")) camera.position.x += flySpeed * deltaTime;
-        if (keysPressed.has("KeyQ")) camera.position.y -= flySpeed * deltaTime;
-        if (keysPressed.has("KeyE")) camera.position.y += flySpeed * deltaTime;
+    document.documentElement.style.setProperty("--ui-scale", gameSettings.uiScale / 100);
+}
+
+// ============================================================================
+// RENDERER & PERFORMANCE
+// ============================================================================
+function initRenderer() {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance", stencil: false, depth: true });
+    renderer.setPixelRatio(PERFORMANCE.maxPixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+}
+
+function applyRenderScale() {
+    if (!renderer) return;
+    renderer.setPixelRatio(1);
+    renderer.setSize(Math.max(1, Math.floor(window.innerWidth * renderScale)), Math.max(1, Math.floor(window.innerHeight * renderScale)), false);
+}
+
+function updateAdaptivePerformance(delta) {
+    performanceTimer += delta;
+    if (performanceTimer < PERFORMANCE.sampleTime) return;
+    performanceTimer = 0;
+    const fps = fpsAverage.value || 60;
+    if (fps < 25) { renderScale = Math.max(PERFORMANCE.minRenderScale, renderScale - 0.10); lowPerformanceMode = true; }
+    else if (fps > 58) { renderScale = Math.min(PERFORMANCE.maxRenderScale, renderScale + 0.02); if (renderScale >= 0.95) lowPerformanceMode = false; }
+    if (Math.abs(renderScale - (renderer?.getPixelRatio() || 1)) > 0.005) applyRenderScale();
+}
+
+// ============================================================================
+// BOOT
+// ============================================================================
+async function boot() {
+    try {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(gameSettings.fov, window.innerWidth / window.innerHeight, 0.1, 5000);
+        
+        ui = createUI({ map: null, callbacks: {} });
+        ui.setLoading("Renderer...", 0.1); await new Promise(r => setTimeout(r, 50)); initRenderer();
+
+        ui.setLoading("Ánh sáng...", 0.2);
+        lighting = new LightingSystem(scene);
+        window.lighting = lighting;
+        await new Promise(r => setTimeout(r, 50));
+
+        ui.setLoading("Bản đồ...", 0.3);
+        map = createMap({ scene, seed: 2026, lighting });
+        await new Promise(r => setTimeout(r, 50));
+
+        ui.setLoading("Xe của bạn...", 0.5);
+        bus = createBus();
+        try { interior = createBusInterior(); if (!interior?.isObject3D) interior = new THREE.Group(); } catch (e) { interior = new THREE.Group(); }
+        bus.group.add(interior);
+        bus.setInteriorReference?.(interior);
+        scene.add(bus.group);
+
+        const spawn = map.getSpawnPoint();
+        const pSlots = map.getParkingSlots ? map.getParkingSlots() : [];
+        if (pSlots.length > 0) { bus.group.position.set(pSlots[0].position.x, 0.5, pSlots[0].position.z); bus.group.rotation.y = pSlots[0].rotation || 0; }
+        else { bus.group.position.set(spawn.x, spawn.y, spawn.z); bus.group.rotation.y = spawn.heading || 0; }
+        
+        findDoorMeshes();
+        await new Promise(r => setTimeout(r, 50));
+
+        ui.setLoading("Camera...", 0.6);
+        cameraSystem = new CameraSystem(camera, bus.group);
+        cameraSystem.setMode("driver");
+        
+        hud = new HUDSystem(); hud.hide();
+        initMinimap();
+
+        ui.setLoading("Traffic & NPC...", 0.7);
+        await Promise.race([ loadNpcSkinList(), new Promise(r => setTimeout(r, 8000)) ]).catch(e => console.warn("Skin lỗi:", e));
+        try { npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: bus.group.position }); } catch (e) { npc = null; }
+        try { trafficManager = createTrafficManager({ scene, roadGraph: roadDataSegments || [], busSlots: map.getBusSlots?.() || [], playerRef: bus, maxVehicles: 10 }); } catch (e) { trafficManager = null; }
+        await new Promise(r => setTimeout(r, 50));
+
+        ui.setLoading("Hành khách...", 0.8);
+        try { passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui }); } catch (e) { passengerSystem = { update() {}, pickUpPassengers() {} }; }
+        await new Promise(r => setTimeout(r, 50));
+
+        initInput();
+        setupMenuEvents();
+        window.addEventListener("resize", onResize, { passive: true });
+
+        if (ui && typeof ui.hideLoading === 'function') ui.hideLoading();
+        document.querySelectorAll('[id="loading-screen"], .loading-overlay').forEach(el => { el.style.display = 'none'; el.style.opacity = '0'; });
+
+        setTimeout(() => showMainMenu(), 300);
+        clock.start();
+        renderer.setAnimationLoop(loop);
+        console.log("✅ COACHVN boot completed");
+    } catch (error) {
+        console.error("❌ Lỗi khởi động:", error);
+        alert("Game lỗi: " + error.message);
     }
-    
-    // Update map
-    if (map && bus?.group) {
-        const pos = bus.group.position;
-        map.setPlayerPosition?.(pos.x, pos.z);
-    }
-    
-    // Update NPC (throttled)
-    npcTimer += deltaTime;
-    const npcInterval = lowPerformanceMode 
-        ? PERFORMANCE.npcLowFPSInterval 
-        : PERFORMANCE.npcNormalInterval;
-    
-    if (npcTimer >= npcInterval && npc) {
-        npc.update(deltaTime, currentTime);
-        npcTimer = 0;
-    }
-    
-    // Update traffic (throttled)
-    trafficTimer += deltaTime;
-    const trafficInterval = lowPerformanceMode 
-        ? PERFORMANCE.trafficLowFPSInterval 
-        : PERFORMANCE.trafficNormalInterval;
-    
-    if (trafficTimer >= trafficInterval && trafficManager) {
-        const playerPos = bus?.group?.position;
-        if (playerPos) {
-            trafficManager.update(deltaTime, playerPos);
+}
+
+function setupMenuEvents() {
+    document.getElementById("btn-continue")?.addEventListener("click", () => {
+        if (hasGameState()) {
+            const save = loadGameState();
+            if (save.ok && save.state.camera) bus.group.position.set(save.state.camera.x, save.state.camera.y, save.state.camera.z);
+            startGame();
         }
-        trafficTimer = 0;
-    }
-    
-    // Update passengers (throttled)
-    passengerTimer += deltaTime;
-    const passengerInterval = lowPerformanceMode 
-        ? PERFORMANCE.passengerLowFPSInterval 
-        : PERFORMANCE.passengerNormalInterval;
-    
-    if (passengerTimer >= passengerInterval && passengerSystem) {
-        const busPos = bus?.group?.position;
-        const busHeading = bus?.group?.rotation.y || 0;
-        if (busPos) {
-            passengerSystem.updatePassengers(busPos, busHeading);
+    });
+    document.getElementById("btn-new-game")?.addEventListener("click", startGame);
+    document.getElementById("btn-exit")?.addEventListener("click", () => { if (confirm("Thoát game?")) window.close(); });
+    document.getElementById("btn-resume")?.addEventListener("click", togglePause);
+    document.getElementById("btn-restart")?.addEventListener("click", () => { if (confirm("Khởi động lại?")) location.reload(); });
+    document.getElementById("btn-main-menu")?.addEventListener("click", showMainMenu);
+    document.getElementById("btn-save")?.addEventListener("click", () => {
+        saveGameState({ camera: bus.group.position, clock: { minutes: lighting.getGameTime() }, gameState: { money: 500000, fuel: 0.8 } });
+        ui.toast("✅ Đã lưu game");
+    });
+    document.getElementById("btn-settings")?.addEventListener("click", () => hud.toast("⚙️ Coming Soon..."));
+    document.getElementById("btn-help")?.addEventListener("click", () => hud.toast("📖 Coming Soon..."));
+    document.getElementById("btn-close-settings")?.addEventListener("click", () => document.getElementById("settings-panel")?.classList.remove("visible"));
+    document.getElementById("btn-apply-settings")?.addEventListener("click", () => { applySettings(); document.getElementById("settings-panel")?.classList.remove("visible"); });
+}
+
+// ============================================================================
+// WORLD SYSTEMS
+// ============================================================================
+function updateWorld(delta, nowSeconds) {
+    if (!lighting) return;
+    try {
+        if (gameState === "playing" && !paused) lighting.update(delta);
+        if (flyMode) { updateFlyMode(delta); return; }
+        if (gameState === "playing" && !paused) {
+            updateVehiclePhysics(delta);
+            updateDoorAnimation(delta);
+            if (collision && collision.update) collision.update(delta);
         }
-        passengerTimer = 0;
-    }
-    
-    // Update collision
-    if (collisionSystem && bus?.group) {
-        collisionSystem.update(deltaTime, bus.group.position);
-    }
-    
-    // Update lighting
-    if (lighting) {
-        lighting.update(deltaTime, currentTime);
-    }
-    
-    // Update minimap
-    if (minimapSystem && bus?.group) {
-        minimapSystem.update(deltaTime, bus.group.position, bus.group.rotation.y);
-    }
-    
-    // Update HUD (throttled)
-    hudTimer += deltaTime;
-    if (hudTimer >= PERFORMANCE.hudInterval) {
-        updateHUD();
-        hudTimer = 0;
-    }
-    
-    // Render
-    renderer.render(scene, camera);
-}
+    } catch (e) { console.error("Lỗi Vật lý/Time:", e); }
 
-// ============================================================================
-// HUD UPDATE
-// ============================================================================
+    try { cameraSystem?.update(delta); } catch (e) { console.error("Lỗi Camera:", e); }
 
-function updateHUD() {
-    const speed = vehiclePhysics.currentSpeedKmh;
-    const pos = bus?.group?.position;
-    
-    // Calculate next stop distance (simplified)
-    const nextStopDistance = calculateNextStopDistance(pos);
-    
-    const hudData = {
-        speed: Math.abs(speed),
-        gear: speed > 0.5 ? "D" : (speed < -0.5 ? "R" : "N"),
-        fuel: gameData.fuel,
-        doorOpen: bus?.doorOpen || false,
-        money: gameData.money + (passengerSystem?.getTotalEarned?.() || 0),
-        passengers: passengerSystem?.getOnboardCount?.() || 0,
-        passengerCapacity: gameData.passengerCapacity,
-        time: formatGameTime(gameData.gameTime),
-        currentLocation: gameData.currentLocation,
-        nextStop: gameData.nextStop,
-        nextStopDistance: nextStopDistance,
-        destination: gameData.destination
-    };
-    
-    if (hudSystem) {
-        hudSystem.update(hudTimer, hudData);
-    }
-}
-
-function calculateNextStopDistance(pos) {
-    // Simplified distance calculation
-    // In real implementation, would calculate from route data
-    if (!pos) return 0;
-    
-    // Get next stop node position and calculate distance
-    const nextStopNode = getNode('dai_lanh_stop');
-    if (nextStopNode) {
-        const dx = nextStopNode.position.x - pos.x;
-        const dz = nextStopNode.position.z - pos.z;
-        const distanceKm = Math.hypot(dx, dz) / 1000; // Assume 1000 units = 1km
-        return distanceKm;
-    }
-    
-    return 0;
-}
-
-function formatGameTime(minutes) {
-    const hours = Math.floor(minutes / 60) % 24;
-    const mins = Math.floor(minutes % 60);
-    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
-}
-
-// ============================================================================
-// UI CALLBACKS
-// ============================================================================
-
-function setupUICallbacks() {
-    if (!ui) return;
-    
-    ui.onNewGame = () => {
-        const mainMenu = document.getElementById("main-menu");
-        if (mainMenu) mainMenu.classList.remove("visible");
-        gameState = "playing";
-        hudSystem?.toast("🚌 Bắt đầu chuyến mới!", 'success');
-    };
-    
-    ui.onContinue = () => {
-        if (loadGame()) {
-            const mainMenu = document.getElementById("main-menu");
-            if (mainMenu) mainMenu.classList.remove("visible");
-            gameState = "playing";
+    try {
+        if (bus?.group && map) map.setPlayerPosition(bus.group.position.x, bus.group.position.z);
+        if (gameState === "playing" && !paused) {
+            trafficTimer += delta;
+            if (trafficTimer > (lowPerformanceMode ? PERFORMANCE.trafficLowFPSInterval : PERFORMANCE.trafficNormalInterval)) {
+                trafficManager?.update?.(trafficTimer, { x: bus.group.position.x, z: bus.group.position.z });
+                trafficTimer = 0;
+            }
+            npcTimer += delta;
+            if (npcTimer > (lowPerformanceMode ? PERFORMANCE.npcLowFPSInterval : PERFORMANCE.npcNormalInterval)) {
+                npc?.update?.(npcTimer, nowSeconds);
+                npcTimer = 0;
+            }
+            passengerTimer += delta;
+            if (passengerTimer > 0.033) {
+                if (passengerSystem) {
+                    if (typeof passengerSystem.update === "function") passengerSystem.update(bus.group.position, bus.group.rotation.y);
+                    else if (typeof passengerSystem.updatePassengers === "function") passengerSystem.updatePassengers(bus.group.position, bus.group.rotation.y);
+                }
+                passengerTimer = 0;
+            }
+            minimapTimer += delta;
+            if (minimapTimer > PERFORMANCE.minimapInterval) {
+                let npcPos = [];
+                if (trafficManager && trafficManager.vehicles) {
+                    for (const v of trafficManager.vehicles) {
+                        if (v.mesh) npcPos.push({ x: v.mesh.position.x, z: v.mesh.position.z });
+                    }
+                }
+                minimap?.updateNPCs(npcPos);
+                minimap?.draw();
+                minimapTimer = 0;
+            }
         }
-    };
-    
-    ui.onSave = () => saveGame();
-    ui.onLoad = () => loadGame();
-    
-    ui.onResume = () => {
-        paused = false;
-        const pauseMenu = document.getElementById("pause-menu");
-        if (pauseMenu) pauseMenu.classList.remove("visible");
-    };
-    
-    ui.onMainMenu = () => {
-        paused = false;
-        gameState = "menu";
-        const pauseMenu = document.getElementById("pause-menu");
-        const mainMenu = document.getElementById("main-menu");
-        if (pauseMenu) pauseMenu.classList.remove("visible");
-        if (mainMenu) mainMenu.classList.add("visible");
-    };
+    } catch (e) { console.error("Lỗi cập nhật thế giới:", e); }
+}
+
+function updateFlyMode(delta) {
+    if (!camera) return;
+    const s = 20 * delta;
+    if (keysPressed.has("KeyW")) camera.translateZ(-s);
+    if (keysPressed.has("KeyS")) camera.translateZ(s);
+    if (keysPressed.has("KeyA")) camera.translateX(-s);
+    if (keysPressed.has("KeyD")) camera.translateX(s);
+    if (keysPressed.has("Space")) camera.position.y += s;
+    if (keysPressed.has("ShiftLeft")) camera.position.y -= s;
+}
+
+// ============================================================================
+// HUD
+// ============================================================================
+function updateHUD(delta) {
+    hudTimer += delta;
+    if (hudTimer < PERFORMANCE.hudInterval) return;
+    hudTimer = 0;
+    if (gameState !== "playing" || !bus || !hud) return;
+    hud.update({
+        fps: Math.round(fpsAverage.value || 60),
+        speedKmh: vehiclePhysics.currentSpeedKmh,
+        fuel: 0.8, money: 500000,
+        passengers: passengerSystem?.onboardPassengers?.length || 0,
+        passengerCapacity: 24,
+        timeMinutes: lighting.getGameTime ? lighting.getGameTime() : 360,
+        nextStop: "Trạm Đại Lãnh", nextStopDistance: 2.4,
+        doorOpen: !!bus.doorOpen
+    });
+}
+
+// ============================================================================
+// MAIN LOOP
+// ============================================================================
+let smoothDelta = 1 / 60;
+function loop() {
+    try {
+        const rawDelta = Math.min(clock.getDelta(), 0.1);
+        smoothDelta += (rawDelta - smoothDelta) * 0.10;
+        const delta = Math.max(0.001, Math.min(0.05, smoothDelta));
+        const now = performance.now() / 1000;
+        fpsAverage.add(1 / Math.max(rawDelta, 0.001));
+        updateAdaptivePerformance(delta);
+        updateWorld(delta, now);
+        renderer.render(scene, camera);
+        updateHUD(delta);
+    } catch (e) {
+        console.error("⚠️ Lỗi vòng lặp game:", e);
+        paused = true;
+    }
+}
+
+function onResize() {
+    if (!camera || !renderer) return;
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    applyRenderScale();
 }
 
 // ============================================================================
 // START
 // ============================================================================
-
-// Create UI first
-ui = createUI({ map: null, callbacks: {} });
-setupUICallbacks();
-
-// Initialize game
-init().catch(error => {
-    console.error("❌ FATAL: Failed to initialize CoachVN:", error);
-});
-
-// Debug export
-window.COACHVN = {
-    version: MAIN_VERSION,
-    get gameState() { return gameState; },
-    get vehiclePhysics() { return vehiclePhysics; },
-    get gameData() { return gameData; },
-    get steeringSystem() { return steeringSystem; },
-    get collisionSystem() { return collisionSystem; },
-    get bus() { return bus; },
-    get map() { return map; },
-    get trafficManager() { return trafficManager; },
-    get passengerSystem() { return passengerSystem; },
-    get minimapSystem() { return minimapSystem; },
-    get hudSystem() { return hudSystem; },
-    getCurrentFPS,
-    saveGame,
-    loadGame,
-    togglePause
-};
+boot();
