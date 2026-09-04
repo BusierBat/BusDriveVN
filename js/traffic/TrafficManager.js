@@ -1,312 +1,208 @@
-// js/traffic/TrafficManager.js - SỬA: TÍCH HỢP BUS TRAFFIC MANAGER
-// BusTrafficManager xử lý NPC bus (chủ yếu)
-// TrafficManager cũ xử lý vehicle types khác
-
+// js/traffic/TrafficManager.js - Smart Spawn, Spacing, LOD, Collision Integration
 import * as THREE from "three";
 import { createNpcBus, pickNpcSkinPath, pickLedColor, loadNpcSkinList } from "../bus.js";
 import { TrafficAI, DRIVER_PERSONALITY, AI_STATE } from "./TrafficAI.js";
-import { BusTrafficManager, BUS_TRAFFIC_CONFIG } from "./BusTrafficManager.js";
 import { getGraphicsSettings } from "./GraphicsSettings.js";
 import { createSeededRandom } from "../utils.js";
 
 export class TrafficManager {
-    constructor({
-        scene,
-        roadGraph,
-        busSlots = [],
-        maxVehicles = 60,
-        playerRef = null,
-    }) {
-        this.scene = scene;
-        this.roadGraph = roadGraph;
-        this.busSlots = busSlots;
-        this.playerRef = playerRef;
-        this.maxVehicles = maxVehicles;
-        
-        // ===== BUS TRAFFIC MANAGER (MỚI) =====
-        // Xử lý NPC bus - ưu tiên cao nhất
-        this.busTrafficManager = new BusTrafficManager({
-            scene: scene,
-            roadGraph: roadGraph,
-            playerRef: playerRef,
-            config: {
-                ...BUS_TRAFFIC_CONFIG,
-                maxActiveBuses: Math.floor(maxVehicles * 0.7), // 70% là bus
-                maxActiveOthers: Math.floor(maxVehicles * 0.3), // 30% khác
-            }
-        });
-        
-        // ===== OLD SYSTEM (cho vehicle types khác) =====
-        this.aiVehicles = []; // Other vehicle types (car, truck, motorcycle)
-        this.pool = [];
-        this.activeCount = 0;
-        this.seed = Date.now();
-        this.random = createSeededRandom(this.seed);
-        
-        // Graphics settings
-        this.graphics = getGraphicsSettings();
-        this.graphics.onChange(() => this._onSettingsChanged());
-        
-        // Load skins
-        loadNpcSkinList();
-        
-        // Spawn initial traffic (non-bus)
-        this._spawnInitialTraffic();
-        
-        // Update timer
-        this.spawnTimer = 0;
-        this.spawnInterval = 4; // Interval dài hơn vì bus đã spawn riêng
-        this.lastPlayerPos = { x: 0, z: 0 };
-        
-        console.log("🚦 TrafficManager initialized (with BusTrafficManager)");
+  constructor({ scene, roadGraph, busSlots = [], maxVehicles = 60, playerRef = null }) {
+    this.scene = scene;
+    this.roadGraph = roadGraph;
+    this.busSlots = busSlots;
+    this.playerRef = playerRef;
+    this.maxVehicles = maxVehicles;
+    this.aiVehicles = [];
+    this.pool = [];
+    this.activeCount = 0;
+    this.seed = Date.now();
+    this.random = createSeededRandom(this.seed);
+
+    this.graphics = getGraphicsSettings();
+    this.graphics.onChange(() => this._onSettingsChanged());
+    loadNpcSkinList();
+
+    this.spawnTimer = 0;
+    this.spawnInterval = 2;
+    this.lastPlayerPos = { x: 0, z: 0 };
+    this.lastPlayerHeading = 0;
+
+    this.isGraphMode = (roadGraph && Array.isArray(roadGraph.segments) && Array.isArray(roadGraph.nodes));
+    if (!this.isGraphMode) console.warn("⚠️ TrafficManager: roadGraph không hợp lệ");
+
+    this._spawnInitialTraffic();
+  }
+
+  _spawnInitialTraffic() {
+    if (!this.isGraphMode) return;
+    const count = Math.min(8, this.graphics.getMaxActiveTraffic() * 0.3);
+    for (let i = 0; i < count; i++) this._spawnVehicle();
+  }
+
+  _getSegmentPoints(seg) {
+    if (!seg || !this.isGraphMode) return null;
+    const fromNode = this.roadGraph.nodes.find(n => n.id === seg.from);
+    const toNode = this.roadGraph.nodes.find(n => n.id === seg.to);
+    if (fromNode?.position?.x !== undefined && toNode?.position?.x !== undefined) {
+      return { p0: fromNode.position, p1: toNode.position };
     }
-    
-    // ====== UPDATE ======
-    update(deltaTime, playerPos) {
-        if (!playerPos) return;
-        this.lastPlayerPos = playerPos;
-        
-        // 1. Update Bus Traffic Manager (NPC bus)
-        this.busTrafficManager.update(deltaTime, playerPos);
-        
-        // 2. Update other vehicles
-        this._updateOtherVehicles(deltaTime, playerPos);
-        
-        // 3. Spawn other vehicles (thỉnh thoảng)
-        this.spawnTimer += deltaTime;
-        if (this.spawnTimer > this.spawnInterval) {
-            this.spawnTimer = 0;
-            this._trySpawnOtherVehicle(playerPos);
-        }
+    return null;
+  }
+
+  _spawnVehicle() {
+    if (!this.isGraphMode) return null;
+    let vehicle = this.pool.pop();
+    if (!vehicle) {
+      vehicle = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
+      this.scene.add(vehicle.group);
     }
-    
-    _updateOtherVehicles(deltaTime, playerPos) {
-        const settings = this.graphics.settings;
-        const maxActive = Math.floor(settings.maxActiveTraffic * 0.3); // Chỉ 30% cho non-bus
-        const despawnDist = settings.despawnDistance || 400;
-        
-        const toRemove = [];
-        
-        for (let i = 0; i < this.aiVehicles.length; i++) {
-            const ai = this.aiVehicles[i];
-            const dist = Math.hypot(
-                ai.collider.x - playerPos.x,
-                ai.collider.z - playerPos.z
-            );
-            
-            // Despawn nếu quá xa
-            if (dist > despawnDist) {
-                toRemove.push(i);
-                continue;
-            }
-            
-            // LOD: giảm update khi xa
-            if (dist > 200) {
-                ai.update(deltaTime * 0.5, playerPos, this.aiVehicles);
-            } else {
-                ai.update(deltaTime, playerPos, this.aiVehicles);
-            }
-            
-            // Collision check đơn giản
-            this._checkCollision(ai);
-        }
-        
-        // Remove despawned
-        for (let i = toRemove.length - 1; i >= 0; i--) {
-            const idx = toRemove[i];
-            const ai = this.aiVehicles[idx];
-            ai.setActive(false);
-            this.pool.push(ai.vehicle);
-            this.aiVehicles.splice(idx, 1);
-            this.activeCount--;
-        }
+
+    let candidate = null;
+    const validSegs = this.roadGraph.segments.filter(s => {
+      if (!s) return false;
+      if (s.type === 'tunnel' || s.type === 'bus_station_road') return false;
+      return this._getSegmentPoints(s) !== null;
+    });
+
+    if (validSegs.length === 0) { this.pool.push(vehicle); return null; }
+
+    for (let i = 0; i < 10; i++) {
+      const seg = validSegs[Math.floor(this.random() * validSegs.length)];
+      const dir = seg.twoWay ? Math.floor(this.random() * 2) : 0;
+      const pts = this._getSegmentPoints(seg);
+      if (!pts) continue;
+
+      const p0 = dir === 0 ? pts.p0 : pts.p1;
+      const p1 = dir === 0 ? pts.p1 : pts.p0;
+      const progress = 0.1 + this.random() * 0.8;
+      const x = p0.x + (p1.x - p0.x) * progress;
+      const z = p0.z + (p1.z - p0.z) * progress;
+
+      const distPlayer = Math.hypot(x - this.lastPlayerPos.x, z - this.lastPlayerPos.z);
+      // FIX: Spawn trên toàn tuyến (150m - 450m) thay vì chỉ gần bến
+      if (distPlayer < 150 || distPlayer > 450) continue;
+
+      const segLen = Math.hypot(p1.x - p0.x, p1.z - p0.z);
+      const countOnSeg = this.aiVehicles.filter(a => a.currentSegmentId === seg.id).length;
+      const maxDensity = Math.max(2, Math.floor(segLen / 100));
+      if (countOnSeg >= maxDensity) continue;
+
+      let overlap = false;
+      for (const other of this.aiVehicles) {
+        if (Math.hypot(x - other.collider.x, z - other.collider.z) < 25) { overlap = true; break; }
+      }
+      if (overlap) continue;
+
+      candidate = { seg, dir, progress, x, z };
+      break;
     }
-    
-    _trySpawnOtherVehicle(playerPos) {
-        const settings = this.graphics.settings;
-        const maxActive = Math.floor((settings.maxActiveTraffic || 30) * 0.3);
-        
-        if (this.aiVehicles.length >= maxActive) return;
-        
-        // Chỉ spawn nếu density cho phép
-        const spawnChance = (settings.trafficDensity || 0.5) * 0.3;
-        if (this.random() > spawnChance) return;
-        
-        this._spawnVehicle();
+
+    if (!candidate) { this.pool.push(vehicle); return null; }
+
+    const personalities = ['NORMAL', 'CAREFUL', 'AGGRESSIVE', 'RANDOM'];
+    const ai = new TrafficAI({
+      vehicle, roadGraph: this.roadGraph,
+      personality: personalities[Math.floor(this.random() * personalities.length)],
+      seed: this.seed + this.aiVehicles.length
+    });
+
+    ai.currentSegmentId = candidate.seg.id;
+    ai.direction = candidate.dir;
+    ai.progress = candidate.progress;
+    ai.laneOffset = ai._calcLaneOffset(candidate.seg, candidate.dir);
+    ai._updatePositionFromSegment();
+    ai.heading = ai._getSegmentHeading();
+    ai.targetHeading = ai.heading;
+    ai.speed = (3 + this.random() * 5) * (0.5 + this.random() * 0.5);
+    ai.targetSpeed = ai.speed;
+    ai.setActive(true);
+
+    if (window.collisionSystem) {
+      ai.colId = window.collisionSystem.register(ai.collider.x, ai.collider.z, 3.0, 'npc', { ai: ai });
     }
+
+    this.aiVehicles.push(ai);
+    this.activeCount++;
+    return ai;
+  }
+
+  update(deltaTime, playerPos) {
+    if (!playerPos || !this.isGraphMode) return;
+    this.lastPlayerPos = playerPos;
+    if (this.playerRef?.group) this.lastPlayerHeading = this.playerRef.group.rotation.y;
     
-    // ====== SPAWN (Other Vehicles) ======
-    _spawnInitialTraffic() {
-        // Chỉ spawn vài xe ban đầu (bus đã spawn riêng)
-        const count = Math.min(3, Math.floor(this.maxVehicles * 0.05));
-        for (let i = 0; i < count; i++) {
-            this._spawnVehicle();
-        }
+    const settings = this.graphics.settings;
+    const maxActive = settings.maxActiveTraffic || 30;
+    const spawnDist = settings.spawnDistance || 200;
+    const despawnDist = settings.despawnDistance || 400;
+
+    const toRemove = [];
+    for (let i = 0; i < this.aiVehicles.length; i++) {
+      const ai = this.aiVehicles[i];
+      const dist = Math.hypot(ai.collider.x - playerPos.x, ai.collider.z - playerPos.z);
+      
+      if (dist > despawnDist) { toRemove.push(i); continue; }
+
+      // LOD: Giảm update nếu ở xa
+      const updateDelta = dist > spawnDist * 0.6 ? deltaTime * 0.5 : deltaTime;
+      ai.update(updateDelta, playerPos, this.aiVehicles);
+      
+      // CẬP NHẬT VỊ TRÍ COLLIDER NPC
+      if (window.collisionSystem && ai.colId) {
+        window.collisionSystem.update(ai.colId, ai.collider.x, ai.collider.z);
+      }
+      
+      this._checkCollision(ai);
     }
-    
-    _spawnVehicle(options = {}) {
-        // Get from pool hoặc create mới
-        let vehicle = this.pool.pop();
-        if (!vehicle) {
-            const skin = pickNpcSkinPath() || null;
-            const ledColor = pickLedColor();
-            vehicle = createNpcBus({ skinPath: skin, ledColor });
-            this.scene.add(vehicle.group);
-        }
-        
-        // Chọn segment
-        const segIndex = Math.floor(this.random() * this.roadGraph.length);
-        const seg = this.roadGraph[segIndex];
-        if (!seg) {
-            this.pool.push(vehicle);
-            return null;
-        }
-        
-        // Personality
-        const personalities = ['NORMAL', 'CAREFUL', 'AGGRESSIVE', 'RANDOM'];
-        const personality = personalities[Math.floor(this.random() * personalities.length)];
-        
-        // Tạo AI
-        const ai = new TrafficAI({
-            vehicle: vehicle,
-            roadGraph: this.roadGraph,
-            personality: personality,
-            seed: this.seed + this.aiVehicles.length,
-        });
-        
-        // Set vị trí
-        ai.currentSegmentIndex = segIndex;
-        ai.progress = 0.1 + this.random() * 0.8;
-        ai._updatePositionFromSegment();
-        ai.heading = ai._getSegmentHeading(segIndex);
-        ai.targetHeading = ai.heading;
-        ai.speed = (3 + this.random() * 5) * (0.5 + this.random() * 0.5);
-        ai.targetSpeed = ai.speed;
-        
-        // Lane offset
-        ai.laneOffset = (this.random() - 0.5) * 1.5;
-        ai.targetLaneOffset = ai.laneOffset;
-        
-        // Save
-        this.aiVehicles.push(ai);
-        this.activeCount++;
-        
-        return ai;
+
+    for (let i = toRemove.length - 1; i >= 0; i--) {
+      const idx = toRemove[i];
+      const ai = this.aiVehicles[idx];
+      ai.setActive(false);
+      this.pool.push(ai.vehicle);
+      // XÓA COLLIDER NPC
+      if (window.collisionSystem && ai.colId) window.collisionSystem.remove(ai.colId);
+      this.aiVehicles.splice(idx, 1);
+      this.activeCount--;
     }
-    
-    _checkCollision(ai) {
-        // Đơn giản: check với các xe khác trong aiVehicles
-        for (const other of this.aiVehicles) {
-            if (other === ai) continue;
-            
-            const dx = ai.collider.x - other.collider.x;
-            const dz = ai.collider.z - other.collider.z;
-            const distSq = dx * dx + dz * dz;
-            const minDist = ai.collider.r + other.collider.r;
-            
-            if (distSq < minDist * minDist) {
-                // Simple push apart
-                const dist = Math.sqrt(distSq) || 0.01;
-                const pushX = (dx / dist) * (minDist - dist) * 0.5;
-                const pushZ = (dz / dist) * (minDist - dist) * 0.5;
-                
-                ai.vehicle.group.position.x += pushX;
-                ai.vehicle.group.position.z += pushZ;
-                other.vehicle.group.position.x -= pushX;
-                other.vehicle.group.position.z -= pushZ;
-            }
-        }
+
+    this.spawnTimer += deltaTime;
+    if (this.activeCount < maxActive && this.spawnTimer > this.spawnInterval) {
+      this.spawnTimer = 0;
+      if (this.random() < settings.trafficDensity * 0.1) this._spawnVehicle();
     }
-    
-    _onSettingsChanged() {
-        // Update bus traffic manager settings
-        if (this.busTrafficManager) {
-            this.busTrafficManager._onSettingsChanged();
-        }
-        
-        // Update other vehicle settings
-        const settings = this.graphics.settings;
-        console.log(`🚦 Traffic settings updated. Max: ${settings.maxActiveTraffic}`);
+
+    for (const ai of this.aiVehicles) {
+      const dist = Math.hypot(ai.collider.x - playerPos.x, ai.collider.z - playerPos.z);
+      ai.setActive(dist < settings.renderDistance * 16 * 0.8);
     }
-    
-    // ====== API ======
-    
-    /**
-     * Get ALL colliders (bus + other) cho collision system
-     */
-    getColliders() {
-        const colliders = [];
-        
-        // Bus colliders (từ BusTrafficManager)
-        const busColliders = this.busTrafficManager.getColliders();
-        colliders.push(...busColliders);
-        
-        // Other vehicle colliders
-        for (const ai of this.aiVehicles) {
-            if (ai.collider && ai.vehicle?.group?.visible) {
-                colliders.push({
-                    x: ai.collider.x,
-                    z: ai.collider.z,
-                    r: ai.collider.r,
-                    type: 'OTHER',
-                    ai: ai
-                });
-            }
-        }
-        
-        return colliders;
+  }
+
+  _checkCollision(ai) {
+    for (const other of this.aiVehicles) {
+      if (other === ai) continue;
+      const dx = other.collider.x - ai.collider.x, dz = other.collider.z - ai.collider.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 2.5 && dist > 0.01) {
+        const push = (2.5 - dist) * 0.5;
+        ai.collider.x -= (dx / dist) * push; ai.collider.z -= (dz / dist) * push;
+        other.collider.x += (dx / dist) * push; other.collider.z += (dz / dist) * push;
+        ai.speed *= 0.8;
+      }
     }
-    
-    /**
-     * Get bus traffic manager (để access trực tiếp)
-     */
-    getBusTrafficManager() {
-        return this.busTrafficManager;
-    }
-    
-    /**
-     * Get debug info
-     */
-    getDebugInfo() {
-        const busInfo = this.busTrafficManager.getDebugInfo();
-        
-        return {
-            buses: busInfo,
-            otherVehicles: this.aiVehicles.length,
-            total: this.aiVehicles.length + busInfo.activeBuses
-        };
-    }
-    
-    /**
-     * Dispose
-     */
-    dispose() {
-        // Dispose bus traffic manager
-        if (this.busTrafficManager) {
-            this.busTrafficManager.dispose();
-        }
-        
-        // Dispose other vehicles
-        for (const ai of this.aiVehicles) {
-            ai.dispose();
-        }
-        this.aiVehicles = [];
-        
-        // Dispose pool
-        for (const vehicle of this.pool) {
-            this.scene.remove(vehicle.group);
-            if (vehicle.dispose) vehicle.dispose();
-        }
-        this.pool = [];
-        
-        console.log("🚦 TrafficManager disposed");
-    }
+  }
+
+  _onSettingsChanged() {
+    const s = this.graphics.settings;
+    this.maxVehicles = s.maxActiveTraffic * 1.5;
+    this.spawnInterval = 2 / (s.trafficDensity + 0.1);
+  }
+
+  getActiveVehicles() { return this.aiVehicles.filter(ai => ai.active); }
+  getColliders() { return this.aiVehicles.map(ai => ai.collider); }
+  getVehicleCount() { return this.aiVehicles.length; }
+  getActiveCount() { return this.activeCount; }
+  dispose() { this.aiVehicles.forEach(ai => ai.dispose()); this.aiVehicles = []; this.pool = []; this.activeCount = 0; }
 }
 
-// ============================================================
-// FACTORY FUNCTION - THÊM VÀO CUỐI FILE
-// ============================================================
-
-export function createTrafficManager(options) {
-    return new TrafficManager(options);
-}
+export function createTrafficManager(options) { return new TrafficManager(options); }

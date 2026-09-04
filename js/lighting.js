@@ -2,12 +2,21 @@
 import * as THREE from "three";
 
 export class LightingSystem {
-    constructor(scene) {
-        if (!scene) scene = new THREE.Scene();
-        this.scene = scene;
-        this.gameTimeMinutes = 360; // Bắt đầu lúc 6:00 sáng
-        this.timeScale = 1; // 1 giây thực = 1 phút game (1 ngày game = 24 phút thực). Có thể chỉnh thành 0.5 nếu muốn chậm hơn.
-        
+    constructor(sceneOrOptions = new THREE.Scene()) {
+        const options = sceneOrOptions && typeof sceneOrOptions === 'object' && !('isScene' in sceneOrOptions) && !('type' in sceneOrOptions)
+            ? sceneOrOptions
+            : { scene: sceneOrOptions };
+
+        const scene = options.scene || options;
+        if (!scene || typeof scene.add !== 'function') {
+            this.scene = new THREE.Scene();
+        } else {
+            this.scene = scene;
+        }
+
+        this.gameTimeMinutes = options.initialMinutes ?? 360;
+        this.timeScale = options.timeScale ?? 1;
+
         this.lights = {};
         this._initLights();
         this._updateTimeOfDay();

@@ -1,33 +1,23 @@
-// js/map/chunkGenerator.js
+// js/map/chunkGenerator.js - Sinh Ground (cỏ tươi) & Buildings, không sinh road nữa
 import * as THREE from "three";
-import { generateTerrainForChunk } from "./terrainGenerator.js";
-import { generateRoadForChunk } from "./roadGenerator.js";
 import { generateBuildingsForChunk } from "./buildingGenerator.js";
-import { generateVegetationForChunk } from "./vegetationGenerator.js";
-import { generateLandmarksForChunk } from "./landmarkGenerator.js";
-import { getChunkSeed } from "./data/routeData.js";
+import { roadNetwork } from "./data/roadNetworkData.js";
 
 export function generateChunk({ chunkX, chunkZ, worldSeed, chunkSize, parkingSlots }) {
     const group = new THREE.Group();
     group.name = `chunk_${chunkX}_${chunkZ}`;
-    const worldX = chunkX * chunkSize;
-    const worldZ = chunkZ * chunkSize;
-    const seed = getChunkSeed(chunkX, chunkZ, worldSeed);
-
-    const terrain = generateTerrainForChunk({ chunkX, chunkZ, worldX, worldZ, chunkSize, seed });
-    if (terrain) group.add(terrain);
-
-    const road = generateRoadForChunk({ chunkX, chunkZ, worldX, worldZ, chunkSize, seed });
-    if (road) group.add(road);
-
-    const buildings = generateBuildingsForChunk({ chunkX, chunkZ, worldX, worldZ, chunkSize, seed });
-    if (buildings) group.add(buildings);
-
-    const veg = generateVegetationForChunk({ chunkX, chunkZ, worldX, worldZ, chunkSize, seed });
-    if (veg) group.add(veg);
-
-    const landmarks = generateLandmarksForChunk({ chunkX, chunkZ, worldX, worldZ, chunkSize, seed, parkingSlots });
-    if (landmarks) group.add(landmarks);
-
+    
+    // 1. Ground (Mặt đất cỏ xanh tươi)
+    const groundGeo = new THREE.PlaneGeometry(chunkSize, chunkSize);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x4caf50, roughness: 1.0 }); // Xanh tươi
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(chunkX * chunkSize + chunkSize/2, 0, chunkZ * chunkSize + chunkSize/2);
+    group.add(ground);
+    
+    // 2. Buildings (Nhà cửa)
+    const buildings = generateBuildingsForChunk(chunkX, chunkZ, chunkSize, roadNetwork);
+    group.add(buildings);
+    
     return group;
 }

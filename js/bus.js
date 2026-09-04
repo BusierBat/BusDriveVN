@@ -162,7 +162,6 @@ function getShared() {
   g.indL = mergeGeos([pixelQuad("front", PX.front.indL0, PX.front.indL1, PX.front.indTop, PX.front.indBot, 0.02), pixelQuad("rear", PX.rear.tlL0, PX.rear.tlL1, PX.rear.riTop, PX.rear.riBot, -0.02)]);
   g.indR = mergeGeos([pixelQuad("front", PX.front.indR0, PX.front.indR1, PX.front.indTop, PX.front.indBot, 0.02), pixelQuad("rear", PX.rear.tlR0, PX.rear.tlR1, PX.rear.riTop, PX.rear.riBot, -0.02)]);
   
-  // ===== SỬA LỖI CỬA XE BỊ BAY =====
   const doorGeo = pixelQuad("right", PX.sideR.doorFront, PX.sideR.doorRear, PX.sideR.bodyBottom, PX.sideR.doorTop, 0.009);
   const doorPos = doorGeo.attributes.position;
   const doorNorm = doorGeo.attributes.normal;
@@ -339,23 +338,20 @@ function assembleBus(mats, withDoorPivot) {
 }
 
 function makeControl(a) {
-  let doorTarget = 0;
-  let doorCurrent = 0;
   return {
-    setSteering: (v) => { if(a.steerPivots) a.steerPivots.forEach(p => p.rotation.y = v); },
-    setWheelRotation: (r) => {
-      if(a.tireMeshes) {
-        for (let i = 0; i < a.tireMeshes.length; i++) {
-          a.tireMeshes[i].rotation.x = r;
-          a.rimMeshes[i].rotation.x = r;
-        }
+    setSteering: (val) => {
+      for (const pivot of a.steerPivots || []) {
+        pivot.rotation.y = val * 0.3;
       }
     },
-    setDoor: (t) => { doorTarget = t ? 1 : 0; },
-    updateDoor: (dt) => {
-      doorCurrent += (doorTarget - doorCurrent) * Math.min(1, dt * 5);
-      if (a.doorPivot) {
-        a.doorPivot.position.z = -doorCurrent * 1.5;
+    setWheelRotation: (val) => {
+      for (const tire of a.tireMeshes || []) {
+        tire.rotation.x = val;
+      }
+    },
+    setDoor: (t) => { 
+      if(a.doorPivot) {
+        a.doorPivot.position.z = (L/2 - 1.0) - t * 1.2;
       }
     }
   };
@@ -386,10 +382,10 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   const tailMaterial = a.tailMesh.material;
   const emergencyMaterial = a.emergencyMesh.material;
   
-  const spotL = new THREE.SpotLight(0xfff3cf, 0, 45, Math.PI / 4.6, 0.45, 1.1);
+  const spotL = new THREE.SpotLight(0xfff3cf, 0, 120, Math.PI / 5, 0.3, 1.0);
   spotL.position.set(-0.78, 1.05, L / 2 + 0.05);
   const spotLT = new THREE.Object3D(); spotLT.position.set(-0.78, 0, L / 2 + 25);
-  const spotR = new THREE.SpotLight(0xfff3cf, 0, 45, Math.PI / 4.6, 0.45, 1.1);
+  const spotR = new THREE.SpotLight(0xfff3cf, 0, 120, Math.PI / 5, 0.3, 1.0);
   spotR.position.set(0.78, 1.05, L / 2 + 0.05);
   const spotRT = new THREE.Object3D(); spotRT.position.set(0.78, 0, L / 2 + 25);
   const tailGlow = new THREE.PointLight(0xff2020, 0, 7, 1.8);
@@ -406,10 +402,19 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     mats.indL.emissiveIntensity = ((signalLeft || hazard) && blink) ? 1.8 : 0.05;
     mats.indR.emissiveIntensity = ((signalRight || hazard) && blink) ? 1.8 : 0.05;
   }
+  
   function setHeadlights(on) {
-    if (on) { a.headMesh.material = headOn; spotL.intensity = 100; spotR.intensity = 60; } 
-    else { a.headMesh.material = headOff; spotL.intensity = 0; spotR.intensity = 0; }
+    if (on) { 
+      a.headMesh.material = headOn; 
+      spotL.intensity = 250;
+      spotR.intensity = 150; 
+    } else { 
+      a.headMesh.material = headOff; 
+      spotL.intensity = 0; 
+      spotR.intensity = 0; 
+    }
   }
+  
   function setTaillights(on) { tailMaterial.emissiveIntensity = on ? 0.9 : 0; tailGlow.intensity = on ? 6 : 0; }
   function setSignalLeft(on) { signalLeft = on; }
   function setSignalRight(on) { signalRight = on; }
@@ -449,6 +454,12 @@ let npcSkinPromise = null;
 
 export function loadNpcSkinList() {
   if (npcSkinPromise) return npcSkinPromise;
+
+  if (location.protocol === "file:") {
+    npcSkinList = [NPC_SKIN_DIR + "bus_final.png"];
+    npcSkinPromise = Promise.resolve(npcSkinList);
+    return npcSkinPromise;
+  }
   
   npcSkinPromise = fetch(NPC_SKIN_DIR, { cache: "no-store" })
     .then((r) => {
@@ -485,7 +496,6 @@ export function loadNpcSkinList() {
         npcSkinList = [NPC_SKIN_DIR + "bus_final.png"];
       }
       
-      console.log(`🚌 Loaded ${npcSkinList.length} NPC skins:`, npcSkinList);
       return npcSkinList;
     })
     .catch((err) => {

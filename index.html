@@ -2,25 +2,179 @@
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>CoachVN - Mô Phỏng Xe Khách Việt Nam</title>
-    
-    <!-- Khai báo Import Map cho Three.js -->
     <script type="importmap">
     {
-        "imports": {
-            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
-        }
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
     }
     </script>
-    
-    <link rel="stylesheet" href="style.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
+        html, body { width: 100%; height: 100%; margin: 0; }
+        body { overflow: hidden; background: #000; color: #fff; }
+        #game-canvas { position: fixed; inset: 0; display: block; width: 100vw; height: 100vh; max-width: none; max-height: none; z-index: 1; background: #87ceeb; }
+
+        .ui-panel { background: rgba(15, 15, 20, 0.85); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.2); color: #fff; }
+        .ui-btn { display: block; width: 100%; padding: 14px 20px; margin-bottom: 12px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 12px; color: #fff; font-size: 18px; font-weight: 600; cursor: pointer; transition: all 0.1s ease; text-align: center; }
+        .ui-btn:hover { background: rgba(255, 255, 255, 0.2); }
+        .ui-btn:active { transform: scale(0.95); }
+
+        #main-menu { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; display: flex; align-items: center; justify-content: flex-start; padding-left: 50px; background: url('assets/backround/backround.png') no-repeat center center / cover; }
+        #main-menu::before { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); pointer-events: none; }
+        .logo-container { position: absolute; top: 10%; left: 50%; transform: translateX(-50%); z-index: 10; text-align: center; pointer-events: none; }
+        .rgb-logo { font-size: 90px; font-weight: 900; letter-spacing: 6px; background: linear-gradient(90deg, #ff0000, #ff7f00, #ffff00, #00ff00, #00ffff, #0000ff, #8b00ff, #ff00ff, #ff0000); background-size: 200% auto; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: rgb-move 6s linear infinite; }
+        @keyframes rgb-move { 0% { background-position: 0% center; } 100% { background-position: 200% center; } }
+        .left-panel { position: relative; width: 320px; padding: 40px; z-index: 5; }
+
+        #loading-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 2000; display: none; flex-direction: column; align-items: center; justify-content: center; background: #1a1a1a; }
+        #loading-screen h1 { font-size: 48px; margin-bottom: 40px; letter-spacing: 4px; }
+        #loading-tip { font-size: 16px; max-width: 600px; text-align: center; margin-bottom: 40px; opacity: 0.7; }
+        #loading-progress { width: 300px; height: 6px; background: #333; border-radius: 4px; overflow: hidden; }
+        #loading-progress-bar { height: 100%; width: 0%; background: #fff; }
+
+        #hud { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: none; display: none; }
+        #hud-fps { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.6); padding: 6px 15px; border-radius: 8px; font-size: 16px; font-weight: bold; opacity: 0.9; }
+        #hud-info { position: absolute; top: 60px; left: 20px; padding: 10px 15px; font-size: 14px; }
+        #hud-info div { margin-bottom: 4px; }
+        
+        #btn-fullscreen { position: absolute; top: 20px; right: 20px; background: rgba(0,0,0,0.6); padding: 10px 15px; border-radius: 8px; font-size: 20px; cursor: pointer; pointer-events: auto; }
+        
+        #minimap-container { position: absolute; bottom: 20px; right: 20px; width: 200px; height: 200px; border-radius: 50%; overflow: hidden; border: 2px solid rgba(255,255,255,0.15); }
+        #speedometer-container { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); width: 220px; height: 220px; }
+        #hud-warning { position: absolute; top: 110px; left: 50%; transform: translateX(-50%); background: rgba(255, 50, 50, 0.85); padding: 10px 25px; border-radius: 8px; font-weight: bold; display: none; }
+
+        #pause-menu { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1500; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px); }
+        #pause-menu .panel { width: 320px; padding: 40px; }
+
+        #settings-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2000; width: 450px; padding: 30px; display: none; max-height: 80vh; overflow-y: auto; }
+        .setting-row { margin-bottom: 15px; pointer-events: auto; }
+        .setting-row label { display: block; margin-bottom: 5px; font-size: 14px; opacity: 0.8; }
+        .setting-row input[type="range"] { width: 100%; pointer-events: auto; }
+        .setting-row select { width: 100%; padding: 8px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; pointer-events: auto; }
+
+        #uv-skin-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2000; width: 450px; padding: 30px; display: none; text-align: center; }
+        #uv-skin-panel h2 { margin-bottom: 20px; font-size: 24px; }
+        #uv-skin-panel p { margin-bottom: 15px; font-size: 14px; opacity: 0.9; line-height: 1.5; }
+        #uv-skin-status { font-weight: bold; margin: 15px 0; font-size: 16px; min-height: 24px; }
+        #uv-skin-download { display: none; margin-top: 20px; text-decoration: none; }
+
+        #toast-root { position: fixed; bottom: 30px; left: 30px; z-index: 3000; }
+        .toast { background: rgba(0,0,0,0.8); color: #fff; padding: 10px 20px; margin-bottom: 10px; border-radius: 8px; animation: fadeInOut 3s forwards; }
+        @keyframes fadeInOut { 0% { opacity: 0; transform: translateY(20px); } 10% { opacity: 1; transform: translateY(0); } 90% { opacity: 1; } 100% { opacity: 0; } }
+        .hidden { display: none !important; }
+
+        #mobile-controls { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 300px; z-index: 200; pointer-events: none; }
+        .m-btn { border: none; border-radius: 12px; color: white; font-weight: bold; font-size: 14px; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(5px); background: rgba(255,255,255,0.1); user-select: none; }
+        .m-btn:active { background: rgba(255,255,255,0.3); transform: scale(0.95); }
+        #steering-wheel { position: absolute; left: 30px; bottom: 30px; width: 150px; height: 150px; border: 4px solid rgba(255,255,255,0.3); border-radius: 50%; pointer-events: auto; touch-action: none; }
+        #wheel-knob { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: 20px; height: 20px; background: rgba(255,255,255,0.5); border-radius: 50%; }
+        #m-pedals { position: absolute; right: 30px; bottom: 30px; display: flex; flex-direction: column; gap: 15px; align-items: flex-end; }
+        #m-btns-top { display: flex; gap: 15px; margin-bottom: 15px; }
+        .m-square { width: 60px; height: 60px; }
+        .m-pedal { width: 80px; height: 100px; }
+    </style>
 </head>
 <body>
     <canvas id="game-canvas"></canvas>
     
-    <!-- Load game script dưới dạng module -->
-    <script type="module" src="js/main.js"></script>
+    <div id="main-menu" class="visible">
+        <div class="logo-container"><h1 class="rgb-logo">CoachVN</h1></div>
+        <div class="left-panel ui-panel">
+            <button class="ui-btn" id="btn-new-game">🚍 LÁI XE THÔI!</button>
+            <button class="ui-btn" id="btn-uv-skin">🎨 THÊM UV SKIN</button>
+            <button class="ui-btn" id="btn-settings-main">⚙ CÀI ĐẾT</button>
+        </div>
+    </div>
+
+    <div id="loading-screen" class="hidden">
+        <h1>COACHVN</h1>
+        <div id="loading-tip">HÃY LÁI XE AN TOÀN CẢ NGOÀI ĐỜI VÀ TRONG GAME</div>
+        <div id="loading-progress"><div id="loading-progress-bar"></div></div>
+    </div>
+
+    <div id="uv-skin-panel" class="ui-panel">
+        <h2>🎨 THÊM UV SKIN</h2>
+        <p>Chọn file PNG UV Skin của bạn (2048 x 1024).</p>
+        <input type="file" id="uv-skin-input" accept="image/png" style="display: none;">
+        <button class="ui-btn" id="btn-choose-skin">📁 CHỌN FILE</button>
+        <div id="uv-skin-status"></div>
+        <a id="uv-skin-download" class="ui-btn" style="background: rgba(50,255,50,0.3);">⬇ TẢI XUỐNG bus_final.png</a>
+        <button class="ui-btn" id="btn-close-uv-skin" style="margin-top: 10px;">ĐÓNG</button>
+    </div>
+
+    <div id="hud">
+        <div id="hud-fps">FPS: 0</div>
+        <div id="hud-info" class="ui-panel">
+            <div>📍 PHÚ YÊN → TP. HỒ CHÍ MINH</div>
+            <div>⏰ <span id="hud-time">06:30</span> | 🚍 <span id="hud-passengers">0</span>/34 Khách</div>
+            <div>🗺️ X: <span id="hud-x">0</span> | Z: <span id="hud-z">0</span></div>
+        </div>
+        <div id="btn-fullscreen">⛶</div>
+        <div id="minimap-container"><canvas id="minimap" width="200" height="200"></canvas></div>
+        <div id="speedometer-container"><canvas id="speedometer" width="220" height="220"></canvas></div>
+        <div id="hud-warning" class="ui-panel">⚠ CỬA SAU ĐANG MỞ</div>
+    </div>
+
+    <div id="mobile-controls">
+        <div id="steering-wheel"><div id="wheel-knob"></div></div>
+        <div id="m-pedals">
+            <div id="m-btns-top">
+                <button class="m-btn m-square" id="m-horn">📯</button>
+                <button class="m-btn m-square" id="m-light">💡</button>
+                <button class="m-btn m-square" id="m-door">🚪</button>
+            </div>
+            <div style="display: flex; gap: 15px;">
+                <button class="m-btn m-pedal" id="m-brake" style="background: rgba(255,50,50,0.4);">PHANH</button>
+                <button class="m-btn m-pedal" id="m-gas" style="background: rgba(50,255,50,0.4);">GA</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="pause-menu">
+        <div class="panel ui-panel">
+            <h2 style="font-size: 28px; margin-bottom: 25px; text-align: center;">TẠM DỪNG</h2>
+            <button class="ui-btn" id="btn-resume">▶ TIẾP TỤC NÀO</button>
+            <button class="ui-btn" id="btn-settings-pause">⚙ CÀI ĐẾT</button>
+            <button class="ui-btn" id="btn-main-menu">🏠 VỀ MENU</button>
+        </div>
+    </div>
+
+    <div id="settings-panel" class="ui-panel">
+        <h2 style="margin-bottom: 20px; text-align: center; font-size: 24px;">CÀI ĐẾT</h2>
+        <div class="setting-row">
+            <label>Chất lượng đồ họa</label>
+            <select id="setting-graphics">
+                <option value="low">Thấp (Tối ưu RAM/GPU)</option>
+                <option value="medium" selected>Trung bình</option>
+                <option value="high">Cao</option>
+            </select>
+        </div>
+        <div class="setting-row">
+            <label>Khoảng cách kết xuất (Chunks): <span id="val-render-dist">8</span></label>
+            <input type="range" id="setting-render-dist" min="2" max="16" value="8">
+        </div>
+        <div class="setting-row">
+            <label>Mật độ xe NPC: <span id="val-npc-density">15</span></label>
+            <input type="range" id="setting-npc-density" min="0" max="40" value="15">
+        </div>
+        <div class="setting-row">
+            <label>Độ nhạy Camera: <span id="val-cam-sens">30</span></label>
+            <input type="range" id="setting-cam-sens" min="0" max="100" value="30">
+        </div>
+        <div class="setting-row">
+            <label>FOV: <span id="val-fov">70</span>°</label>
+            <input type="range" id="setting-fov" min="50" max="90" value="70">
+        </div>
+        <button class="ui-btn" id="btn-apply-settings">ÁP DỤNG</button>
+        <button class="ui-btn" id="btn-close-settings">ĐÓNG</button>
+    </div>
+
+    <div id="toast-root"></div>
+
+    <script type="module" src="./js/main.js"></script>
 </body>
 </html>
