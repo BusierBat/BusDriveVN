@@ -1,4 +1,4 @@
-// js/traffic/TrafficAI.js - AI x666 (Nhận thức, Junction, Human Behavior, Bus Stop, Collision)
+// js/traffic/TrafficAI.js - AI x666 (Nhận thức, Junction, Human Behavior, Bus Stop, Collision) - OPTIMIZED
 import * as THREE from "three";
 import { createSeededRandom, lerpAngle, clamp } from "../utils.js";
 
@@ -55,8 +55,27 @@ export class TrafficAI {
     this._initPosition();
   }
 
-  _getSegment(id) { return this.roadGraph?.segments.find(s => s.id === id); }
-  _getNode(id) { return this.roadGraph?.nodes.find(n => n.id === id); }
+  _getSegment(id) {
+    if (!this.roadGraph) return null;
+    if (!this.roadGraph._segMapCache) {
+      this.roadGraph._segMapCache = new Map();
+      if (Array.isArray(this.roadGraph.segments)) {
+        for (const s of this.roadGraph.segments) this.roadGraph._segMapCache.set(s.id, s);
+      }
+    }
+    return this.roadGraph._segMapCache.get(id);
+  }
+  
+  _getNode(id) {
+    if (!this.roadGraph) return null;
+    if (!this.roadGraph._nodeMapCache) {
+      this.roadGraph._nodeMapCache = new Map();
+      if (Array.isArray(this.roadGraph.nodes)) {
+        for (const n of this.roadGraph.nodes) this.roadGraph._nodeMapCache.set(n.id, n);
+      }
+    }
+    return this.roadGraph._nodeMapCache.get(id);
+  }
 
   _initPosition() {
     if (!this.roadGraph?.segments?.length) return;
@@ -106,13 +125,24 @@ export class TrafficAI {
 
   update(deltaTime, playerPos, allVehicles) {
     if (!this.active) return;
+    
+    let distToPlayer = 0;
     if (playerPos) {
-      const d = Math.hypot(this.collider.x - playerPos.x, this.collider.z - playerPos.z);
-      this.updateInterval = d > 300 ? 1/10 : d > 150 ? 1/20 : 1/30;
+      distToPlayer = Math.hypot(this.collider.x - playerPos.x, this.collider.z - playerPos.z);
+      this.updateInterval = distToPlayer > 300 ? 1/10 : distToPlayer > 150 ? 1/20 : 1/30;
     }
+    
     this.lastUpdateTime += deltaTime;
     if (this.lastUpdateTime < this.updateInterval) return;
     const dt = this.lastUpdateTime; this.lastUpdateTime = 0;
+
+    // TỐI ƯU LOD: Xe ở xa (>200m) chỉ cập nhật đơn giản, bỏ qua AI nặng
+    if (distToPlayer > 200) {
+      this._updatePosition(dt);
+      this._updateHeading(dt);
+      this._updateVehicle();
+      return;
+    }
 
     if (this.isBus && this.stopCooldown <= 0 && this.state === AI_STATE.DRIVING) {
       if (this.random() < 0.001) {

@@ -56,3 +56,11 @@ body { overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Gene
 .hud-toast-root { position: absolute; top: 40px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 10px; align-items: center; }
 .hud-toast { padding: 12px 24px; background: rgba(15, 23, 42, 0.95); border: 1px solid rgba(100, 140, 220, 0.5); border-radius: 8px; color: #fff; font-size: 15px; font-weight: 500; animation: slideIn 0.3s ease-out; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
 @keyframes slideIn { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+/* === LOADING SCREEN ENHANCEMENT === */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+#loading-status {
+    animation: pulse 1.5s infinite ease-in-out;
+}

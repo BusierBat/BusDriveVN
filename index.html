@@ -90,11 +90,22 @@
         </div>
     </div>
 
-    <div id="loading-screen" class="hidden">
-        <h1>COACHVN</h1>
-        <div id="loading-tip">HÃY LÁI XE AN TOÀN CẢ NGOÀI ĐỜI VÀ TRONG GAME</div>
-        <div id="loading-progress"><div id="loading-progress-bar"></div></div>
-    </div>
+<!-- MÀN HÌNH LOADING ĐẸP MẮT -->
+    <div id="loading-screen" style="display:none; position:fixed; inset:0; background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); z-index:1000; flex-direction:column; justify-content:center; align-items:center; text-align:center;">
+     <div style="margin-bottom:30px;">
+        <h1 style="font-size:3rem; color:#3b82f6; text-shadow:0 0 20px rgba(59,130,246,0.5); margin:0;">🚍 COACHVN</h1>
+        <p style="color:#94a3b8; font-size:1.2rem; margin-top:10px;">Đang khởi tạo thế giới mô phỏng...</p>
+      </div>
+    
+     <div style="width:300px; height:6px; background:#334155; border-radius:3px; overflow:hidden; margin-bottom:30px;">
+        <div id="loading-progress-bar" style="width:0%; height:100%; background:#3b82f6; border-radius:3px; transition:width 0.3s ease;"></div>
+      </div>
+    
+      <div style="height:60px; display:flex; flex-direction:column; justify-content:center; align-items:center;">
+        <p id="loading-tip" style="color:#f1f5f9; font-size:1.1rem; font-style:italic; max-width:400px; line-height:1.4; opacity:0; transition:opacity 0.5s;"></p>
+        <p id="loading-status" style="color:#64748b; font-size:0.9rem; margin-top:15px;"></p>
+       </div>
+     </div>
 
     <div id="uv-skin-panel" class="ui-panel">
         <h2>🎨 THÊM UV SKIN</h2>

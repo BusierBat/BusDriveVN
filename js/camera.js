@@ -95,33 +95,32 @@ export class CameraSystem {
     this.setMode(this.modes[0]);
   }
 
-  onMouseMove(e) {
-    if (!this.isMouseDown) return;
-    const mode = this.modes[this.currentIndex];
-    const moveX = Math.max(-100, Math.min(100, e.movementX || 0));
-    const moveY = Math.max(-100, Math.min(100, e.movementY || 0));
-
-    const sensX = (this.settings.invertX ? -1 : 1) * this.settings.cameraSensitivity * moveX;
-    const sensY = (this.settings.invertY ? -1 : 1) * this.settings.cameraSensitivity * moveY;
-
-    if (isNaN(sensX) || isNaN(sensY)) return;
-
-    if (mode === 'outside') {
-      this.orbitYaw -= sensX;
-      this.orbitPitch += sensY;
-      this.orbitPitch = Math.max(-Math.PI / 1.7, Math.min(Math.PI / 1.7, this.orbitPitch));
-    } else if (mode.startsWith('seat_')) {
-      this.bedLookYaw -= sensX;
-      this.bedLookPitch += sensY;
-      this.bedLookYaw = ((this.bedLookYaw + Math.PI * 10) % (Math.PI * 2)) - Math.PI;
-      this.bedLookPitch = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, this.bedLookPitch));
-    } else {
-      this.cabinYaw -= sensX;
-      this.cabinPitch += sensY;
-      this.cabinYaw = ((this.cabinYaw + Math.PI * 10) % (Math.PI * 2)) - Math.PI;
-      this.cabinPitch = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, this.cabinPitch));
+    onMouseMove(e) {
+        if (!this.isMouseDown) return;
+        const mode = this.modes[this.currentIndex];
+        const moveX = Math.max(-100, Math.min(100, e.movementX || 0));
+        const moveY = Math.max(-100, Math.min(100, e.movementY || 0));
+        
+        // CHUẨN HÓA: Kéo chuột PHẢI -> nhìn PHẢI, Kéo chuột LÊN -> nhìn LÊN
+        const sensX = (this.settings.invertX ? -1 : 1) * this.settings.cameraSensitivity * moveX;
+        const sensY = (this.settings.invertY ? -1 : 1) * this.settings.cameraSensitivity * moveY;
+        
+        if (isNaN(sensX) || isNaN(sensY)) return;
+        if (mode === 'outside') {
+            this.orbitYaw -= sensX;
+            this.orbitPitch -= sensY;
+            this.orbitPitch = Math.max(-Math.PI / 1.7, Math.min(Math.PI / 1.7, this.orbitPitch));
+        } else if (mode.startsWith('seat_')) {
+            this.bedLookYaw -= sensX;
+            this.bedLookPitch -= sensY;
+            this.bedLookYaw = ((this.bedLookYaw + Math.PI * 10) % (Math.PI * 2)) - Math.PI;
+            this.bedLookPitch = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, this.bedLookPitch));
+        } else {
+            this.cabinYaw -= sensX;
+            this.cabinPitch -= sensY;
+            this.cabinPitch = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, this.cabinPitch));
+        }
     }
-  }
 
   onWheel(e) {
     if (this.modes[this.currentIndex] !== 'outside') return;
