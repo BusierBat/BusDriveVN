@@ -1,143 +1,110 @@
-// js/map/roadGenerator.js - Sinh Road Mesh 3D bám theo Graph, Asphalt đen đồng nhất
+// js/map/roadGenerator.js - REAL ROAD GENERATOR (QL1A, EXPRESSWAY, MEDIAN, LIGHTS)
 import * as THREE from "three";
+import { roadProfiles } from "./data/roadNetworkData.js";
 
-// Shared Materials (Tối ưu performance)
-let asphaltMaterial = null;
-let lineMaterial = null;
-let medianMaterial = null;
-let guardrailMaterial = null;
+export const asphaltMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9 });
+const lineMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
+const medianMaterial = new THREE.MeshStandardMaterial({ color: 0x2d6a2d, roughness: 1 }); // Màu xanh lá cây
 
-export function getAsphaltMaterial() {
-    if (!asphaltMaterial) {
-        asphaltMaterial = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.95, metalness: 0.0 });
-    }
-    return asphaltMaterial;
-}
+// Đèn đường (Share Geo)
+const streetLightPoleGeo = new THREE.CylinderGeometry(0.2, 0.2, 8);
+const streetLightLampGeo = new THREE.SphereGeometry(0.5, 8, 8);
+const streetLightPoleMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.8 });
+const streetLightLampMat = new THREE.MeshStandardMaterial({ color: 0xffffaa, emissive: 0xffffaa, emissiveIntensity: 1 });
 
-function getLineMaterial() {
-    if (!lineMaterial) lineMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
-    return lineMaterial;
-}
+export function getAsphaltMaterial() { return asphaltMaterial; }
 
-function getMedianMaterial() {
-    if (!medianMaterial) medianMaterial = new THREE.MeshStandardMaterial({ color: 0xffcc00, roughness: 0.8 });
-    return medianMaterial;
-}
-
-function getGuardrailMaterial() {
-    if (!guardrailMaterial) guardrailMaterial = new THREE.MeshStandardMaterial({ color: 0x999999, roughness: 0.5, metalness: 0.5 });
-    return guardrailMaterial;
-}
-
-export function createRoadSegmentMesh(seg, fromPos, toPos) {
+export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
     const group = new THREE.Group();
-    const dx = toPos.x - fromPos.x;
-    const dz = toPos.z - fromPos.z;
-    const length = Math.hypot(dx, dz);
-    if (length === 0) return group;
+    group.name = `roads_chunk_${chunkX}_${chunkZ}`;
     
-    const angle = Math.atan2(dx, dz);
-    const midX = (fromPos.x + toPos.x) / 2;
-    const midZ = (fromPos.z + toPos.z) / 2;
-    
-    // 1. Mặt đường (Asphalt Đen)
-    const roadGeo = new THREE.BoxGeometry(seg.width, 0.1, length);
-    const roadMesh = new THREE.Mesh(roadGeo, getAsphaltMaterial());
-    roadMesh.position.set(midX, 0.05, midZ);
-    roadMesh.rotation.y = angle;
-    group.add(roadMesh);
-    
-    // 2. Vạch kẻ sơn & Median
-    const edgeOffset = seg.width / 2 - 0.3;
-    const edgeGeo = new THREE.BoxGeometry(0.2, 0.11, length);
-    
-    // Vạch mép đường (Trắng)
-    const edge1 = new THREE.Mesh(edgeGeo, getLineMaterial());
-    edge1.position.set(midX, 0.11, midZ);
-    edge1.rotation.y = angle;
-    edge1.translateX(edgeOffset);
-    group.add(edge1);
-    
-    const edge2 = new THREE.Mesh(edgeGeo, getLineMaterial());
-    edge2.position.set(midX, 0.11, midZ);
-    edge2.rotation.y = angle;
-    edge2.translateX(-edgeOffset);
-    group.add(edge2);
-    
-    // Vạch giữa đường / Median
-    if (seg.twoWay) {
-        const centerGeo = new THREE.BoxGeometry(0.3, 0.12, length);
-        const centerMat = (seg.type === 'highway' || seg.type === 'expressway') ? getMedianMaterial() : getLineMaterial();
-        const centerMesh = new THREE.Mesh(centerGeo, centerMat);
-        centerMesh.position.set(midX, 0.12, midZ);
-        centerMesh.rotation.y = angle;
-        group.add(centerMesh);
-    }
-    
-    // 3. Guardrail (Lan can) cho cao tốc
-    if (seg.type === 'highway' || seg.type === 'expressway') {
-        const railGeo = new THREE.BoxGeometry(0.1, 0.5, length);
-        const rail1 = new THREE.Mesh(railGeo, getGuardrailMaterial());
-        rail1.position.set(midX, 0.3, midZ);
-        rail1.rotation.y = angle;
-        rail1.translateX(seg.width / 2 + 0.2);
-        group.add(rail1);
-        
-        const rail2 = new THREE.Mesh(railGeo, getGuardrailMaterial());
-        rail2.position.set(midX, 0.3, midZ);
-        rail2.rotation.y = angle;
-        rail2.translateX(-(seg.width / 2 + 0.2));
-        group.add(rail2);
-    }
+    const chunkMinX = chunkX * chunkSize;
+    const chunkMaxX = chunkMinX + chunkSize;
+    const chunkMinZ = chunkZ * chunkSize;
+    const chunkMaxZ = chunkMinZ + chunkSize;
 
-        // ĐÈN ĐƯỜNG: Thêm cột đèn và emissive dọc 2 bên lề (tối ưu không tạo PointLight)
-    if (seg.type !== 'tunnel') {
-        const numLights = Math.floor(length / 30); // Cứ 30m 1 đèn
-        const poleMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.8 });
-        const lampMat = new THREE.MeshStandardMaterial({ color: 0xffffaa, emissive: 0xffffaa, emissiveIntensity: 0 });
-        
-        for (let i = 0; i < numLights; i++) {
-            const t = (i + 0.5) / numLights;
-            const x = fromPos.x + (toPos.x - fromPos.x) * t;
-            const z = fromPos.z + (toPos.z - fromPos.z) * t;
-            
-            const rx = Math.cos(angle); // Right vector
-            const rz = -Math.sin(angle);
-            const offset = seg.width / 2 + 1;
-            
-            // Đèn bên trái
-            const poleL = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 7), poleMat);
-            poleL.position.set(x + rx * offset, 3.5, z + rz * offset);
-            group.add(poleL);
-            const lampL = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 8), lampMat);
-            lampL.position.set(x + rx * offset, 7, z + rz * offset);
-            group.add(lampL);
-            
-            // Đèn bên phải
-            const poleR = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 7), poleMat);
-            poleR.position.set(x - rx * offset, 3.5, z - rz * offset);
-            group.add(poleR);
-            const lampR = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 8), lampMat);
-            lampR.position.set(x - rx * offset, 7, z - rz * offset);
-            group.add(lampR);
+    const nodeMap = new Map(roadNetwork.nodes.map(n => [n.id, n]));
+
+    for (const seg of roadNetwork.segments) {
+        const fromNode = nodeMap.get(seg.from);
+        const toNode = nodeMap.get(seg.to);
+        if (!fromNode || !toNode) continue;
+
+        const p1 = new THREE.Vector3(fromNode.position.x, 0.15, fromNode.position.z);
+        const p2 = new THREE.Vector3(toNode.position.x, 0.15, toNode.position.z);
+
+        const segMinX = Math.min(p1.x, p2.x);
+        const segMaxX = Math.max(p1.x, p2.x);
+        const segMinZ = Math.min(p1.z, p2.z);
+        const segMaxZ = Math.max(p1.z, p2.z);
+        if (segMaxX < chunkMinX || segMinX > chunkMaxX || segMaxZ < chunkMinZ || segMinZ > chunkMaxZ) continue;
+
+        const dir = new THREE.Vector3().subVectors(p2, p1);
+        const length = dir.length();
+        if (length === 0) continue;
+        dir.normalize();
+
+        const profile = roadProfiles[seg.type] || roadProfiles.Residential;
+        const width = profile.width;
+        const halfWidth = width / 2;
+
+        // 1. MẶT ĐƯỜNG
+        const roadGeo = new THREE.PlaneGeometry(width, length);
+        const roadMesh = new THREE.Mesh(roadGeo, asphaltMaterial);
+        roadMesh.rotation.x = -Math.PI / 2;
+        roadMesh.position.copy(p1).addScaledVector(dir, length / 2);
+        roadMesh.position.y = 0.15;
+        roadMesh.rotation.z = Math.atan2(dir.x, dir.z);
+        group.add(roadMesh);
+
+        // 2. DẢI PHÂN CÁCH XANH (MEDIAN)
+        if (profile.median) {
+            const medianGeo = new THREE.BoxGeometry(2, 0.5, length);
+            const medianMesh = new THREE.Mesh(medianGeo, medianMaterial);
+            medianMesh.position.copy(roadMesh.position);
+            medianMesh.position.y = 0.4;
+            medianMesh.rotation.y = Math.atan2(dir.x, dir.z);
+            group.add(medianMesh);
+        }
+
+        // 3. VẠCH KẺ ĐƯỜNG
+        if (seg.twoWay && !profile.median) {
+            const lineGeo = new THREE.PlaneGeometry(0.2, length);
+            const lineMesh = new THREE.Mesh(lineGeo, lineMaterial);
+            lineMesh.rotation.x = -Math.PI / 2;
+            lineMesh.position.copy(roadMesh.position);
+            lineMesh.position.y = 0.16;
+            lineMesh.rotation.z = Math.atan2(dir.x, dir.z);
+            group.add(lineMesh);
+        }
+
+        // 4. ĐÈN ĐƯỜNG TRÊN MEDIAN (Chiếu 2 bên)
+        if (profile.median && seg.type !== 'tunnel') {
+            const numLights = Math.floor(length / 40);
+            for (let i = 0; i < numLights; i++) {
+                const t = (i + 0.5) / numLights;
+                const lightPos = p1.clone().addScaledVector(dir, length * t);
+                if (lightPos.x < chunkMinX || lightPos.x > chunkMaxX || lightPos.z < chunkMinZ || lightPos.z > chunkMaxZ) continue;
+
+                const pole = new THREE.Mesh(streetLightPoleGeo, streetLightPoleMat);
+                pole.position.copy(lightPos);
+                pole.position.y = 4;
+                group.add(pole);
+                
+                const lamp = new THREE.Mesh(streetLightLampGeo, streetLightLampMat);
+                lamp.position.copy(lightPos);
+                lamp.position.y = 8;
+                group.add(lamp);
+
+                // TỐI ƯU: Đèn thật chiếu xuống đường (PointLight)
+                const pl = new THREE.PointLight(0xffffaa, 1.5, 30, 2);
+                pl.position.copy(lightPos);
+                pl.position.y = 8;
+                group.add(pl);
+            }
         }
     }
-    
     return group;
 }
 
-export function createRoadNetworkMesh(roadNetwork) {
-    const group = new THREE.Group();
-    group.name = "road_network";
-    
-    for (const seg of roadNetwork.segments) {
-        const fromNode = roadNetwork.nodes.find(n => n.id === seg.from);
-        const toNode = roadNetwork.nodes.find(n => n.id === seg.to);
-        if (!fromNode?.position || !toNode?.position) continue;
-        
-        const segMesh = createRoadSegmentMesh(seg, fromNode.position, toNode.position);
-        group.add(segMesh);
-    }
-    
-    return group;
-}
+export function createRoadNetworkMesh(roadNetwork) { return new THREE.Group(); }

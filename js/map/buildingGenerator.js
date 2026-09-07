@@ -1,86 +1,101 @@
-// js/map/buildingGenerator.js - Sinh nhà lề đường + mái (TĂNG MẬT ĐỘ)
+// js/map/buildingGenerator.js - DIVERSE BUILDINGS (SAFE & TALL)
 import * as THREE from "three";
+import { roadNetwork } from "./data/roadNetworkData.js";
 
-const buildingMaterials = [
-    new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.8 }),
-    new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.8 }),
-    new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.8 })
-];
-const roofMat = new THREE.MeshStandardMaterial({ color: 0x8b4513, roughness: 0.9 });
-const windowMat = new THREE.MeshStandardMaterial({ color: 0x223344, roughness: 0.3, metalness: 0.5 });
+const sharedHouseBodyGeo = new THREE.BoxGeometry(1, 1, 1);
+const sharedHouseRoofGeo = new THREE.BoxGeometry(1.1, 0.5, 1.1);
 
-export function generateBuildingsForChunk(chunkX, chunkZ, chunkSize, roadNetwork) {
+export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders }) {
     const group = new THREE.Group();
-    const colliders = [];
-    const minX = chunkX * chunkSize;
-    const minZ = chunkZ * chunkSize;
-    const maxX = minX + chunkSize;
-    const maxZ = minZ + chunkSize;
+    group.name = "buildings";
     
-    const segsInChunk = [];
-    for (const seg of roadNetwork.segments) {
-        const from = roadNetwork.nodes.find(n => n.id === seg.from).position;
-        const to = roadNetwork.nodes.find(n => n.id === seg.to).position;
-        // Mở rộng box check để tranh bị miss đoạn đường cắt biên chunk
-        if ((from.x >= minX && from.x <= maxX && from.z >= minZ && from.z <= maxZ) ||
-            (to.x >= minX && to.x <= maxX && to.z >= minZ && to.z <= maxZ)) {
-            segsInChunk.push({ seg, from, to });
+    const buildingMaterials = [
+        new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.8 }),
+        new THREE.MeshStandardMaterial({ color: 0xdedede, roughness: 0.8 }),
+        new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 }),
+        new THREE.MeshStandardMaterial({ color: 0x88aabb, roughness: 0.6 })
+    ];
+    const roofMaterials = [
+        new THREE.MeshStandardMaterial({ color: 0x8b4513, roughness: 0.9 }),
+        new THREE.MeshStandardMaterial({ color: 0xa0522d, roughness: 0.9 }),
+        new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 })
+    ];
+
+    // Lấy danh sách road segments an toàn
+    const nodes = new Map(roadNetwork.nodes.map(n => [n.id, n]));
+    const segments = [];
+    for (const s of roadNetwork.segments) {
+        if (!s || !s.from || !s.to) continue;
+        const f = nodes.get(s.from);
+        const t = nodes.get(s.to);
+        if (f?.position && t?.position) {
+            segments.push({
+                p1: new THREE.Vector3(f.position.x, 0, f.position.z),
+                p2: new THREE.Vector3(t.position.x, 0, t.position.z),
+                width: 24,
+                type: s.type
+            });
         }
     }
-    
-    if (segsInChunk.length === 0) return group;
-    
-    for (const item of segsInChunk) {
-        const dx = item.to.x - item.from.x;
-        const dz = item.to.z - item.from.z;
-        const len = Math.hypot(dx, dz);
-        if (len === 0) continue;
+
+    if (segments.length === 0) return group; // FIX LỖI: Trả về rỗng nếu không có đường
+
+    const startX = chunkX * chunkSize;
+    const startZ = chunkZ * chunkSize;
+    const buildingCount = Math.floor(random() * 10) + 5;
+
+    for (let i = 0; i < buildingCount; i++) {
+        const seg = segments[Math.floor(random() * segments.length)];
+        if (!seg || !seg.p1 || !seg.p2) continue; // FIX LỖI: Kiểm tra an toàn tuyệt đối
         
-        const angle = Math.atan2(dx, dz);
-        const rx = dz / len; // Right vector
-        const rz = -dx / len;
-        const w = item.seg.width || 20;
+        const segDir = new THREE.Vector3().subVectors(seg.p2, seg.p1);
+        const segLen = segDir.length();
+        if (segLen === 0) continue;
+        segDir.normalize();
         
-        // TĂNG MẬT ĐỘ: Spawn 3-5 nhà mỗi segment
-        const numHouses = 3 + Math.floor(Math.random() * 3); 
-        for (let i = 0; i < numHouses; i++) {
-            const t = Math.random();
-            const px = item.from.x + dx * t;
-            const pz = item.from.z + dz * t;
-            const side = Math.random() > 0.5 ? 1 : -1;
-            const offset = w / 2 + 6 + Math.random() * 15; // Cách mặt đường 6-21m
-            
-            const x = px + rx * offset * side;
-            const z = pz + rz * offset * side;
-            
-            if (x < minX || x > maxX || z < minZ || z > maxZ) continue;
-            
-            const h = 4 + Math.random() * 6;
-            const wH = 8 + Math.random() * 4;
-            const dH = 8 + Math.random() * 4;
-            
-            const body = new THREE.Mesh(new THREE.BoxGeometry(wH, h, dH), buildingMaterials[Math.floor(Math.random() * buildingMaterials.length)]);
-            body.position.set(x, h/2, z);
-            body.rotation.y = angle;
-            group.add(body);
-            
-            const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(wH, dH) * 0.8, h * 0.4, 4), roofMat);
-            roof.position.set(x, h + h * 0.2, z);
-            roof.rotation.y = angle;
-            group.add(roof);
-            
-            const winGeo = new THREE.PlaneGeometry(1.5, 1.5);
-            const win1 = new THREE.Mesh(winGeo, windowMat);
-            win1.position.set(x, h/2, z);
-            win1.position.x += Math.sin(angle) * (wH/2 + 0.01);
-            win1.position.z += Math.cos(angle) * (wH/2 + 0.01);
-            win1.rotation.y = angle;
-            group.add(win1);
-            
-            colliders.push({ x, z, r: Math.max(wH, dH) / 2 });
+        const t = random();
+        const posOnSeg = seg.p1.clone().addScaledVector(segDir, segLen * t);
+        
+        const rightDir = new THREE.Vector3(-segDir.z, 0, segDir.x);
+        const side = random() > 0.5 ? 1 : -1;
+        const offset = seg.width / 2 + 15 + random() * 20;
+        const spawnPos = posOnSeg.clone().addScaledVector(rightDir, side * offset);
+        
+        if (spawnPos.x < startX || spawnPos.x > startX + chunkSize || spawnPos.z < startZ || spawnPos.z > startZ + chunkSize) continue;
+
+        const width = 8 + random() * 12;
+        const depth = 8 + random() * 12;
+        
+        // Logic nhà cao tầng vs nhà lùn
+        const isCityRoad = seg.type === 'Urban';
+        const height = isCityRoad ? (random() > 0.7 ? 30 + random() * 30 : 8 + random() * 15) : (6 + random() * 10);
+
+        const body = new THREE.Mesh(sharedHouseBodyGeo, buildingMaterials[Math.floor(random() * buildingMaterials.length)]);
+        body.position.copy(spawnPos);
+        body.position.y = height / 2;
+        body.scale.set(width, height, depth);
+        body.updateMatrix();
+        group.add(body);
+
+        const roof = new THREE.Mesh(sharedHouseRoofGeo, roofMaterials[Math.floor(random() * roofMaterials.length)]);
+        roof.position.copy(spawnPos);
+        roof.position.y = height + 0.25;
+        roof.scale.set(width, 1, depth);
+        roof.updateMatrix();
+        group.add(roof);
+
+        if (colliders) {
+            colliders.push({ x: spawnPos.x, z: spawnPos.z, r: Math.max(width, depth) / 2, type: 'static', chunkKey: `${chunkX},${chunkZ}` });
         }
     }
-    
-    group.userData.colliders = colliders;
     return group;
+}
+
+function distanceToSegment(p, v, w) {
+    const l2 = v.distanceToSquared(w);
+    if (l2 === 0) return p.distanceTo(v);
+    let t = ((p.x - v.x) * (w.x - v.x) + (p.z - v.z) * (w.z - v.z)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    const proj = new THREE.Vector3(v.x + t * (w.x - v.x), 0, v.z + t * (w.z - v.z));
+    return p.distanceTo(proj);
 }

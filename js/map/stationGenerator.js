@@ -1,90 +1,99 @@
-// js/map/stationGenerator.js - Bến xe cổng rào biển sáng
-import * as THREE from 'three';
-import { getAsphaltMaterial } from './roadGenerator.js';
+// js/map/stationGenerator.js - GENERATE STATIONS & GAS CANOPY
+import * as THREE from "three";
+import { getAsphaltMaterial } from "./roadGenerator.js";
+
+const stationMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 });
+const roofMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.6 });
+const canopyMat = new THREE.MeshStandardMaterial({ color: 0xe11d48, roughness: 0.5 }); // Đỏ Petrolimex
+const lineMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
 
 export function createBusStation(poi, parentGroup, parkingSlotsArray) {
     const group = new THREE.Group();
-    group.name = poi.id;
-    group.position.set(poi.position.x, 0, poi.position.z);
-    const w = poi.size.width, h = poi.size.height, d = poi.size.depth;
-    
-    const groundMat = getAsphaltMaterial();
-    const ground = new THREE.Mesh(new THREE.BoxGeometry(w, 0.2, d), groundMat);
-    ground.position.y = 0.1;
-    group.add(ground);
-    
-    const buildingMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.6, metalness: 0.2 });
-    const mainBuilding = new THREE.Mesh(new THREE.BoxGeometry(w * 0.35, h, d * 0.3), buildingMat);
-    mainBuilding.position.set(0, h/2, -d * 0.15);
-    group.add(mainBuilding);
-    
-    // Hàng rào & Cổng
-    const fenceMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.7 });
-    const fenceHeight = 2;
-    const fenceGeo = new THREE.BoxGeometry(0.2, fenceHeight, d * 0.8);
-    
-    const fenceL = new THREE.Mesh(fenceGeo, fenceMat);
-    fenceL.position.set(-w/2 + 1, fenceHeight/2, d * 0.4);
-    group.add(fenceL);
-    const fenceR = new THREE.Mesh(fenceGeo, fenceMat);
-    fenceR.position.set(w/2 - 1, fenceHeight/2, d * 0.4);
-    group.add(fenceR);
-    
-    // Biển tên phát sáng
-    const canvas = document.createElement('canvas');
-    canvas.width = 512; canvas.height = 128;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#001f3f';
-    ctx.fillRect(0, 0, 512, 128);
-    ctx.fillStyle = '#00ff99';
-    ctx.font = 'bold 42px Arial';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(poi.name, 256, 64);
-    const texture = new THREE.CanvasTexture(canvas);
-    
-    const signMat = new THREE.MeshStandardMaterial({ map: texture, emissive: 0xffffff, emissiveIntensity: 1.5, emissiveMap: texture, side: THREE.DoubleSide });
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(w * 0.4, 3), signMat);
-    sign.position.set(0, h + 2, d * 0.4);
-    group.add(sign);
-    
-    // Đèn chiếu sáng biển
-    const signLight = new THREE.PointLight(0x00ff99, 10, 30, 2);
-    signLight.position.set(0, h + 2, d * 0.4 + 1);
-    group.add(signLight);
-    
-    // Vạch đỗ xe
-    const slotCount = poi.parkingSlots || 20;
-    const spacing = 4.5;
-    const slotBaseZ = d * 0.3;
-    const halfSlots = Math.floor(slotCount / 2);
-    for (let i = 0; i < slotCount; i++) {
-        const x = (i - halfSlots) * spacing;
-        const z = slotBaseZ;
-        const slotMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
-        const slotMesh = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.05, 5.5), slotMat);
-        slotMesh.position.set(x, 0.15, z);
-        group.add(slotMesh);
-        
-        if (parkingSlotsArray) {
-            parkingSlotsArray.push({
-                position: new THREE.Vector3(poi.position.x + x, 0, poi.position.z + z),
-                rotation: 0, width: 2.8, length: 5.5, occupied: false, type: 'coach', index: i, station: poi.id
-            });
-        }
+    group.name = poi.name || "Bus Station";
+    const w = Math.min((poi.size?.width || 500) / 20, 50);
+    const h = Math.min((poi.size?.height || 50) / 5, 15);
+    const d = Math.min((poi.size?.depth || 400) / 20, 40);
+
+    const building = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), stationMat);
+    building.position.set(poi.position.x, h / 2, poi.position.z - d/2);
+    group.add(building);
+
+    const platform = new THREE.Mesh(new THREE.PlaneGeometry(w * 1.5, d * 2), getAsphaltMaterial());
+    platform.rotation.x = -Math.PI / 2;
+    platform.position.set(poi.position.x, 0.1, poi.position.z);
+    group.add(platform);
+
+    const numSlots = poi.parkingSlots || 5;
+    poi._parkingTransforms = [];
+    for (let i = 0; i < numSlots; i++) {
+        const slotX = poi.position.x - (w / 2) + 5 + (i * 6);
+        const slotZ = poi.position.z + (d / 2) + 10;
+        poi._parkingTransforms.push({ x: slotX, z: slotZ, heading: Math.PI });
+        const line = new THREE.Mesh(new THREE.PlaneGeometry(5, 2), lineMat);
+        line.rotation.x = -Math.PI / 2;
+        line.position.set(slotX, 0.15, slotZ);
+        group.add(line);
+        if (parkingSlotsArray) parkingSlotsArray.push({ x: slotX, z: slotZ, rotation: Math.PI, occupied: true });
     }
-    
     parentGroup.add(group);
-    return group;
 }
 
 export function createRestStop(poi, parentGroup) {
     const group = new THREE.Group();
-    group.name = poi.id;
-    group.position.set(poi.position.x, 0, poi.position.z);
-    const w = poi.size.width, h = poi.size.height, d = poi.size.depth;
-    const ground = new THREE.Mesh(new THREE.BoxGeometry(w, 0.2, d), getAsphaltMaterial());
-    ground.position.y = 0.1; group.add(ground);
+    group.name = poi.name || "Rest Stop";
+    const w = 30, h = 10, d = 20;
+    const building = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), stationMat);
+    building.position.set(poi.position.x, h / 2, poi.position.z - d/2);
+    group.add(building);
+    const platform = new THREE.Mesh(new THREE.PlaneGeometry(w * 2, d * 2), getAsphaltMaterial());
+    platform.rotation.x = -Math.PI / 2;
+    platform.position.set(poi.position.x, 0.1, poi.position.z);
+    group.add(platform);
     parentGroup.add(group);
-    return group;
+}
+
+// HÀM MỚI: TẠO CÂY XĂNG
+export function createGasStation(poi, parentGroup) {
+    const group = new THREE.Group();
+    group.name = poi.name || "Gas Station";
+    const w = Math.min((poi.size?.width || 200) / 20, 20);
+    const d = Math.min((poi.size?.depth || 100) / 20, 10);
+
+    // Nền
+    const platform = new THREE.Mesh(new THREE.PlaneGeometry(w * 2, d * 3), getAsphaltMaterial());
+    platform.rotation.x = -Math.PI / 2;
+    platform.position.set(poi.position.x, 0.1, poi.position.z);
+    group.add(platform);
+
+    // Cửa hàng (Shop)
+    const shop = new THREE.Mesh(new THREE.BoxGeometry(w, 5, d), stationMat);
+    shop.position.set(poi.position.x, 2.5, poi.position.z - d);
+    group.add(shop);
+
+    // Má che máy bơm (Canopy)
+    const canopy = new THREE.Mesh(new THREE.BoxGeometry(w * 1.5, 0.5, d * 1.5), canopyMat);
+    canopy.position.set(poi.position.x, 6, poi.position.z + 2);
+    group.add(canopy);
+
+    // Cột chống mái
+    for(let i=-1; i<=1; i+=2) {
+        const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 6), stationMat);
+        pillar.position.set(poi.position.x + (w/2)*i, 3, poi.position.z + 2);
+        group.add(pillar);
+    }
+
+    // Parking slots
+    const numSlots = poi.parkingSlots || 3;
+    poi._parkingTransforms = [];
+    for (let i = 0; i < numSlots; i++) {
+        const slotX = poi.position.x - 5 + (i * 5);
+        const slotZ = poi.position.z + d + 5;
+        poi._parkingTransforms.push({ x: slotX, z: slotZ, heading: 0 });
+        const line = new THREE.Mesh(new THREE.PlaneGeometry(4, 2), lineMat);
+        line.rotation.x = -Math.PI / 2;
+        line.position.set(slotX, 0.15, slotZ);
+        group.add(line);
+    }
+
+    parentGroup.add(group);
 }
