@@ -1,12 +1,13 @@
-// js/map/roadGenerator.js - REAL ROAD GENERATOR (QL1A, EXPRESSWAY, MEDIAN, LIGHTS)
+// js/map/roadGenerator.js - QL1A vs HIGHWAY VISUALS
 import * as THREE from "three";
 import { roadProfiles } from "./data/roadNetworkData.js";
 
 export const asphaltMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9 });
 const lineMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
-const medianMaterial = new THREE.MeshStandardMaterial({ color: 0x2d6a2d, roughness: 1 }); // Màu xanh lá cây
+const medianGreenMat = new THREE.MeshStandardMaterial({ color: 0x2d6a2d, roughness: 1 });
+const medianBarrierMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.8 });
+const guardrailMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.4, metalness: 0.8 });
 
-// Đèn đường (Share Geo)
 const streetLightPoleGeo = new THREE.CylinderGeometry(0.2, 0.2, 8);
 const streetLightLampGeo = new THREE.SphereGeometry(0.5, 8, 8);
 const streetLightPoleMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.8 });
@@ -44,7 +45,7 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
         if (length === 0) continue;
         dir.normalize();
 
-        const profile = roadProfiles[seg.type] || roadProfiles.Residential;
+        const profile = roadProfiles[seg.type] || roadProfiles.local;
         const width = profile.width;
         const halfWidth = width / 2;
 
@@ -57,29 +58,45 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
         roadMesh.rotation.z = Math.atan2(dir.x, dir.z);
         group.add(roadMesh);
 
-        // 2. DẢI PHÂN CÁCH XANH (MEDIAN)
+        // 2. DẢI PHÂN CÁCH (QL1A vs CAO TỐC)
         if (profile.median) {
-            const medianGeo = new THREE.BoxGeometry(2, 0.5, length);
-            const medianMesh = new THREE.Mesh(medianGeo, medianMaterial);
-            medianMesh.position.copy(roadMesh.position);
-            medianMesh.position.y = 0.4;
-            medianMesh.rotation.y = Math.atan2(dir.x, dir.z);
-            group.add(medianMesh);
+            const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+            if (profile.medianType === 'green') {
+                // QL1A: Dải cỏ xanh
+                const medianGeo = new THREE.BoxGeometry(2, 0.5, length);
+                const medianMesh = new THREE.Mesh(medianGeo, medianGreenMat);
+                medianMesh.position.copy(mid);
+                medianMesh.position.y = 0.4;
+                medianMesh.rotation.y = Math.atan2(dir.x, dir.z);
+                group.add(medianMesh);
+            } else if (profile.medianType === 'barrier') {
+                // CAO TỐC: Vách bê tông ~1m
+                const barrierGeo = new THREE.BoxGeometry(1, 1, length);
+                const barrierMesh = new THREE.Mesh(barrierGeo, medianBarrierMat);
+                barrierMesh.position.copy(mid);
+                barrierMesh.position.y = 0.6;
+                barrierMesh.rotation.y = Math.atan2(dir.x, dir.z);
+                group.add(barrierMesh);
+                
+                // Thêm hàng rào hai bên cao tốc
+                const guardrailGeo = new THREE.BoxGeometry(0.2, 1, length);
+                const rightDir = new THREE.Vector3(-dir.z, 0, dir.x);
+                const leftGuardrail = new THREE.Mesh(guardrailGeo, guardrailMat);
+                leftGuardrail.position.copy(mid).addScaledVector(rightDir, halfWidth + 0.5);
+                leftGuardrail.position.y = 0.5;
+                leftGuardrail.rotation.y = Math.atan2(dir.x, dir.z);
+                group.add(leftGuardrail);
+                
+                const rightGuardrail = new THREE.Mesh(guardrailGeo, guardrailMat);
+                rightGuardrail.position.copy(mid).addScaledVector(rightDir, -(halfWidth + 0.5));
+                rightGuardrail.position.y = 0.5;
+                rightGuardrail.rotation.y = Math.atan2(dir.x, dir.z);
+                group.add(rightGuardrail);
+            }
         }
 
-        // 3. VẠCH KẺ ĐƯỜNG
-        if (seg.twoWay && !profile.median) {
-            const lineGeo = new THREE.PlaneGeometry(0.2, length);
-            const lineMesh = new THREE.Mesh(lineGeo, lineMaterial);
-            lineMesh.rotation.x = -Math.PI / 2;
-            lineMesh.position.copy(roadMesh.position);
-            lineMesh.position.y = 0.16;
-            lineMesh.rotation.z = Math.atan2(dir.x, dir.z);
-            group.add(lineMesh);
-        }
-
-        // 4. ĐÈN ĐƯỜNG TRÊN MEDIAN (Chiếu 2 bên)
-        if (profile.median && seg.type !== 'tunnel') {
+        // 3. ĐÈN ĐƯỜNG (REAL POINT LIGHT)
+        if (seg.type !== 'tunnel') {
             const numLights = Math.floor(length / 40);
             for (let i = 0; i < numLights; i++) {
                 const t = (i + 0.5) / numLights;
@@ -96,10 +113,11 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
                 lamp.position.y = 8;
                 group.add(lamp);
 
-                // TỐI ƯU: Đèn thật chiếu xuống đường (PointLight)
+                // TẠO POINT LIGHT THẬT CHIẾU SÁNG XUỐNG MẶT ĐƯỜNG
                 const pl = new THREE.PointLight(0xffffaa, 1.5, 30, 2);
                 pl.position.copy(lightPos);
                 pl.position.y = 8;
+                pl.userData.isStreetLight = true; // Đánh dấu để LightingSystem bật/tắt
                 group.add(pl);
             }
         }

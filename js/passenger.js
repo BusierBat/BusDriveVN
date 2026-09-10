@@ -1,18 +1,26 @@
-// js/passenger.js - HỆ THỐNG HÀNH KHÁCH (OPTIMIZED NO GC)
+// js/passenger.js - HỆ THỐNG HÀNH KHÁCH (OPTIMIZED & SAFE)
 import * as THREE from "three";
 const _tmpLerpTarget = new THREE.Vector3();
 let _passengerUpdateTimer = 0;
 
 export function createPassengerSystem({ scene, map, npc, bus, ui }) {
+    // Null-check an toàn tuyệt đối
+    if (!scene || !bus || !npc) {
+        console.error("PassengerSystem thiếu dependency quan trọng!");
+        return { update: () => {}, pickUpPassengers: () => 0, dropOffPassengers: () => 0, getActiveZones: () => [], onboardPassengers: [] };
+    }
+
     const passengerGroup = new THREE.Group();
     passengerGroup.name = "passengers";
     scene.add(passengerGroup);
+    
     let waitingPassengers = [];
     let onboardPassengers = [];
     const MAX_PASSENGERS = 24;
     const PICKUP_RANGE = 25;
     const SKIN_COLORS = [0xe8c9a0, 0xd4a574, 0xc4956a, 0xf5d6b8];
     const CLOTH_COLORS = [0x4a6fa5, 0xd64545, 0x2d7d46, 0x8b6b4a, 0x5d7f9c, 0x7c5f8f];
+    
     const glowCanvas = document.createElement('canvas');
     glowCanvas.width = 256; glowCanvas.height = 256;
     const gctx = glowCanvas.getContext('2d');
@@ -23,11 +31,13 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
     gctx.fillStyle = gradient;
     gctx.fillRect(0, 0, 256, 256);
     const glowTexture = new THREE.CanvasTexture(glowCanvas);
+
     function createHumanoidModel(color1, color2) {
         const g = new THREE.Group();
         const skinMat = new THREE.MeshStandardMaterial({ color: color2 || 0xe8c9a0, roughness: 0.7 });
         const clothMat = new THREE.MeshStandardMaterial({ color: color1 || 0x4a6fa5, roughness: 0.8 });
         const pantsMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9 });
+        
         const torso = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.6, 0.2), clothMat);
         torso.position.y = 1.1; g.add(torso);
         const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), skinMat);
@@ -44,12 +54,14 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         rightLeg.position.set(0.12, 0.4, 0); g.add(rightLeg);
         return g;
     }
+
     function createGlow() {
         const mat = new THREE.SpriteMaterial({ map: glowTexture, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
         const sprite = new THREE.Sprite(mat);
         sprite.scale.set(12, 12, 1);
         return sprite;
     }
+
     function loadPassengers() {
         const waiting = npc.getWaitingPassengers ? npc.getWaitingPassengers() : [];
         const currentIds = new Set(waitingPassengers.map(p => p.id));
@@ -72,6 +84,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             });
         }
     }
+
     function updatePassengers(busPos, busHeading) {
         const now = Date.now() / 1000;
         for (const p of waitingPassengers) {
@@ -97,6 +110,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             }
         }
     }
+
     function pickUpPassengers() {
         if (!bus || !bus.doorOpen) {
             ui?.toast("❌ Phải mở cửa (K) để đón khách!");
@@ -127,6 +141,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         else ui?.toast(`⚠️ Xe đã đầy! (${onboardPassengers.length}/${MAX_PASSENGERS})`);
         return picked;
     }
+
     function dropOffPassengers(destination) {
         let dropped = 0;
         const remaining = [];
@@ -144,6 +159,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         if (dropped > 0) ui?.toast(`✅ Đã trả ${dropped} khách tại ${destination}!`);
         return dropped;
     }
+
     function getPassengerCount() {
         return {
             waiting: waitingPassengers.filter(p => !p.picked).length,
@@ -151,17 +167,23 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             max: MAX_PASSENGERS
         };
     }
+    
     loadPassengers();
+    
     function update(dt) {
         if (!bus?.group) return;
-        // TỐI ƯU: 10Hz update là đủ cho passenger
         _passengerUpdateTimer += dt;
         if (_passengerUpdateTimer >= 0.1) {
             _passengerUpdateTimer = 0;
             updatePassengers(bus.group.position, bus.group.rotation.y);
         }
     }
-    function dispose() { scene.remove(passengerGroup); while (passengerGroup.children.length) passengerGroup.remove(passengerGroup.children[0]); }
+    
+    function dispose() { 
+        scene.remove(passengerGroup); 
+        while (passengerGroup.children.length) passengerGroup.remove(passengerGroup.children[0]); 
+    }
+    
     return {
         update, pickUpPassengers, dropOffPassengers, getPassengerCount, dispose, passengerGroup,
         waitingPassengers, onboardPassengers, getActiveZones: () => waitingPassengers.filter(p => !p.picked)

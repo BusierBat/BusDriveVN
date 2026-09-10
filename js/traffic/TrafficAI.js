@@ -1,4 +1,4 @@
-// js/traffic/TrafficAI.js - PATHFINDING & STATE MACHINE
+// js/traffic/TrafficAI.js - RIGHT-HAND TRAFFIC & STATION AVOIDANCE
 import * as THREE from "three";
 import { createSeededRandom, lerpAngle, clamp } from "../utils.js";
 const TWO_PI = Math.PI * 2;
@@ -11,36 +11,58 @@ export const DRIVER_PERSONALITY = {
 export const AI_STATE = { DRIVING: 'DRIVING', FOLLOWING: 'FOLLOWING', STOPPING: 'STOPPING', TURNING: 'TURNING', PARKED: 'PARKED', DEPARTING: 'DEPARTING' };
 
 export class TrafficAI {
-  constructor({ vehicle, roadGraph, personality = 'NORMAL', seed = null, isParked = false, parkTimer = 0 }) {
-    this.vehicle = vehicle; this.roadGraph = roadGraph; this.seed = seed || Math.random() * 999999;
-    this.random = createSeededRandom(this.seed); this.personality = DRIVER_PERSONALITY[personality] || DRIVER_PERSONALITY.NORMAL;
-    this.state = isParked ? AI_STATE.PARKED : AI_STATE.DRIVING; this.parkTimer = parkTimer;
-    this.speed = 0; this.targetSpeed = 0; this.maxSpeed = 20 + this.random() * 10;
+  constructor({ vehicle, roadGraph, personality = 'NORMAL', seed = null, isStatic = false, isParked = false, parkTimer = 0 }) {
+    this.vehicle = vehicle;
+    this.roadGraph = roadGraph;
+    this.seed = seed || Math.random() * 999999;
+    this.random = createSeededRandom(this.seed);
+    this.personality = DRIVER_PERSONALITY[personality] || DRIVER_PERSONALITY.NORMAL;
+    this.isStatic = isStatic; // Xe tĩnh trong bến
+    this.state = isParked ? AI_STATE.PARKED : AI_STATE.DRIVING;
+    this.parkTimer = parkTimer;
+    this.speed = 0; this.targetSpeed = 0;
+    this.maxSpeed = 20 + this.random() * 10;
     this.heading = 0; this.targetHeading = 0; this.oldHeading = 0;
     this.laneOffset = 0; this.targetLaneOffset = 0;
     this.currentSegmentId = null; this.direction = 0; this.progress = 0;
     this.turning = false; this.turnTimer = 0; this.followTarget = null;
-    this.followDistance = this.personality.followDistance; this.collider = { x: 0, z: 0, r: 1.4 };
+    this.followDistance = this.personality.followDistance;
+    this.collider = { x: 0, z: 0, r: 1.4 };
     this.active = true; this.colId = -1;
-    if (!isParked) this._initPosition();
+    if (!isStatic && !isParked) this._initPosition();
   }
 
   _getSegment(id) {
-    if (!this.roadGraph?._segMapCache) { this.roadGraph._segMapCache = new Map(); for (const s of this.roadGraph.segments) this.roadGraph._segMapCache.set(s.id, s); }
+    if (!this.roadGraph?._segMapCache) {
+      this.roadGraph._segMapCache = new Map();
+      if (Array.isArray(this.roadGraph.segments)) for (const s of this.roadGraph.segments) this.roadGraph._segMapCache.set(s.id, s);
+    }
     return this.roadGraph._segMapCache.get(id);
   }
   _getNode(id) {
-    if (!this.roadGraph?._nodeMapCache) { this.roadGraph._nodeMapCache = new Map(); for (const n of this.roadGraph.nodes) this.roadGraph._nodeMapCache.set(n.id, n); }
+    if (!this.roadGraph?._nodeMapCache) {
+      this.roadGraph._nodeMapCache = new Map();
+      if (Array.isArray(this.roadGraph.nodes)) for (const n of this.roadGraph.nodes) this.roadGraph._nodeMapCache.set(n.id, n);
+    }
     return this.roadGraph._nodeMapCache.get(id);
   }
   _initPosition() {
+    if (!this.roadGraph?.segments?.length) return;
     const seg = this.roadGraph.segments[Math.floor(this.random() * this.roadGraph.segments.length)];
-    this.currentSegmentId = seg.id; this.direction = seg.twoWay ? Math.floor(this.random() * 2) : 0;
-    this.progress = 0.1 + this.random() * 0.3; this.laneOffset = this._calcLaneOffset(seg, this.direction);
-    this._updatePositionFromSegment(); this.heading = this._getSegmentHeading(); this.targetHeading = this.heading;
-    this.vehicle.group.position.set(this.collider.x, 0.5, this.collider.z); this.vehicle.group.rotation.y = this.heading;
+    this.currentSegmentId = seg.id;
+    this.direction = seg.twoWay ? Math.floor(this.random() * 2) : 0;
+    this.progress = 0.1 + this.random() * 0.3;
+    this.laneOffset = this._calcLaneOffset(seg, this.direction);
+    this._updatePositionFromSegment();
+    this.heading = this._getSegmentHeading(); this.targetHeading = this.heading;
+    this.vehicle.group.position.set(this.collider.x, 0.5, this.collider.z);
+    this.vehicle.group.rotation.y = this.heading;
   }
-  _calcLaneOffset(seg, dir) { if (dir === 1) return -3.5; return 3.5; } // Right-hand traffic
+
+  _calcLaneOffset(seg, dir) { 
+    if (dir === 1) return -3.5; 
+    return 3.5;               
+  }
   _getSegmentPoints() {
     const seg = this._getSegment(this.currentSegmentId); if (!seg) return null;
     const f = this._getNode(seg.from), t = this._getNode(seg.to); if (!f?.position || !t?.position) return null;
@@ -50,7 +72,9 @@ export class TrafficAI {
   _updatePositionFromSegment() { const pts = this._getSegmentPoints(); if (!pts) return; this.collider.x = pts.p0.x + (pts.p1.x - pts.p0.x) * this.progress; this.collider.z = pts.p0.z + (pts.p1.z - pts.p0.z) * this.progress; const angle = this._getSegmentHeading(); this.collider.x += Math.cos(angle) * this.laneOffset; this.collider.z += -Math.sin(angle) * this.laneOffset; }
 
   update(deltaTime, playerPos, allVehicles) {
-    if (!this.active) return; const dt = Math.min(deltaTime, 0.1);
+    if (!this.active) return;
+    if (this.isStatic) return; // Xe tĩnh không chạy AI
+    const dt = Math.min(deltaTime, 0.1);
     if (this.state === AI_STATE.PARKED) {
         this.parkTimer -= dt;
         if (this.parkTimer <= 0) { this.state = AI_STATE.DEPARTING; this.targetSpeed = this.maxSpeed * 0.5; }
@@ -61,7 +85,7 @@ export class TrafficAI {
   _findFollowTarget(allVehicles) {
     this.followTarget = null; if (!allVehicles?.length) return; let closest = Infinity;
     for (const o of allVehicles) {
-      if (o === this || !o.collider) continue;
+      if (o === this || !o.collider || o.isStatic) continue;
       const dx = o.collider.x - this.collider.x, dz = o.collider.z - this.collider.z; const dist = Math.hypot(dx, dz);
       if (dist > 50 || dist < 0.1) continue;
       if (dx * Math.sin(this.heading) + dz * Math.cos(this.heading) < 0) continue; 
@@ -90,7 +114,6 @@ export class TrafficAI {
     if (this.progress >= 1.0) this._handleJunction();
     this.progress = Math.max(0, Math.min(1, this.progress)); this._updatePositionFromSegment();
   }
-  // PATHFINDING: Dùng node.connections để tìm đường
   _handleJunction() {
     const seg = this._getSegment(this.currentSegmentId); if (!seg) return;
     const curId = this.direction === 0 ? seg.to : seg.from; const node = this._getNode(curId);

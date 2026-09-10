@@ -1,13 +1,13 @@
-// js/map/map.js - SMOOTH CHUNK STREAMING & PRELOAD
+// js/map/map.js - SMOOTH CHUNK STREAMING & VRAM MANAGEMENT
 import * as THREE from "three";
 import { generateChunk } from "./chunkGenerator.js";
 import { createRoadNetworkMesh } from "./roadGenerator.js";
-import { createBusStation, createRestStop, createGasStation } from "./stationGenerator.js";
+import { createBusStation, createRestStop, createGasStation, createTollStation, createPark } from "./stationGenerator.js";
 import { getSpawnPoint as getRouteSpawn, getRouteWaypoints, getMinimapData, getWorldBounds, getPOIs } from "./data/routeData.js";
 import { roadNetwork } from "./data/roadNetworkData.js";
 
 const CHUNK_SIZE = 256;
-const RENDER_DISTANCE_CHUNKS = 2; // Tăng lên 2 để preload
+const RENDER_DISTANCE_CHUNKS = 2; // Preload 2 chunks
 const WORLD_SEED = 20260817;
 
 export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
@@ -23,40 +23,70 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
         if (poi.type === 'bus_station') createBusStation(poi, group, parkingSlots);
         else if (poi.type === 'rest_area') createRestStop(poi, group);
         else if (poi.type === 'fuel_station') createGasStation(poi, group);
+        else if (poi.type === 'toll_station') createTollStation(poi, group);
+        else if (poi.type === 'park') createPark(poi, group);
     }
     
     const chunks = new Map();
-    const staticColliders = [];
+    const staticColliders = []; 
     const chunkBuildQueue = [];
     const worldSeed = seed;
 
     function buildChunk(cx, cz) {
         const key = `${cx},${cz}`;
         if (chunks.has(key)) return;
+        
         const chunkGroup = generateChunk({ chunkX: cx, chunkZ: cz, worldSeed, chunkSize: CHUNK_SIZE, parkingSlots });
         if (chunkGroup) {
             group.add(chunkGroup);
             const chunkColliders = chunkGroup.userData.colliders || [];
-            chunks.set(key, { group: chunkGroup, x: cx, z: cz, colliders: chunkColliders });
+            
+            // Đăng ký collider vào CollisionSystem
+            const regIds = [];
+            for (const c of chunkColliders) {
+                if (window.collisionSystem) {
+                    const id = window.collisionSystem.register(c.x, c.z, c.r, 'static');
+                    regIds.push(id);
+                }
+            }
+            
+            chunks.set(key, { group: chunkGroup, x: cx, z: cz, colliderIds: regIds });
             staticColliders.push(...chunkColliders);
         }
     }
-    
+
     function unloadChunk(cx, cz) {
         const key = `${cx},${cz}`;
         const entry = chunks.get(key);
         if (!entry) return;
+        
         group.remove(entry.group);
-        entry.group.traverse(child => { if (child.geometry) child.geometry.dispose(); });
-        chunks.delete(key);
-        if (entry.colliders.length > 0) {
-            const removeSet = new Set(entry.colliders);
+        
+        // VRAM MANAGEMENT: Dispose geometry và material
+        entry.group.traverse(child => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) {
+                if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                else child.material.dispose();
+            }
+        });
+        
+        // Xóa collider khỏi CollisionSystem
+        if (window.collisionSystem) {
+            for (const id of entry.colliderIds) window.collisionSystem.remove(id);
+        }
+        
+        // Xóa khỏi mảng tĩnh
+        if (entry.colliderIds.length > 0) {
+            const removeSet = new Set(entry.colliderIds);
             for (let i = staticColliders.length - 1; i >= 0; i--) {
                 if (removeSet.has(staticColliders[i])) staticColliders.splice(i, 1);
             }
         }
+        
+        chunks.delete(key);
     }
-    
+
     let lastPlayerChunkX = null, lastPlayerChunkZ = null;
     function updateChunks(playerX, playerZ) {
         const cx = Math.floor(playerX / CHUNK_SIZE);
@@ -75,19 +105,15 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
         
         for (const [key, entry] of chunks) if (!needed.has(key)) unloadChunk(entry.x, entry.z);
         
-        // Sort queue by distance to player to load closest first
-        const toBuild = [];
+        chunkBuildQueue.length = 0;
         for (const key of needed) {
             if (!chunks.has(key)) {
                 const parts = key.split(",");
-                toBuild.push({ x: parseInt(parts[0]), z: parseInt(parts[1]) });
+                chunkBuildQueue.push({ x: parseInt(parts[0]), z: parseInt(parts[1]) });
             }
         }
-        toBuild.sort((a, b) => Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz));
-        chunkBuildQueue.length = 0;
-        chunkBuildQueue.push(...toBuild);
     }
-    
+
     const spawn = getRouteSpawn();
     const cx0 = Math.floor(spawn.x / CHUNK_SIZE);
     const cz0 = Math.floor(spawn.z / CHUNK_SIZE);
@@ -97,20 +123,29 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
         }
     }
     updateChunks(spawn.x, spawn.z);
-    
-    // Chỉ build 1 chunk mỗi frame để tránh khựng (stall)
-    function processQueue() {
-        if (chunkBuildQueue.length > 0) {
+
+    function processQueue(maxPerFrame = 2) {
+        let built = 0;
+        while (chunkBuildQueue.length > 0 && built < maxPerFrame) {
             const next = chunkBuildQueue.shift();
             buildChunk(next.x, next.z);
+            built++;
         }
     }
-    
+
     return {
-        group, bounds: getWorldBounds(), ready: Promise.resolve(),
-        setPlayerPosition: (x, z) => { updateChunks(x, z); processQueue(); },
-        getHeight: () => 0, getRoadHeightAt: () => 0.1,
-        getSpawnPoint: () => getRouteSpawn(), getRouteWaypoints, getMinimapData,
+        group,
+        bounds: getWorldBounds(),
+        ready: Promise.resolve(),
+        setPlayerPosition: (x, z) => {
+            updateChunks(x, z);
+            processQueue();
+        },
+        getHeight: () => 0,
+        getRoadHeightAt: () => 0.1,
+        getSpawnPoint: () => getRouteSpawn(),
+        getRouteWaypoints,
+        getMinimapData,
         getNearbyColliders: (x, z, r=50) => staticColliders.filter(c => Math.hypot(c.x - x, c.z - z) < r),
         getRoadGraph: (() => {
             let _cached = null;
@@ -127,13 +162,15 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
                 return _cached;
             };
         })(),
-        getPOIs: () => getPOIs(), getParkingSlots: () => parkingSlots,
+        getPOIs: () => getPOIs(),
+        getParkingSlots: () => parkingSlots,
         dispose: () => {
             for (const entry of chunks.values()) {
                 group.remove(entry.group);
                 entry.group.traverse(child => { if (child.geometry) child.geometry.dispose(); });
             }
-            chunks.clear(); scene.remove(group);
+            chunks.clear();
+            scene.remove(group);
         }
     };
 }

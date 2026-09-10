@@ -1,15 +1,18 @@
-// js/map/chunkGenerator.js - DIVERSE ENVIRONMENT & PERFORMANCE
+// js/map/chunkGenerator.js - KHÔI PHỤC SHARE GROUND & VEGETATION
 import * as THREE from "three";
 import { generateBuildings } from "./buildingGenerator.js";
 import { createRoadMeshForChunk } from "./roadGenerator.js";
 import { roadNetwork } from "./data/roadNetworkData.js";
 
+// KHÔI PHỤC: Share Geometry cho Ground và Cây
 const sharedGroundGeo = new THREE.PlaneGeometry(256, 256);
 const sharedTrunkGeo = new THREE.CylinderGeometry(0.5, 0.5, 4, 6);
 const sharedLeavesGeo = new THREE.SphereGeometry(2.5, 8, 8);
 const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a2a0a, roughness: 1 });
 const leavesMat = new THREE.MeshStandardMaterial({ color: 0x2d6a2d, roughness: 1 });
-const terrainMat = new THREE.MeshStandardMaterial({ color: 0x3a5f0b, roughness: 1 });
+
+// ĐỔI MÀU TERRAIN SÁNG HƠN
+const terrainMat = new THREE.MeshStandardMaterial({ color: 0x6b9b36, roughness: 1 });
 
 export function generateChunk({ chunkX, chunkZ, worldSeed, chunkSize, parkingSlots }) {
     const group = new THREE.Group();
@@ -33,7 +36,7 @@ export function generateChunk({ chunkX, chunkZ, worldSeed, chunkSize, parkingSlo
     const buildings = generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders });
     group.add(buildings);
 
-    // 4. VEGETATION (Giảm số lượng để tăng FPS)
+    // 4. VEGETATION
     const nodes = new Map(roadNetwork.nodes.map(n => [n.id, n]));
     const segments = roadNetwork.segments.map(s => {
         const f = nodes.get(s.from); const t = nodes.get(s.to);
@@ -42,7 +45,7 @@ export function generateChunk({ chunkX, chunkZ, worldSeed, chunkSize, parkingSlo
 
     const startX = chunkX * chunkSize;
     const startZ = chunkZ * chunkSize;
-    const treeCount = Math.floor(random() * 15) + 5; // Giảm từ 30 xuống 15
+    const treeCount = Math.floor(random() * 15) + 5;
     for (let i = 0; i < treeCount; i++) {
         const x = startX + random() * chunkSize;
         const z = startZ + random() * chunkSize;

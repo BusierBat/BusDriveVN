@@ -1,5 +1,6 @@
-// js/lighting.js - FULL FEATURES & SMOOTH TIME (OPTIMIZED)
+// js/lighting.js - DAY/NIGHT CYCLE & REAL LIGHTS ACTIVATION
 import * as THREE from "three";
+
 export class LightingSystem {
     constructor(sceneOrOptions = new THREE.Scene()) {
         const options = sceneOrOptions && typeof sceneOrOptions === 'object' && !('isScene' in sceneOrOptions) && !('type' in sceneOrOptions)
@@ -15,13 +16,15 @@ export class LightingSystem {
         this.timeScale = options.timeScale ?? 1;
         this.lights = {};
         this._lightUpdateTimer = 0;
-        // CACHE COLORS TO AVOID GC ALLOCATION
         this._tmpCol1 = new THREE.Color();
         this._tmpCol2 = new THREE.Color();
-        this._tmpSky = new THREE.Color(0x87CEEB);
+        this._tmpSky = new THREE.Color();
+        this._tmpSunCol = new THREE.Color();
         this._initLights();
-        this._updateTimeOfDay();
+        this._updateTimeOfDay(); // Gọi hàm này để khởi tạo màu trời ban đầu
+        this._updateStreetLights(); // Đảm bảo đèn đường phù hợp với giờ hiện tại
     }
+
     _initLights() {
         this.scene.background = new THREE.Color(0x87CEEB);
         this.scene.fog = new THREE.Fog(0x87CEEB, 200, 4000);
@@ -34,59 +37,77 @@ export class LightingSystem {
         this.lights.hemisphere = new THREE.HemisphereLight(0x87CEEB, 0x362d1b, 0.5);
         this.scene.add(this.lights.hemisphere);
     }
-    // HÀM LERP TỐI ƯU: DÙNG OBJECT CACHED, KHÔNG TẠO NEW
-    _lerpColor(c1, c2, t) {
+
+    _lerp(targetColor, c1, c2, t) {
         this._tmpCol1.setHex(c1);
         this._tmpCol2.setHex(c2);
-        return this._tmpCol1.lerp(this._tmpCol2, t);
+        targetColor.copy(this._tmpCol1).lerp(this._tmpCol2, t);
     }
+
     update(deltaTime) {
         if (!deltaTime) return;
         this.gameTimeMinutes += deltaTime * this.timeScale;
         if (this.gameTimeMinutes >= 1440) this.gameTimeMinutes -= 1440;
         
-        // THROTTLE: Chỉ update ánh sáng 2 lần/giây (2Hz) thay vì 60Hz
         this._lightUpdateTimer += deltaTime;
         if (this._lightUpdateTimer < 0.5) return;
         this._lightUpdateTimer = 0;
         
         this._updateTimeOfDay();
+        this._updateStreetLights();
     }
+
     _updateTimeOfDay() {
         const hours = this.gameTimeMinutes / 60;
         const angle = (hours / 24) * Math.PI * 2 - Math.PI / 2;
         this.lights.sun.position.set(Math.cos(angle) * 200, Math.sin(angle) * 200, 50);
         this.lights.moon.position.set(-Math.cos(angle) * 200, -Math.sin(angle) * 200, 50);
         
-        let skyColor = this._tmpSky.setHex(0x87CEEB);
         let sunInt = 0, moonInt = 0, ambInt = 0.2;
-        let sunCol = this._tmpCol1.setHex(0xffffff);
         
-        if (hours >= 5 && hours < 7) {
+        if (hours >= 5 && hours < 7) { // Bình minh
             const t = (hours - 5) / 2;
-            skyColor = this._lerpColor(0x0a0a1a, 0xff7e5f, t);
+            this._lerp(this._tmpSky, 0x0a0a1a, 0xff7e5f, t);
             sunInt = t * 0.8; ambInt = 0.2 + t * 0.3;
-            sunCol = this._lerpColor(0xff0000, 0xffccaa, t);
-        } else if (hours >= 7 && hours < 17) {
-            skyColor = this._tmpSky.setHex(0x87CEEB);
+            this._lerp(this._tmpSunCol, 0xff0000, 0xffccaa, t);
+        } else if (hours >= 7 && hours < 17) { // Ban ngày
+            this._tmpSky.setHex(0x87CEEB);
             sunInt = 1.0; ambInt = 0.5;
-        } else if (hours >= 17 && hours < 19) {
+            this._tmpSunCol.setHex(0xffffff);
+        } else if (hours >= 17 && hours < 19) { // Hoàng hôn
             const t = (hours - 17) / 2;
-            skyColor = this._lerpColor(0xff7e5f, 0x0a0a1a, t);
+            this._lerp(this._tmpSky, 0xff7e5f, 0x0a0a1a, t);
             sunInt = 0.8 - t * 0.8; ambInt = 0.5 - t * 0.3;
-            sunCol = this._lerpColor(0xffccaa, 0xff0000, t);
-        } else {
-            skyColor = this._tmpSky.setHex(0x0a0a1a);
+            this._lerp(this._tmpSunCol, 0xffccaa, 0xff0000, t);
+        } else { // Ban đêm
+            this._tmpSky.setHex(0x0a0a1a);
             sunInt = 0; moonInt = 0.3; ambInt = 0.2;
         }
         
-        this.scene.background.copy(skyColor);
-        this.scene.fog.color.copy(skyColor);
+        this.scene.background.copy(this._tmpSky);
+        this.scene.fog.color.copy(this._tmpSky);
         this.lights.sun.intensity = sunInt;
         this.lights.moon.intensity = moonInt;
         this.lights.ambient.intensity = ambInt;
-        this.lights.sun.color.copy(sunCol);
+        this.lights.sun.color.copy(this._tmpSunCol);
     }
+    
+    // BẬT/TẮT ĐÈN ĐƯỜNG (POINT LIGHTS) THEO GIỜ
+    _updateStreetLights() {
+        const hours = this.gameTimeMinutes / 60;
+        const isNight = hours >= 18 || hours <= 5;
+        
+        this.scene.traverse(object => {
+            if (object.isPointLight && object.userData.isStreetLight) {
+                object.visible = isNight;
+            }
+        });
+    }
+    
     getGameTime() { return this.gameTimeMinutes; }
-    setGameTime(m) { this.gameTimeMinutes = m % 1440; this._updateTimeOfDay(); }
+    setGameTime(m) { 
+        this.gameTimeMinutes = m % 1440; 
+        this._updateTimeOfDay(); 
+        this._updateStreetLights(); 
+    }
 }
