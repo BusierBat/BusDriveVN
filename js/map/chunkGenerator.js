@@ -1,18 +1,18 @@
-// js/map/chunkGenerator.js - KHÔI PHỤC SHARE GROUND & VEGETATION
+// js/map/chunkGenerator.js
+
 import * as THREE from "three";
 import { generateBuildings } from "./buildingGenerator.js";
 import { createRoadMeshForChunk } from "./roadGenerator.js";
 import { roadNetwork } from "./data/roadNetworkData.js";
 
-// KHÔI PHỤC: Share Geometry cho Ground và Cây
 const sharedGroundGeo = new THREE.PlaneGeometry(256, 256);
 const sharedTrunkGeo = new THREE.CylinderGeometry(0.5, 0.5, 4, 6);
 const sharedLeavesGeo = new THREE.SphereGeometry(2.5, 8, 8);
 const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a2a0a, roughness: 1 });
 const leavesMat = new THREE.MeshStandardMaterial({ color: 0x2d6a2d, roughness: 1 });
 
-// ĐỔI MÀU TERRAIN SÁNG HƠN
-const terrainMat = new THREE.MeshStandardMaterial({ color: 0x6b9b36, roughness: 1 });
+// ĐỔI MÀU ĐẤT SANG NÂU ĐỎ BAZAN VIỆT NAM ĐỂ DỄ NHẬN BIẾT CODE MỚI
+const terrainMat = new THREE.MeshStandardMaterial({ color: 0x7a5a3a, roughness: 1 });
 
 export function generateChunk({ chunkX, chunkZ, worldSeed, chunkSize, parkingSlots }) {
     const group = new THREE.Group();
@@ -35,7 +35,6 @@ export function generateChunk({ chunkX, chunkZ, worldSeed, chunkSize, parkingSlo
 
     const nodes = new Map(roadNetwork.nodes.map(n => [n.id, n]));
     
-    // TỐI ƯU: Lọc segment theo Bounding Box của chunk thay vì map toàn bộ
     const chunkMinX = chunkX * chunkSize;
     const chunkMaxX = chunkMinX + chunkSize;
     const chunkMinZ = chunkZ * chunkSize;

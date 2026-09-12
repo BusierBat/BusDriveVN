@@ -1,4 +1,5 @@
-// js/main.js - COACHVN ULTRA STABLE & FULL INTEGRATION
+// js/main.js
+
 import * as THREE from "three";
 import { createMap } from "./map.js";
 import { createUI } from "./ui.js";
@@ -29,10 +30,21 @@ let gameSettings = { graphics: 'low', renderDist: 2, npcDensity: 5, camSens: 30,
 if (isMobile || isLowEnd) { gameSettings.renderDist = 1; gameSettings.npcDensity = 3; }
 
 let mobileInput = { steer: 0, accel: 0, brake: 0 };
+
+// TỐI ƯU TỐC ĐỘ: 1 km/h = 0.4 units/s (thay vì 0.28) để xe chạy nhanh hơn
+const SPEED_CONVERSION = 0.4;
+
 const vehiclePhysics = {
-    speed: 0, maxSpeedKmh: 160, maxSpeed: 160 * 0.28, maxReverseSpeed: -40 * 0.28,
-    acceleration: 10.0 * 0.28, braking: 25.0 * 0.28, drag: 1.2 * 0.28,
-    currentSpeedKmh: 0, isReversing: false, forwardVector: new THREE.Vector3()
+    speed: 0,
+    maxSpeedKmh: 160,
+    maxSpeed: 160 * SPEED_CONVERSION,
+    maxReverseSpeed: -40 * SPEED_CONVERSION,
+    acceleration: 20.0 * SPEED_CONVERSION, // Tăng gia tốc
+    braking: 40.0 * SPEED_CONVERSION,       // Tăng phanh
+    drag: 2.0 * SPEED_CONVERSION,
+    currentSpeedKmh: 0,
+    isReversing: false,
+    forwardVector: new THREE.Vector3()
 };
 let steerAngle = 0, steerTarget = 0;
 const keysPressed = new Set();
@@ -46,17 +58,33 @@ function updateVehiclePhysics(dt) {
     const isShift = keysPressed.has("ShiftLeft") || keysPressed.has("ShiftRight");
 
     if (isShift && isAccel) {
-        phys.speed += phys.acceleration * dt; phys.speed = Math.min(phys.speed, phys.maxSpeed); phys.isReversing = false;
+        phys.speed += phys.acceleration * dt;
+        phys.speed = Math.min(phys.speed, phys.maxSpeed);
+        phys.isReversing = false;
     } else if (isAccel && !isShift) {
-        if (phys.speed < 0) { phys.speed += phys.braking * dt; if (phys.speed > 0) phys.speed = 0; }
-        else if (phys.speed === 0) { phys.speed += phys.acceleration * dt; phys.speed = Math.min(phys.speed, 20 * 0.28); }
+        if (phys.speed < 0) {
+            phys.speed += phys.braking * dt;
+            if (phys.speed > 0) phys.speed = 0;
+        } else if (phys.speed === 0) {
+            phys.speed += phys.acceleration * dt;
+            phys.speed = Math.min(phys.speed, 30 * SPEED_CONVERSION);
+        }
     } else if (isBrake) {
-        if (phys.speed > 0) { phys.speed -= phys.braking * dt; if (phys.speed < 0) phys.speed = 0; }
-        else { phys.isReversing = true; phys.speed -= phys.acceleration * dt; phys.speed = Math.max(phys.speed, phys.maxReverseSpeed); }
-    } else if (keysPressed.has("Space")) { phys.speed = 0; }
-    else { phys.speed = phys.speed > 0 ? Math.max(phys.speed - phys.drag * dt, 0) : Math.min(phys.speed + phys.drag * dt, 0); }
+        if (phys.speed > 0) {
+            phys.speed -= phys.braking * dt;
+            if (phys.speed < 0) phys.speed = 0;
+        } else {
+            phys.isReversing = true;
+            phys.speed -= phys.acceleration * dt;
+            phys.speed = Math.max(phys.speed, phys.maxReverseSpeed);
+        }
+    } else if (keysPressed.has("Space")) {
+        phys.speed = 0;
+    } else {
+        phys.speed = phys.speed > 0 ? Math.max(phys.speed - phys.drag * dt, 0) : Math.min(phys.speed + phys.drag * dt, 0);
+    }
 
-    phys.currentSpeedKmh = phys.speed / 0.28;
+    phys.currentSpeedKmh = phys.speed / SPEED_CONVERSION;
     const speedKmh = Math.abs(phys.currentSpeedKmh);
     const speedSteerLimit = 1 - Math.min(0.7, speedKmh / 160);
 
@@ -77,18 +105,23 @@ function updateVehiclePhysics(dt) {
         let canMove = true;
         if (window.collisionSystem) {
             const hit = window.collisionSystem.check(newX, newZ, 4.0, playerColId);
-            if (hit) { canMove = false; phys.speed = 0; if (hit.type === 'npc' && hit.data?.ai) hit.data.ai.speed = 0; }
+            if (hit) {
+                canMove = false;
+                phys.speed = 0;
+                if (hit.type === 'npc' && hit.data?.ai) hit.data.ai.speed = 0;
+            }
         }
-        if (canMove) { bus.group.position.x = newX; bus.group.position.y += forward.y * moveDistance; bus.group.position.z = newZ; }
+        if (canMove) {
+            bus.group.position.x = newX;
+            bus.group.position.y += forward.y * moveDistance;
+            bus.group.position.z = newZ;
+        }
     }
     if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z);
     bus.group.updateMatrixWorld(true);
 
-    // WEIGHT TRANSFER
     const targetPitch = isBrake ? -0.04 : (isAccel ? 0.02 : 0);
     bus.group.rotation.x = THREE.MathUtils.lerp(bus.group.rotation.x, targetPitch, dt * 4);
-
-    // ROLL
     const targetRoll = -steerAngle * 0.03 * (speedKmh / 60);
     bus.group.rotation.z = THREE.MathUtils.lerp(bus.group.rotation.z, targetRoll, dt * 3);
 }
@@ -107,11 +140,15 @@ function initInput() {
         if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
         
         if (e.code === "KeyF" && performance.now() - lastFPressTime > 150 && bus) {
-            lastFPressTime = performance.now(); bus.areLightsOn = !bus.areLightsOn;
-            bus.setHeadlights?.(bus.areLightsOn); bus.setTaillights?.(bus.areLightsOn); ui?.toast(`💡 Đèn ${bus.areLightsOn ? 'BẬT' : 'TẮT'}`);
+            lastFPressTime = performance.now();
+            bus.areLightsOn = !bus.areLightsOn;
+            bus.setHeadlights?.(bus.areLightsOn);
+            bus.setTaillights?.(bus.areLightsOn);
+            ui?.toast(`💡 Đèn ${bus.areLightsOn ? 'BẬT' : 'TẮT'}`);
         }
         if (e.code === "KeyK" && bus) {
-            doorTarget = doorTarget === 0 ? 1 : 0; bus.doorOpen = doorTarget === 1;
+            doorTarget = doorTarget === 0 ? 1 : 0;
+            bus.doorOpen = doorTarget === 1;
             ui?.toast(`🚪 Cửa ${bus.doorOpen ? 'MỞ' : 'ĐÓNG'}`);
             if (bus.doorOpen && passengerSystem) passengerSystem.pickUpPassengers();
         }
@@ -126,8 +163,14 @@ function initInput() {
                 lKeyTimer = 0;
             }
         }
-        if (e.code === "KeyH" && performance.now() - lastHornPressTime > 300) { lastHornPressTime = performance.now(); ui?.toast("📯 Bim bim!"); }
-        if (e.code === "KeyC" && performance.now() - lastCameraPressTime > 200 && cameraSystem) { lastCameraPressTime = performance.now(); cameraSystem.cycleNext(); }
+        if (e.code === "KeyH" && performance.now() - lastHornPressTime > 300) {
+            lastHornPressTime = performance.now();
+            ui?.toast("📯 Bim bim!");
+        }
+        if (e.code === "KeyC" && performance.now() - lastCameraPressTime > 200 && cameraSystem) {
+            lastCameraPressTime = performance.now();
+            cameraSystem.cycleNext();
+        }
     });
     window.addEventListener("keyup", (e) => keysPressed.delete(e.code));
     window.addEventListener("blur", () => keysPressed.clear());
@@ -145,7 +188,8 @@ function handleCommand(cmd) {
             } else { ui.toast("✕ Thời gian không hợp lệ!", true); }
         } else { ui.toast("✕ Cú pháp: time HH/MM", true); }
     } else { ui.toast("✕ Lệnh không xác định!", true); }
-    isConsoleOpen = false; ui.hideConsole();
+    isConsoleOpen = false;
+    ui.hideConsole();
 }
 
 function togglePause() {
@@ -167,9 +211,13 @@ function initRenderer() {
     renderer.setClearColor(0x87ceeb, 1);
     renderer.setPixelRatio(isLowEnd ? 0.8 : 1.0);
     renderer.setSize(window.innerWidth, window.innerHeight, true);
-    renderer.outputColorSpace = THREE.LinearSRGBColorSpace; 
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
     renderer.shadowMap.enabled = false;
-    renderer.domElement.addEventListener("webglcontextlost", (e) => { e.preventDefault(); webglLost = true; alert("GPU quá tải, vui lòng F5!"); }, false);
+    renderer.domElement.addEventListener("webglcontextlost", (e) => {
+        e.preventDefault();
+        webglLost = true;
+        alert("GPU quá tải, vui lòng F5!");
+    }, false);
     window.addEventListener('resize', handleResize);
 }
 
@@ -230,16 +278,16 @@ function setupMenuEvents() {
     const uvStatus = document.getElementById('uv-skin-status');
     const uvDownload = document.getElementById('uv-skin-download');
 
-    btnUvSkin?.addEventListener('click', () => { 
-        if(uvPanel) uvPanel.style.display = 'flex'; 
-        if(uvStatus) uvStatus.innerHTML = ''; 
-        if(uvDownload) uvDownload.style.display = 'none'; 
+    btnUvSkin?.addEventListener('click', () => {
+        if(uvPanel) uvPanel.style.display = 'flex';
+        if(uvStatus) uvStatus.innerHTML = '';
+        if(uvDownload) uvDownload.style.display = 'none';
     });
     btnCloseUvSkin?.addEventListener('click', () => { if(uvPanel) uvPanel.style.display = 'none'; });
     btnChooseSkin?.addEventListener('click', () => { if(uvInput) uvInput.click(); });
     
     uvInput?.addEventListener('change', (e) => {
-        const file = e.target.files[0]; 
+        const file = e.target.files[0];
         if (!file) return;
         if(uvStatus) { uvStatus.textContent = 'Dang kiem tra...'; uvStatus.style.color = '#fff'; }
         if(uvDownload) uvDownload.style.display = 'none';
@@ -248,18 +296,18 @@ function setupMenuEvents() {
         reader.onload = (ev) => {
             const arr = new Uint8Array(ev.target.result);
             const isPng = arr.length >= 8 && arr[0] === 0x89 && arr[1] === 0x50 && arr[2] === 0x4E && arr[3] === 0x47;
-            if (!isPng) { 
-                if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = 'File khong phai PNG'; } 
-                return; 
+            if (!isPng) {
+                if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = 'File khong phai PNG'; }
+                return;
             }
             const img = new Image();
             img.onload = () => {
-                if (img.width !== 2048 || img.height !== 1024) { 
-                    if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = `Kich thuoc sai. Yeu cau: 2048x1024. File: ${img.width}x${img.height}`; } 
-                    return; 
+                if (img.width !== 2048 || img.height !== 1024) {
+                    if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = `Kich thuoc sai. Yeu cau: 2048x1024. File: ${img.width}x${img.height}`; }
+                    return;
                 }
-                if(uvStatus) { uvStatus.style.color = '#00ff99'; uvStatus.innerHTML = 'UV Skin hop le'; } 
-                const url = URL.createObjectURL(file); 
+                if(uvStatus) { uvStatus.style.color = '#00ff99'; uvStatus.innerHTML = 'UV Skin hop le'; }
+                const url = URL.createObjectURL(file);
                 if(uvDownload) { uvDownload.href = url; uvDownload.download = 'bus_final.png'; uvDownload.style.display = 'block'; }
             };
             img.onerror = () => { if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = 'Loi doc file'; } };
@@ -270,49 +318,83 @@ function setupMenuEvents() {
 }
 
 async function startGameFromMenu() {
-    ui.hideMainMenu(); ui.setLoading("Đang tải...", 0.1); await new Promise(r => setTimeout(r, 100));
+    ui.hideMainMenu();
+    ui.setLoading("Đang tải...", 0.1);
+    await new Promise(r => setTimeout(r, 100));
     try {
-        ui.setLoading("Ánh sáng...", 0.2); lighting = new LightingSystem({ scene, timeScale: 1, initialMinutes: 390 }); lighting.update(0.1); await new Promise(r => setTimeout(r, 300));
-        ui.setLoading("Bản đồ...", 0.4); map = createMap({ scene, seed: 2026, lighting }); ui.setupMinimap(map); await new Promise(r => setTimeout(r, 500));
-        ui.setLoading("Xe khách...", 0.6); bus = createBus(); interior = createBusInterior(); if (!interior?.isObject3D) interior = new THREE.Group(); bus.group.add(interior); scene.add(bus.group);
+        ui.setLoading("Ánh sáng...", 0.2);
+        lighting = new LightingSystem({ scene, timeScale: 1, initialMinutes: 390 });
+        lighting.update(0.1);
+        await new Promise(r => setTimeout(r, 300));
+        
+        ui.setLoading("Bản đồ...", 0.4);
+        await new Promise(r => setTimeout(r, 50));
+        map = createMap({ scene, seed: 2026, lighting });
+        ui.setupMinimap(map);
+        await new Promise(r => setTimeout(r, 100));
+        
+        ui.setLoading("Xe khách...", 0.6);
+        bus = createBus();
+        interior = createBusInterior();
+        if (!interior?.isObject3D) interior = new THREE.Group();
+        bus.group.add(interior);
+        scene.add(bus.group);
         const spawn = map.getSpawnPoint();
         bus.group.position.set(spawn.x, 0.5, spawn.z);
         bus.group.rotation.y = (spawn.heading || 0) + Math.PI / 2;
-        bus.group.name = 'player_bus'; // Đặt tên để NPC nhận diện
+        bus.group.name = 'player_bus';
         if (window.collisionSystem) playerColId = window.collisionSystem.register(bus.group.position.x, bus.group.position.z, 4.0, 'player');
-        cameraSystem = new CameraSystem(camera, bus.group); cameraSystem.setMode("driver");
-        cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000; await new Promise(r => setTimeout(r, 300));
+        cameraSystem = new CameraSystem(camera, bus.group);
+        cameraSystem.setMode("driver");
+        cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
+        await new Promise(r => setTimeout(r, 300));
         
-        ui.setLoading("Giao thông...", 0.8); await loadNpcSkinList(); npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: { x: spawn.x, z: spawn.z } }); 
-        trafficManager = createTrafficManager({ scene, roadGraph: roadNetwork, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 }); 
+        ui.setLoading("Giao thông...", 0.8);
+        await loadNpcSkinList();
+        npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: { x: spawn.x, z: spawn.z } });
+        trafficManager = createTrafficManager({ scene, roadGraph: roadNetwork, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 });
         
         const thSt = getNode('py_st'); if (thSt) trafficManager.setupStationTraffic(thSt);
         const mdSt = getNode('sg_md'); if (mdSt) trafficManager.setupStationTraffic(mdSt);
         const restStop = getNode('dc_rest'); if (restStop) trafficManager.setupStationTraffic(restStop);
         const gasStation = getNode('exp_gas'); if (gasStation) trafficManager.setupStationTraffic(gasStation);
+        const khGas = getNode('kh_gas'); if (khGas) trafficManager.setupStationTraffic(khGas);
+        const bdGas = getNode('bd_gas'); if (bdGas) trafficManager.setupStationTraffic(bdGas);
 
-        passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui }); await new Promise(r => setTimeout(r, 300));
+        passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui });
+        await new Promise(r => setTimeout(r, 10));
         
-        ui.setLoading("Hoàn tất...", 1.0); await new Promise(r => setTimeout(r, 100)); ui.hideLoading();
-        gameState = "playing"; paused = false; document.getElementById("hud").style.display = "block"; initInput(); clock.start(); lastTime = performance.now();
-    } catch (error) { 
-        console.error("❌ Lỗi chi tiết:", error); 
-        alert("Lỗi tải game:\n" + error.message + "\n\nStack: " + error.stack); 
-        ui.showMainMenu(); 
+        ui.setLoading("Hoàn tất...", 1.0);
+        await new Promise(r => setTimeout(r, 100));
+        ui.hideLoading();
+        gameState = "playing";
+        paused = false;
+        document.getElementById("hud").style.display = "block";
+        initInput();
+        clock.start();
+        lastTime = performance.now();
+    } catch (error) {
+        console.error("❌ Lỗi chi tiết:", error);
+        alert("Lỗi tải game:\n" + error.message + "\n\nStack: " + error.stack);
+        ui.showMainMenu();
     }
 }
 
 function updateWorld(delta) {
-    if (!lighting) return; lighting.update(delta);
-    if (bus && bus.setDoor) { doorProgress += (doorTarget - doorProgress) * 2.0 * delta; bus.setDoor(doorProgress); }
-    updateVehiclePhysics(delta); cameraSystem?.update(delta);
+    if (!lighting) return;
+    lighting.update(delta);
+    if (bus && bus.setDoor) {
+        doorProgress += (doorTarget - doorProgress) * 2.0 * delta;
+        bus.setDoor(doorProgress);
+    }
+    updateVehiclePhysics(delta);
+    cameraSystem?.update(delta);
     if (bus?.group && map) map.setPlayerPosition(bus.group.position.x, bus.group.position.z);
     if (npc) npc.update(delta, 0);
     if (trafficManager) trafficManager.update(delta, { x: bus.group.position.x, z: bus.group.position.z });
     if (passengerSystem) passengerSystem.update(delta);
     if (bus?.group && camera && lighting) updateEnderman(scene, camera, lighting, { x: bus.group.position.x, z: bus.group.position.z }, bus.group.rotation.y, delta);
 
-    // HỆ THỐNG PHẠT NGUỘI
     const speedKmh = Math.abs(vehiclePhysics.currentSpeedKmh);
     if (speedKmh > 80 && Math.random() < 0.005) {
         speedCameraFlashTimer = 0.3;
@@ -325,11 +407,10 @@ function updateWorld(delta) {
         renderer.setClearColor(0x87ceeb, 1);
     }
 
-    // TRẠM THU PHÍ ETC
     const busPos = bus?.group?.position;
     if (busPos) {
-        const distToTollN = Math.hypot(busPos.x - 250, busPos.z - (-2500));
-        const distToTollS = Math.hypot(busPos.x - 400, busPos.z - (-3700));
+        const distToTollN = Math.hypot(busPos.x - 450, busPos.z - (-4800));
+        const distToTollS = Math.hypot(busPos.x - 600, busPos.z - (-6000));
         if ((distToTollN < 40 || distToTollS < 40) && speedKmh > 25) {
             ui?.toast("⚠️ Trạm thu phí ETC: Vượt quá 25km/h!");
         }
@@ -343,12 +424,28 @@ function updateHUD(delta) {
     if (gameState !== "playing" || !bus || !ui) return;
     const zones = passengerSystem?.getActiveZones?.() || [];
     if (!window._npcZonesCache) window._npcZonesCache = [];
-    const npcZones = window._npcZonesCache; npcZones.length = 0;
-    if (trafficManager?.aiVehicles) { for (let i = 0; i < trafficManager.aiVehicles.length; i++) { const c = trafficManager.aiVehicles[i].collider; if (c) npcZones.push(c); } }
-    ui.update({ fps: 1/delta, speedKmh: vehiclePhysics.currentSpeedKmh, passengers: passengerSystem?.onboardPassengers?.length || 0, timeMinutes: lighting?.getGameTime() || 0, x: bus.group.position.x, z: bus.group.position.z, heading: bus.group.rotation.y, passengerZones: zones, npcZones: npcZones });
+    const npcZones = window._npcZonesCache;
+    npcZones.length = 0;
+    if (trafficManager?.aiVehicles) {
+        for (let i = 0; i < trafficManager.aiVehicles.length; i++) {
+            const c = trafficManager.aiVehicles[i].collider;
+            if (c) npcZones.push(c);
+        }
+    }
+    ui.update({
+        fps: 1/delta,
+        speedKmh: vehiclePhysics.currentSpeedKmh,
+        passengers: passengerSystem?.onboardPassengers?.length || 0,
+        timeMinutes: lighting?.getGameTime() || 0,
+        x: bus.group.position.x,
+        z: bus.group.position.z,
+        heading: bus.group.rotation.y,
+        passengerZones: zones,
+        npcZones: npcZones
+    });
 }
 
-const FIXED_STEP = 1/30; 
+const FIXED_STEP = 1/30;
 let accumulator = 0;
 
 function loop() {
@@ -372,7 +469,10 @@ function loop() {
 
         if (renderer && scene && camera) renderer.render(scene, camera);
         if (gameState === "playing") updateHUD(rawDelta);
-    } catch (e) { console.error("Loop Error:", e); }
+    } catch (e) {
+        console.error("Loop Error:", e);
+    }
     window.requestAnimationFrame(loop);
 }
+
 boot();

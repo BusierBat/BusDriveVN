@@ -1,6 +1,7 @@
 // js/map/data/roadTypes.js
-// ⚠️ FILE NÀY LÀ NGUỒN DUY NHẤT CỦA ROAD_TYPES
-// Các file khác CHỈ IMPORT từ đây, không khai báo lại
+
+import { quadSwapDiagonal } from "three/src/nodes/gpgpu/SubgroupFunctionNode.js";
+import { QuadraticBezierCurve } from "three/src/Three.Core.js";
 
 export const ROAD_TYPES = {
     QL1A: {
@@ -197,9 +198,6 @@ export const ROAD_TYPES = {
     },
 };
 
-// ============================================================
-// HELPER FUNCTIONS
-// ============================================================
 
 export function getRoadTypeConfig(type) {
     if (!type) return ROAD_TYPES.NORMAL_ROAD;

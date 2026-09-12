@@ -1,5 +1,4 @@
-// js/traffic/BusTrafficManager.js - MANAGER CHO NPC BUS TRAFFIC (FIXED)
-// Fix: Await skin load trước spawn, fallback material
+// js/traffic/BusTrafficManager.js
 
 import * as THREE from "three";
 import { createNpcBus, pickNpcSkinPath, pickLedColor, loadNpcSkinList, BUS_DIMENSIONS } from "../bus.js";
@@ -7,12 +6,8 @@ import { BusTrafficAI, BUS_AI_CONFIG } from "./BusTrafficAI.js";
 import { createSeededRandom } from "../utils.js";
 import { getGraphicsSettings } from "./GraphicsSettings.js";
 
-// ============================================================
-// SPAWN CONFIG
-// ============================================================
 
 export const BUS_TRAFFIC_CONFIG = {
-    // === SPAWN RATIO ===
     vehicleTypeWeights: {
         BUS: 60,
         TRUCK: 15,
@@ -20,30 +15,22 @@ export const BUS_TRAFFIC_CONFIG = {
         MOTORCYCLE: 10,
     },
 
-    // === MAX ACTIVE ===
     maxActiveBuses: 20,
     maxActiveOthers: 10,
 
-    // === SPAWN SETTINGS ===
     spawnInterval: 3.0,
     spawnAheadBias: 0.7,
 
-    // === OBJECT POOL ===
     poolSize: 30,
     poolEnabled: true,
 
-    // === DESPAWN ===
     despawnDistance: 350,
 
-    // === SAFETY ===
     minSpawnDistanceFromPlayer: 120,
     minSpawnDistanceFromOther: 25,
     maxSpawnAttempts: 10,
 };
 
-// ============================================================
-// BUS TRAFFIC MANAGER
-// ============================================================
 
 export class BusTrafficManager {
     constructor({
@@ -57,36 +44,26 @@ export class BusTrafficManager {
         this.playerRef = playerRef;
         this.config = { ...BUS_TRAFFIC_CONFIG, ...config };
 
-        // AI instances
         this.busAIVehicles = [];
 
-        // Object pool
         this.busPool = [];
 
-        // Spawn timer
         this.spawnTimer = 0;
 
-        // Seeded random
         this.seed = Date.now();
         this.random = createSeededRandom(this.seed);
 
-        // Graphics settings
         this.graphics = getGraphicsSettings();
         this.graphics.onChange(() => this._onSettingsChanged());
 
-        // === SKIN LOADING STATE ===
         this.skinsLoaded = false;
         this.skinsLoading = false;
 
-        // ⚠️ LOAD SKINS FIRST - KHÔNG SPAWN NGAY!
         this._initSkins();
 
         console.log("🚌 BusTrafficManager initialized (waiting for skins...)");
     }
 
-    // ============================================================
-    // SKIN INITIALIZATION (AWAIT TRƯỚC KHI SPAWN)
-    // ============================================================
 
     async _initSkins() {
         if (this.skinsLoading || this.skinsLoaded) return;
@@ -102,29 +79,22 @@ export class BusTrafficManager {
 
         } catch (err) {
             console.warn("⚠️ Failed to load NPC skins:", err);
-            this.skinsLoaded = true; // Vẫn spawn với fallback
+            this.skinsLoaded = true;
             this.skinsLoading = false;
             this._spawnInitialTraffic();
         }
     }
 
-    // ============================================================
-    // MAIN UPDATE
-    // ============================================================
 
     update(deltaTime, playerPos) {
         if (!playerPos) return;
 
-        // ⚠️ KHÔNG SPAWN nếu skins chưa load xong
         if (!this.skinsLoaded) return;
 
-        // 1. Update all bus AI
         this._updateBusAI(deltaTime, playerPos);
 
-        // 2. Despawn check
         this._checkDespawn(playerPos);
 
-        // 3. Spawn check
         this.spawnTimer += deltaTime;
         if (this.spawnTimer >= this.config.spawnInterval) {
             this.spawnTimer = 0;
@@ -140,9 +110,6 @@ export class BusTrafficManager {
         }
     }
 
-    // ============================================================
-    // SPAWN SYSTEM
-    // ============================================================
 
     _spawnInitialTraffic() {
         const initialBuses = Math.min(
@@ -186,18 +153,15 @@ export class BusTrafficManager {
     }
 
     _spawnBusVehicle(initialSpawn = false, playerPos = null) {
-        // ⚠️ CHECK: Skins phải loaded
         if (!this.skinsLoaded) {
             console.warn("⚠️ Cannot spawn: skins not loaded yet");
             return null;
         }
 
-        // 1. Get bus from pool hoặc create mới
         let busVehicle = this._getBusFromPool();
 
         if (!busVehicle) {
-            // Create new - createNpcBus sẽ tự fallback nếu skin fail
-            const skinPath = pickNpcSkinPath(); // null nếu không có skin → dùng fallback xám
+            const skinPath = pickNpcSkinPath();
             busVehicle = createNpcBus({
                 skinPath: skinPath,
                 ledColor: pickLedColor()
@@ -211,14 +175,12 @@ export class BusTrafficManager {
             this.scene.add(busVehicle.group);
         }
 
-        // 2. Tìm vị trí spawn hợp lý
         const spawnLocation = this._findSpawnLocation(playerPos, initialSpawn);
         if (!spawnLocation) {
             this._returnBusToPool(busVehicle);
             return null;
         }
 
-        // 3. Tạo AI instance
         const ai = new BusTrafficAI({
             vehicle: busVehicle,
             roadGraph: this.roadGraph,
@@ -226,18 +188,15 @@ export class BusTrafficManager {
             config: BUS_AI_CONFIG
         });
 
-        // 4. Set spawn position
         ai.currentSegmentIndex = spawnLocation.segmentIndex;
         ai.progress = spawnLocation.progress;
         ai._setLaneForSegment(this.roadGraph[spawnLocation.segmentIndex]);
         ai._updatePositionFromSegment();
         ai._applyToVehicle();
 
-        // Set initial speed
         ai.speed = ai.maxSpeed * (0.6 + this.random() * 0.3);
         ai.targetSpeed = ai.maxSpeed * 0.8;
 
-        // 5. Add to active list
         this.busAIVehicles.push(ai);
 
         return ai;
@@ -259,7 +218,6 @@ export class BusTrafficManager {
             const x = p0.x + (p1.x - p0.x) * progress;
             const z = p0.z + (p1.z - p0.z) * progress;
 
-            // Check khoảng cách với player
             if (playerPos) {
                 const distToPlayer = Math.hypot(x - playerPos.x, z - playerPos.z);
 
@@ -271,7 +229,6 @@ export class BusTrafficManager {
                 }
             }
 
-            // Check khoảng cách với các xe khác
             let tooClose = false;
             for (const ai of this.busAIVehicles) {
                 const otherPos = ai.vehicle.group.position;
@@ -296,9 +253,6 @@ export class BusTrafficManager {
         return null;
     }
 
-    // ============================================================
-    // OBJECT POOL
-    // ============================================================
 
     _getBusFromPool() {
         if (!this.config.poolEnabled || this.busPool.length === 0) {
@@ -333,9 +287,6 @@ export class BusTrafficManager {
         }
     }
 
-    // ============================================================
-    // DESPAWN SYSTEM
-    // ============================================================
 
     _checkDespawn(playerPos) {
         for (let i = this.busAIVehicles.length - 1; i >= 0; i--) {
@@ -362,9 +313,6 @@ export class BusTrafficManager {
         this.busAIVehicles.splice(index, 1);
     }
 
-    // ============================================================
-    // COLLIDER API
-    // ============================================================
 
     getColliders() {
         const colliders = [];
@@ -395,9 +343,6 @@ export class BusTrafficManager {
         return this.busAIVehicles;
     }
 
-    // ============================================================
-    // SETTINGS
-    // ============================================================
 
     _onSettingsChanged() {
         const settings = this.graphics.settings;
@@ -409,9 +354,6 @@ export class BusTrafficManager {
         }
     }
 
-    // ============================================================
-    // DEBUG
-    // ============================================================
 
     getDebugInfo() {
         return {
@@ -423,9 +365,6 @@ export class BusTrafficManager {
         };
     }
 
-    // ============================================================
-    // DISPOSE
-    // ============================================================
 
     dispose() {
         for (const ai of this.busAIVehicles) {

@@ -1,4 +1,4 @@
-// js/camera.js - FIXED: Zero-lag internal camera & smooth mouse rotation
+// js/camera.js
 import * as THREE from "three";
 
 const BED_Z_POSITIONS = [1.85, 2.05, 0.25, -1.85, -3.5, -5.15];
@@ -63,20 +63,20 @@ export class CameraSystem {
       ...PASSENGER_SEATS.map((_, i) => `seat_${i}`)
     ];
     this.currentIndex = 0;
-    
+
     this.isMouseDown = false;
     this.orbitYaw = Math.PI;
     this.orbitPitch = 0.2;
     this.orbitDistance = this.settings.outsideDistance;
-    
+
     this.bedLookYaw = 0;
     this.bedLookPitch = 0;
     this.cabinYaw = 0;
     this.cabinPitch = 0;
-    
+
     this.currentPos = new THREE.Vector3();
     this.currentLook = new THREE.Vector3();
-    
+
     this._onMouseDown = (e) => {
       if (e.button === 0) {
         this.isMouseDown = true;
@@ -86,12 +86,12 @@ export class CameraSystem {
     this._onMouseUp = () => { this.isMouseDown = false; };
     this._onMouseMove = (e) => this.onMouseMove(e);
     this._onWheel = (e) => this.onWheel(e);
-    
+
     document.addEventListener('mousedown', this._onMouseDown);
     document.addEventListener('mouseup', this._onMouseUp);
     document.addEventListener('mousemove', this._onMouseMove);
     document.addEventListener('wheel', this._onWheel);
-    
+
     this.setMode(this.modes[0]);
   }
 
@@ -100,11 +100,10 @@ export class CameraSystem {
         const mode = this.modes[this.currentIndex];
         const moveX = Math.max(-100, Math.min(100, e.movementX || 0));
         const moveY = Math.max(-100, Math.min(100, e.movementY || 0));
-        
-        // CHUẨN HÓA: Kéo chuột PHẢI -> nhìn PHẢI, Kéo chuột LÊN -> nhìn LÊN
+
         const sensX = (this.settings.invertX ? -1 : 1) * this.settings.cameraSensitivity * moveX;
         const sensY = (this.settings.invertY ? -1 : 1) * this.settings.cameraSensitivity * moveY;
-        
+
         if (isNaN(sensX) || isNaN(sensY)) return;
         if (mode === 'outside') {
             this.orbitYaw -= sensX;
@@ -181,14 +180,14 @@ export class CameraSystem {
       const z = this.orbitDistance * Math.cos(this.orbitPitch) * Math.cos(this.orbitYaw);
       const localTarget = new THREE.Vector3(0, 1.5, 0);
       const localCamPos = new THREE.Vector3(x, y + 1.5, z);
-      
+
       const worldTargetPos = localCamPos.clone().applyMatrix4(busWorldMatrix);
       const worldTargetLook = localTarget.clone().applyMatrix4(busWorldMatrix);
 
       const smoothFactor = Math.min(1, 20 * deltaTime);
       this.currentPos.lerp(worldTargetPos, smoothFactor);
       this.currentLook.lerp(worldTargetLook, smoothFactor);
-      
+
       this.camera.position.copy(this.currentPos);
       this.camera.lookAt(this.currentLook);
     } else if (mode.startsWith('seat_')) {

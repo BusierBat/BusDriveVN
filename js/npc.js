@@ -1,4 +1,4 @@
-// js/npc.js - INFINITE TRAFFIC + RESPAWN + OBJECT POOL + PASSENGER POINTS
+// js/npc.js
 import * as THREE from "three";
 import { clamp, randomFloat, pick, createSeededRandom, disposeObject3D } from "./utils.js";
 import { createNpcBus, pickNpcSkinPath, pickLedColor, loadNpcSkinList } from "./bus.js";
@@ -17,18 +17,18 @@ export class BusStationManager {
     this.stationBuses = [];
     this.busGroup = new THREE.Group();
     this.scene.add(this.busGroup);
-    
-    this.maxStaticBuses = 7; 
+
+    this.maxStaticBuses = 7;
     this.spawnTimer = 0;
     this.spawnQueue = [];
-    
+
     this.prepareStationSpawns();
   }
-  
+
   prepareStationSpawns() {
     const availableSlots = this.parkingSlots.filter(s => !s.occupied);
     let selectedSlots = availableSlots.slice(0, this.maxStaticBuses);
-    
+
     if (this.playerSpawnPos) {
       const spawnX = this.playerSpawnPos.x, spawnZ = this.playerSpawnPos.z;
       selectedSlots = selectedSlots.filter(slot => Math.hypot(slot.position.x - spawnX, slot.position.z - spawnZ) > 20);
@@ -36,7 +36,7 @@ export class BusStationManager {
     for (const slot of selectedSlots) { this.spawnQueue.push(slot); }
     for (let i = 0; i < Math.min(3, this.spawnQueue.length); i++) { this._spawnOneBus(this.spawnQueue.shift()); }
   }
-  
+
   _spawnOneBus(slot) {
     if (!slot) return;
     const bus = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
@@ -46,8 +46,8 @@ export class BusStationManager {
     this.busGroup.add(bus.group);
     this.stationBuses.push({ bus, state: 'PARKED' });
   }
-  
-  update(dt) { 
+
+  update(dt) {
     if (this.spawnQueue.length > 0) {
       this.spawnTimer += dt;
       if (this.spawnTimer >= 0.5) { this.spawnTimer = 0; this._spawnOneBus(this.spawnQueue.shift()); }
@@ -107,7 +107,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
   if (!scene || !map) return { update() {}, dispose() {}, getWaitingPassengers: () => [] };
   const random = createSeededRandom(seed);
   const group = new THREE.Group(); group.name = "npc"; scene.add(group);
-  
+
   const graph = map.getRoadGraph(); const edges = graph.edges;
   const edgePaths = edges.map((e) => { const cum = new Float32Array(e.points.length); let total = 0; for (let i = 1; i < e.points.length; i++) { total += Math.hypot(e.points[i].x - e.points[i-1].x, e.points[i].z - e.points[i-1].z); cum[i] = total; } return { cum, total: total || 1 }; });
 
@@ -125,13 +125,11 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
     waitingPassengers = [];
     const waypoints = getRouteWaypoints();
     const stationNode = waypoints[0].position || waypoints[0];
-    
-    // 10 khách ở bến xe
+
     for (let i = 0; i < 10; i++) {
       waitingPassengers.push({ id: `pass_station_${i}`, x: stationNode.x + (random() - 0.5) * 15, z: stationNode.z + (random() - 0.5) * 15, y: 0.5, destination: waypoints[waypoints.length - 1].id });
     }
-    
-    // 10 khách dọc đường (FIX: Đẩy ra lề đường)
+
     const segments = roadNetwork.segments;
     for (let i = 1; i < waypoints.length - 1; i++) {
       if (i > 10) break;
@@ -141,16 +139,15 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
       const dz = p2.z - p1.z;
       const len = Math.hypot(dx, dz);
       if (len === 0) continue;
-      
-      // Vector pháp tuyến (right vector) để tính lề đường
+
       const rx = dz / len;
       const rz = -dx / len;
-      const offset = 15 + random() * 5; // Lề rộng 15-20m
-      const side = random() > 0.5 ? 1 : -1; // Ngẫu nhiên bên trái/phải
-      
+      const offset = 15 + random() * 5;
+      const side = random() > 0.5 ? 1 : -1;
+
       const x = p1.x + dx * 0.5 + rx * offset * side + (random() - 0.5) * 3;
       const z = p1.z + dz * 0.5 + rz * offset * side + (random() - 0.5) * 3;
-      
+
       waitingPassengers.push({ id: `pass_road_${i}`, x, z, y: 0.5, destination: waypoints[waypoints.length - 1].id });
     }
   }

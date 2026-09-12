@@ -454,38 +454,34 @@ export function debounce(fn, wait = 0) {
   return debounced;
 }
 
-// js/utils.js - SỬA createMovingAverage
 
 export function createMovingAverage(windowSize = 30) {
     const samples = new Float32Array(windowSize);
     let index = 0;
     let count = 0;
     let sum = 0;
-    
+
     return {
         add(value) {
-            // Remove old value nếu buffer full
             if (count === windowSize) {
                 sum -= samples[index];
             } else {
                 count++;
             }
-            
-            // Add new value
+
             samples[index] = value;
             sum += value;
-            
-            // Move index
+
             index = (index + 1) % windowSize;
-            
+
             return this.get();
         },
-        
+
         get() {
             if (count === 0) return 0;
             return sum / count;
         },
-        
+
         reset() {
             samples.fill(0);
             index = 0;

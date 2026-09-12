@@ -1,4 +1,5 @@
-// js/map/map.js - SMOOTH CHUNK STREAMING & VRAM MANAGEMENT
+// js/map/map.js
+
 import * as THREE from "three";
 import { generateChunk } from "./chunkGenerator.js";
 import { createRoadNetworkMesh } from "./roadGenerator.js";
@@ -7,7 +8,7 @@ import { getSpawnPoint as getRouteSpawn, getRouteWaypoints, getMinimapData, getW
 import { roadNetwork } from "./data/roadNetworkData.js";
 
 const CHUNK_SIZE = 256;
-const RENDER_DISTANCE_CHUNKS = 2; // Preload 2 chunks
+const RENDER_DISTANCE_CHUNKS = 2;
 const WORLD_SEED = 20260817;
 
 export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
@@ -28,9 +29,10 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
     }
     
     const chunks = new Map();
-    const staticColliders = []; 
+    const staticColliders = [];
     const chunkBuildQueue = [];
     const worldSeed = seed;
+    let chunkBuildTimer = 0;
 
     function buildChunk(cx, cz) {
         const key = `${cx},${cz}`;
@@ -41,7 +43,6 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
             group.add(chunkGroup);
             const chunkColliders = chunkGroup.userData.colliders || [];
             
-            // Đăng ký collider vào CollisionSystem
             const regIds = [];
             for (const c of chunkColliders) {
                 if (window.collisionSystem) {
@@ -61,29 +62,20 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
         if (!entry) return;
         
         group.remove(entry.group);
-        
-        // VRAM MANAGEMENT: Dispose geometry và material
         entry.group.traverse(child => {
             if (child.geometry) child.geometry.dispose();
-            if (child.material) {
-                if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
-                else child.material.dispose();
-            }
         });
         
-        // Xóa collider khỏi CollisionSystem
         if (window.collisionSystem) {
             for (const id of entry.colliderIds) window.collisionSystem.remove(id);
         }
         
-        // Xóa khỏi mảng tĩnh
         if (entry.colliderIds.length > 0) {
             const removeSet = new Set(entry.colliderIds);
             for (let i = staticColliders.length - 1; i >= 0; i--) {
                 if (removeSet.has(staticColliders[i])) staticColliders.splice(i, 1);
             }
         }
-        
         chunks.delete(key);
     }
 
@@ -117,19 +109,25 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
     const spawn = getRouteSpawn();
     const cx0 = Math.floor(spawn.x / CHUNK_SIZE);
     const cz0 = Math.floor(spawn.z / CHUNK_SIZE);
+    
+    buildChunk(cx0, cz0);
+    
     for (let dx = -1; dx <= 1; dx++) {
         for (let dz = -1; dz <= 1; dz++) {
-            buildChunk(cx0 + dx, cz0 + dz);
+            if (dx === 0 && dz === 0) continue;
+            chunkBuildQueue.push({ x: cx0 + dx, z: cz0 + dz });
         }
     }
     updateChunks(spawn.x, spawn.z);
 
-    function processQueue(maxPerFrame = 2) {
-        let built = 0;
-        while (chunkBuildQueue.length > 0 && built < maxPerFrame) {
+    function processQueue() {
+        chunkBuildTimer++;
+        if (chunkBuildTimer < 10) return;
+        chunkBuildTimer = 0;
+        
+        if (chunkBuildQueue.length > 0) {
             const next = chunkBuildQueue.shift();
             buildChunk(next.x, next.z);
-            built++;
         }
     }
 

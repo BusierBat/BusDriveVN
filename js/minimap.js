@@ -1,17 +1,17 @@
-// js/minimap.js - CIRCULAR MINIMAP SYSTEM
+// js/minimap.js
 export class MinimapSystem {
     constructor({ map, bus, scene }) {
         this.map = map;
         this.bus = bus;
         this.scene = scene;
-        
+
         this.canvas = document.createElement('canvas');
         this.canvas.width = 200;
         this.canvas.height = 200;
         this.canvas.style.cssText = 'position:fixed; top:20px; right:20px; width:200px; height:200px; border:2px solid #3b82f6; border-radius:50%; overflow:hidden; z-index:50; pointer-events:none; background:#1e293b;';
         document.body.appendChild(this.canvas);
         this.ctx = this.canvas.getContext('2d');
-        
+
         this.roadData = [];
         this.routeData = [];
         this.npcPositions = [];
@@ -32,13 +32,12 @@ export class MinimapSystem {
         const ctx = this.ctx;
         const px = this.bus.group.position.x;
         const pz = this.bus.group.position.z;
-        const scale = 0.05; // Zoom level
-        
+        const scale = 0.05;
+
         ctx.clearRect(0, 0, 200, 200);
         ctx.fillStyle = '#1e293b';
         ctx.fillRect(0, 0, 200, 200);
-        
-        // Vẽ Roads (màu xám)
+
         ctx.strokeStyle = '#64748b';
         ctx.lineWidth = 2;
         for (const seg of this.roadData) {
@@ -51,8 +50,7 @@ export class MinimapSystem {
             ctx.lineTo(x2, y2);
             ctx.stroke();
         }
-        
-        // Vẽ Route (màu xanh dậm, nét to)
+
         ctx.strokeStyle = '#3b82f6';
         ctx.lineWidth = 4;
         for (const seg of this.routeData) {
@@ -66,7 +64,6 @@ export class MinimapSystem {
              ctx.stroke();
         }
 
-        // Vẽ NPC vehicles (chấm đỏ)
         ctx.fillStyle = '#ef4444';
         for (const npc of this.npcPositions) {
             const x = 100 + (npc.x - px) * scale;
@@ -75,8 +72,7 @@ export class MinimapSystem {
             ctx.arc(x, y, 2, 0, Math.PI * 2);
             ctx.fill();
         }
-        
-        // Vẽ Player (mũi tên trắng)
+
         ctx.save();
         ctx.translate(100, 100);
         ctx.rotate(-this.bus.group.rotation.y);

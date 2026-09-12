@@ -1,10 +1,9 @@
-// js/passenger.js - HỆ THỐNG HÀNH KHÁCH (OPTIMIZED & SAFE)
+// js/passenger.js
 import * as THREE from "three";
 const _tmpLerpTarget = new THREE.Vector3();
 let _passengerUpdateTimer = 0;
 
 export function createPassengerSystem({ scene, map, npc, bus, ui }) {
-    // Null-check an toàn tuyệt đối
     if (!scene || !bus || !npc) {
         console.error("PassengerSystem thiếu dependency quan trọng!");
         return { update: () => {}, pickUpPassengers: () => 0, dropOffPassengers: () => 0, getActiveZones: () => [], onboardPassengers: [] };
@@ -13,14 +12,14 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
     const passengerGroup = new THREE.Group();
     passengerGroup.name = "passengers";
     scene.add(passengerGroup);
-    
+
     let waitingPassengers = [];
     let onboardPassengers = [];
     const MAX_PASSENGERS = 24;
     const PICKUP_RANGE = 25;
     const SKIN_COLORS = [0xe8c9a0, 0xd4a574, 0xc4956a, 0xf5d6b8];
     const CLOTH_COLORS = [0x4a6fa5, 0xd64545, 0x2d7d46, 0x8b6b4a, 0x5d7f9c, 0x7c5f8f];
-    
+
     const glowCanvas = document.createElement('canvas');
     glowCanvas.width = 256; glowCanvas.height = 256;
     const gctx = glowCanvas.getContext('2d');
@@ -37,7 +36,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         const skinMat = new THREE.MeshStandardMaterial({ color: color2 || 0xe8c9a0, roughness: 0.7 });
         const clothMat = new THREE.MeshStandardMaterial({ color: color1 || 0x4a6fa5, roughness: 0.8 });
         const pantsMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9 });
-        
+
         const torso = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.6, 0.2), clothMat);
         torso.position.y = 1.1; g.add(torso);
         const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), skinMat);
@@ -167,9 +166,9 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             max: MAX_PASSENGERS
         };
     }
-    
+
     loadPassengers();
-    
+
     function update(dt) {
         if (!bus?.group) return;
         _passengerUpdateTimer += dt;
@@ -178,12 +177,12 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             updatePassengers(bus.group.position, bus.group.rotation.y);
         }
     }
-    
-    function dispose() { 
-        scene.remove(passengerGroup); 
-        while (passengerGroup.children.length) passengerGroup.remove(passengerGroup.children[0]); 
+
+    function dispose() {
+        scene.remove(passengerGroup);
+        while (passengerGroup.children.length) passengerGroup.remove(passengerGroup.children[0]);
     }
-    
+
     return {
         update, pickUpPassengers, dropOffPassengers, getPassengerCount, dispose, passengerGroup,
         waitingPassengers, onboardPassengers, getActiveZones: () => waitingPassengers.filter(p => !p.picked)

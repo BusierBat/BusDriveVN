@@ -1,2 +1,2 @@
-// js/map.js - Re-export map module
+// js/map.js
 export { createMap } from "./map/map.js";

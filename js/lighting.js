@@ -1,4 +1,4 @@
-// js/lighting.js - DAY/NIGHT CYCLE & WEATHER SYSTEM
+// js/lighting.js
 import * as THREE from "three";
 
 export class LightingSystem {
@@ -25,7 +25,6 @@ export class LightingSystem {
         this._initLights();
         this._initRain();
         this._updateTimeOfDay();
-        this._updateStreetLights();
     }
 
     _initLights() {
@@ -43,7 +42,7 @@ export class LightingSystem {
 
     _initRain() {
         const rainGeo = new THREE.BufferGeometry();
-        const rainCount = 3000;
+        const rainCount = 1000;
         const positions = new Float32Array(rainCount * 3);
         for (let i = 0; i < rainCount; i++) {
             positions[i * 3] = (Math.random() - 0.5) * 300;
@@ -67,13 +66,12 @@ export class LightingSystem {
         if (!deltaTime) return;
         this.gameTimeMinutes += deltaTime * this.timeScale;
         if (this.gameTimeMinutes >= 1440) this.gameTimeMinutes -= 1440;
-        
+
         this._lightUpdateTimer += deltaTime;
         if (this._lightUpdateTimer < 0.5) return;
         this._lightUpdateTimer = 0;
-        
+
         this._updateTimeOfDay();
-        this._updateStreetLights();
         this._updateWeather(deltaTime);
     }
 
@@ -82,9 +80,9 @@ export class LightingSystem {
         const angle = (hours / 24) * Math.PI * 2 - Math.PI / 2;
         this.lights.sun.position.set(Math.cos(angle) * 200, Math.sin(angle) * 200, 50);
         this.lights.moon.position.set(-Math.cos(angle) * 200, -Math.sin(angle) * 200, 50);
-        
+
         let sunInt = 0, moonInt = 0, ambInt = 0.2;
-        
+
         if (hours >= 5 && hours < 7) {
             const t = (hours - 5) / 2;
             this._lerp(this._tmpSky, 0x0a0a1a, 0xff7e5f, t);
@@ -103,7 +101,7 @@ export class LightingSystem {
             this._tmpSky.setHex(0x0a0a1a);
             sunInt = 0; moonInt = 0.3; ambInt = 0.2;
         }
-        
+
         if (this.isRaining) {
             sunInt *= 0.3;
             ambInt *= 0.5;
@@ -117,23 +115,12 @@ export class LightingSystem {
         this.lights.ambient.intensity = ambInt;
         this.lights.sun.color.copy(this._tmpSunCol);
     }
-    
-    _updateStreetLights() {
-        const hours = this.gameTimeMinutes / 60;
-        const isNight = hours >= 18 || hours <= 5;
-        
-        this.scene.traverse(object => {
-            if (object.isPointLight && object.userData.isStreetLight) {
-                object.visible = isNight;
-            }
-        });
-    }
 
     _updateWeather(dt) {
         if (Math.random() < 0.001) {
             this.isRaining = !this.isRaining;
         }
-        
+
         if (this.isRaining) {
             this.rainParticles.visible = true;
             const positions = this.rainParticles.geometry.attributes.position.array;
@@ -150,11 +137,10 @@ export class LightingSystem {
             this.rainParticles.visible = false;
         }
     }
-    
+
     getGameTime() { return this.gameTimeMinutes; }
-    setGameTime(m) { 
-        this.gameTimeMinutes = m % 1440; 
-        this._updateTimeOfDay(); 
-        this._updateStreetLights(); 
+    setGameTime(m) {
+        this.gameTimeMinutes = m % 1440;
+        this._updateTimeOfDay();
     }
 }

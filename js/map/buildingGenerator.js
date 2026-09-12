@@ -1,4 +1,5 @@
-// js/map/buildingGenerator.js - DIVERSE HOUSES, ROOFS, SIGNAGES & EASTER EGG
+// js/map/buildingGenerator.js
+
 import * as THREE from "three";
 import { roadNetwork, roadProfiles, getPOIs } from "./data/roadNetworkData.js";
 
@@ -129,11 +130,14 @@ export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders
     const startX = chunkX * chunkSize;
     const startZ = chunkZ * chunkSize;
     const zCenter = startZ + chunkSize / 2;
+    
+    // Region Density Logic
     let density = 5; let zone = 'rural';
-    if (zCenter > -1000) { density = 5; zone = 'urban'; }
-    else if (zCenter > -4500) { density = 3; zone = 'rural'; }
-    else if (zCenter < -13000 && zCenter > -14000) { density = 5; zone = 'industrial'; } 
-    else { density = 15; zone = 'hcm'; }
+    if (zCenter > -1000) { density = 5; zone = 'urban'; } // Phu Yen
+    else if (zCenter > -4500) { density = 3; zone = 'rural'; } // Binh Dinh / Deo Ca
+    else if (zCenter < -10000 && zCenter > -12000) { density = 8; zone = 'industrial'; } // Dong Nai
+    else if (zCenter < -12000) { density = 15; zone = 'hcm'; } // HCMC
+    else { density = 4; zone = 'rural'; } // Other rural areas
 
     const buildingCount = Math.floor(random() * density) + 3;
 

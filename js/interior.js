@@ -1,34 +1,22 @@
-// js/interior.js - VIP 24 BED SLEEPER BUS (FULL VERSION - KHÔI PHỤC)
+// js/interior.js
 import * as THREE from "three";
 
-// ============================================================
-// KÍCH THƯỚC XE
-// ============================================================
 const L = 12, W = 2.4, H = 3.3;
 const FLOOR_Y = 0.0, CEILING_Y = 3.2;
 const WALL_X = 1.15;
 const CABIN_END_Z = 4.8;
 
-// ============================================================
-// GIƯỜNG – 24 GIƯỜNG (2 DÃY × 2 TẦNG × 6 HÀNG)
-// ============================================================
 const BED_WIDTH = 0.7;
 const BED_LENGTH = 1.7;
 const BED_Z_POSITIONS = [1.85, 2.05, 0.25, -1.85, -3.5, -5.15];
 const LOWER_BED_Y = 0.67;
 const UPPER_BED_Y = 1.67;
 
-// ============================================================
-// CỬA SỔ
-// ============================================================
 const WIN_LO_BOT = 0.8;
 const WIN_LO_TOP = 1.4;
 const WIN_HI_BOT = 1.8;
 const WIN_HI_TOP = 2.4;
 
-// ============================================================
-// MATERIALS - NỘI THẤT CAO CẤP
-// ============================================================
 const matBrownLeather = new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.7 });
 const matBrownLeatherDark = new THREE.MeshStandardMaterial({ color: 0x4a2a12, roughness: 0.8 });
 const matBedFrame = new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 0.8 });
@@ -48,7 +36,6 @@ const matSteeringWheel = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, rough
 const matSeat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.8 });
 const matSeatCushion = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.9 });
 
-// ===== LED MATERIALS =====
 const matLEDBlue = new THREE.MeshStandardMaterial({
     color: 0x001118,
     emissive: 0x2fb6ff,
@@ -74,9 +61,6 @@ const matAisle = new THREE.MeshStandardMaterial({ color: 0xcc6a6a, roughness: 0.
 const matDivider = new THREE.MeshStandardMaterial({ color: 0xc8c0b0, roughness: 0.9 });
 const matUpperFloor = new THREE.MeshStandardMaterial({ color: 0xd0c8b8, roughness: 0.8 });
 
-// ============================================================
-// HÀM DỰNG CƠ BẢN
-// ============================================================
 function box(w, h, d, mat, x, y, z, group) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(x, y, z);
@@ -86,20 +70,15 @@ function box(w, h, d, mat, x, y, z, group) {
     return m;
 }
 
-// ============================================================
-// CABIN LÁI
-// ============================================================
 function buildCabin(groups) {
     const { DriverArea, Dashboard, Windows, BodyShell } = groups;
 
-    // Kính chắn gió
     const windshield = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 1.4), matGlassClear);
     windshield.position.set(0, 1.8, 6.0 + 0.01);
     windshield.updateMatrix();
     windshield.matrixAutoUpdate = false;
     Windows.add(windshield);
 
-    // Kính bên cabin
     for (const side of [1, -1]) {
         const xGlass = side * (WALL_X + 0.01);
         const cabinWin = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 1.6), matGlassClear);
@@ -113,7 +92,6 @@ function buildCabin(groups) {
         box(0.6, 0.04, 0.04, matShell, side * WALL_X, 2.4, 5.5, BodyShell);
     }
 
-    // Khung kính chắn gió
     box(2.1, 0.04, 0.06, matShell, 0, 2.5, 6.0, BodyShell);
     box(2.1, 0.06, 0.06, matShell, 0, 1.1, 6.0, BodyShell);
     box(0.04, 1.5, 0.06, matShell, -1.05, 1.8, 6.0, BodyShell);
@@ -121,7 +99,6 @@ function buildCabin(groups) {
     box(0.06, 1.8, 0.06, matShell, -WALL_X, 1.8, 5.8, BodyShell);
     box(0.06, 1.8, 0.06, matShell, WALL_X, 1.8, 5.8, BodyShell);
 
-    // Dashboard
     box(1.6, 0.3, 0.6, matDashboard, 0, 0.8, 5.3, Dashboard);
     box(1.6, 0.08, 0.5, matDashboardPanel, 0, 1.0, 5.35, Dashboard);
     const screenMat = new THREE.MeshStandardMaterial({ color: 0x0a0a1a, emissive: 0x224488, emissiveIntensity: 0.3 });
@@ -134,7 +111,6 @@ function buildCabin(groups) {
         box(0.04, 0.04, 0.04, btnMat, -0.3 + i * 0.15, 0.85, 5.6, Dashboard);
     }
 
-    // Cần số
     const lever = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.25, 6), matDark);
     lever.position.set(0.25, 0.9, 5.6);
     lever.updateMatrix();
@@ -146,7 +122,6 @@ function buildCabin(groups) {
     knob.matrixAutoUpdate = false;
     Dashboard.add(knob);
 
-    // Vô-lăng
     const steerGroup = new THREE.Group();
     steerGroup.position.set(0.35, 1.1, 5.1);
     const ring = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 8, 16), matSteeringWheel);
@@ -165,7 +140,6 @@ function buildCabin(groups) {
     steerGroup.add(column);
     DriverArea.add(steerGroup);
 
-    // Ghế tài xế
     box(0.5, 0.08, 0.5, matDark, -0.35, 0.14, 4.5, DriverArea);
     box(0.08, 0.2, 0.08, matDark, -0.35, 0.28, 4.5, DriverArea);
     box(0.5, 0.12, 0.5, matSeatCushion, -0.35, 0.44, 4.5, DriverArea);
@@ -174,7 +148,6 @@ function buildCabin(groups) {
     box(0.03, 0.08, 0.3, matSeat, -0.6, 0.5, 4.45, DriverArea);
     box(0.03, 0.08, 0.3, matSeat, -0.1, 0.5, 4.45, DriverArea);
 
-    // Ghế phụ
     box(0.45, 0.06, 0.45, matDark, 0.65, 0.13, 4.5, DriverArea);
     box(0.06, 0.18, 0.06, matDark, 0.65, 0.25, 4.5, DriverArea);
     box(0.45, 0.1, 0.45, matSeatCushion, 0.65, 0.4, 4.5, DriverArea);
@@ -184,9 +157,6 @@ function buildCabin(groups) {
     box(0.4, 0.05, 0.2, matDashboardPanel, 0.85, 0.85, 5.15, Dashboard);
 }
 
-// ============================================================
-// KHOANG HÀNH KHÁCH - VIP 24 GIƯỜNG
-// ============================================================
 function buildPassengerCabin(groups) {
     const { Beds, Floor, Ceiling, Curtains, Windows, Cabins, Aisle, Led, BodyShell, Lights } = groups;
 
@@ -212,7 +182,6 @@ function buildPassengerCabin(groups) {
         box(0.035, 0.035, aisleLength, matLEDBlue, side * (aisleWidth / 2 - 0.025), PASSENGER_FLOOR_Y + 0.07, aisleCenterZ, Aisle);
         box(0.045, 0.05, aisleLength, matDivider, side * (aisleWidth / 2), PASSENGER_FLOOR_Y + 0.04, aisleCenterZ, Aisle);
     }
-    // Nối hành lang vào cabin
     const cabinAisleLength = 1.2;
     box(aisleWidth, 0.06, cabinAisleLength, matAisle, 0, PASSENGER_FLOOR_Y + 0.02, CABIN_END_Z + cabinAisleLength / 2, Aisle);
     for (const side of [1, -1]) {
@@ -222,21 +191,17 @@ function buildPassengerCabin(groups) {
     // ---------- TRẦN & 3 DẢI LED ----------
     box(W - 0.06, 0.04, L - 0.5, matCream, 0, CEILING_Y + 0.02, 0, Ceiling);
 
-    // 1. DẢI LED GIỮA (màu da nude)
     const centerLed = box(0.06, 0.02, L - 0.8, matLEDNude, 0, CEILING_Y - 0.005, 0.5, Led);
     centerLed.name = "centerLed";
 
-    // 2. HAI DẢI LED HAI BÊN (xanh nước biển)
     for (const side of [1, -1]) {
         const sideLed = box(0.04, 0.02, L - 0.8, matLEDBlue, side * 0.22, CEILING_Y - 0.005, 0.5, Led);
         sideLed.name = side > 0 ? "rightLed" : "leftLed";
     }
 
-    // Gân trần
     for (let z = 3.5; z >= -5.0; z -= 0.45) {
         box(0.45, 0.015, 0.06, matLEDRib, 0, CEILING_Y - 0.005, z, Led);
     }
-    // Dải LED dọc hai bên
     for (const side of [1, -1]) {
         box(0.02, 0.03, L - 0.8, matLEDBlue, side * 1.05, CEILING_Y - 0.04, 0.5, Led);
     }
@@ -282,7 +247,6 @@ function buildPassengerCabin(groups) {
     for (const side of [1, -1]) {
         const xPos = side * xPosAbs;
         for (const z of BED_Z_POSITIONS) {
-            // Tầng dưới
             const yLow = LOWER_BED_Y;
             const frameLow = new THREE.Mesh(new THREE.BoxGeometry(BED_WIDTH + 0.06, 0.08, BED_LENGTH + 0.06), matBedFrame);
             frameLow.position.set(xPos, yLow - 0.12, z);
@@ -305,7 +269,6 @@ function buildPassengerCabin(groups) {
             blanketLow.matrixAutoUpdate = false;
             Beds.add(blanketLow);
 
-            // Tầng trên
             const yUp = UPPER_BED_Y;
             const frameUp = new THREE.Mesh(new THREE.BoxGeometry(BED_WIDTH + 0.06, 0.08, BED_LENGTH + 0.06), matBedFrame);
             frameUp.position.set(xPos, yUp - 0.12, z);
@@ -328,7 +291,6 @@ function buildPassengerCabin(groups) {
             blanketUp.matrixAutoUpdate = false;
             Beds.add(blanketUp);
 
-            // Vách ngăn giữa các giường
             const wallFront = new THREE.Mesh(new THREE.BoxGeometry(dividerWidth, dividerHeight, dividerThick), matDivider);
             wallFront.position.set(xPos, dividerY, z + BED_LENGTH / 2);
             wallFront.updateMatrix();
@@ -342,7 +304,6 @@ function buildPassengerCabin(groups) {
         }
     }
 
-    // Vách cuối xe
     const rearZ = BED_Z_POSITIONS[BED_Z_POSITIONS.length - 1] - BED_LENGTH / 2;
     const wallRearLeft = new THREE.Mesh(new THREE.BoxGeometry(dividerWidth, dividerHeight, dividerThick), matDivider);
     wallRearLeft.position.set(-xPosAbs, dividerY, rearZ);
@@ -431,9 +392,6 @@ function buildPassengerCabin(groups) {
     }
 }
 
-// ============================================================
-// EXPORT
-// ============================================================
 export function createBusInterior() {
     const root = new THREE.Group();
     root.name = "busInterior";
@@ -450,7 +408,6 @@ export function createBusInterior() {
     buildCabin(groups);
     buildPassengerCabin(groups);
 
-    // Đèn nội thất
     const lights = [];
     const mkLight = (x, y, z, intensity) => {
         const pl = new THREE.PointLight(0x9fd8ff, intensity, 5, 2);
@@ -466,14 +423,12 @@ export function createBusInterior() {
     mkLight(0, 2.6, 5.0, 0.4);
 
     function setInteriorLed(on) {
-        // LED materials
         matLEDBlue.emissiveIntensity = on ? 2.8 : 0;
         matLEDNude.emissiveIntensity = on ? 3.0 : 0;
         matLEDRib.emissiveIntensity = on ? 1.6 : 0;
         matLEDWhite.emissiveIntensity = on ? 1.1 : 0;
         matCluster.emissiveIntensity = on ? 0.6 : 0.1;
 
-        // Point lights
         const centerLight = groups.Lights.getObjectByName('centerLedLight');
         const leftLight = groups.Lights.getObjectByName('leftLedLight');
         const rightLight = groups.Lights.getObjectByName('rightLedLight');
@@ -482,7 +437,6 @@ export function createBusInterior() {
         if (leftLight) leftLight.intensity = intensity * 0.7;
         if (rightLight) rightLight.intensity = intensity * 0.7;
 
-        // Các đèn nội thất
         for (const pl of lights) {
             pl.intensity = on ? pl.userData.base : 0;
         }

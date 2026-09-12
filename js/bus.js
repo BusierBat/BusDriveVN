@@ -1,4 +1,4 @@
-// js/bus.js - FULL VERSION (FIXED DOOR POSITION + UV + SLIDING ANIMATION)
+// js/bus.js
 import * as THREE from "three";
 
 export const BUS_TEXTURE_URL = "assets/textures/bus/bus_final.png";
@@ -127,14 +127,14 @@ let SHARED = null;
 function getShared() {
   if (SHARED) return SHARED;
   const g = {};
-  
+
   const body = new THREE.BoxGeometry(W, H - BODY_BOTTOM, L);
   body.translate(0, BODY_BOTTOM + (H - BODY_BOTTOM) / 2, 0);
-  
+
   const pos = body.attributes.position;
   const norm = body.attributes.normal;
   const uv = body.attributes.uv;
-  
+
   if (uv) {
     for (let i = 0; i < pos.count; i++) {
       const [uVal, vVal] = faceUV(pos.getX(i), pos.getY(i), pos.getZ(i), norm.getX(i), norm.getY(i), norm.getZ(i));
@@ -145,23 +145,23 @@ function getShared() {
   g.body = body;
 
   const roof = new THREE.BoxGeometry(W - 0.06, 0.12, L - 0.1);
-  { 
-    const p = roof.attributes.position, n = roof.attributes.normal, u = roof.attributes.uv; 
-    for (let i = 0; i < p.count; i++) { 
-      const [a, b] = mapRegion(UV_REGIONS.roofBand, (p.getX(i) + W / 2) / W, (p.getZ(i) + L / 2) / L); 
-      u.setXY(i, n.getY(i) > 0.5 ? a : UV_REGIONS.roofBand.u0, n.getY(i) > 0.5 ? b : UV_REGIONS.roofBand.v0); 
-    } 
-    u.needsUpdate = true; 
+  {
+    const p = roof.attributes.position, n = roof.attributes.normal, u = roof.attributes.uv;
+    for (let i = 0; i < p.count; i++) {
+      const [a, b] = mapRegion(UV_REGIONS.roofBand, (p.getX(i) + W / 2) / W, (p.getZ(i) + L / 2) / L);
+      u.setXY(i, n.getY(i) > 0.5 ? a : UV_REGIONS.roofBand.u0, n.getY(i) > 0.5 ? b : UV_REGIONS.roofBand.v0);
+    }
+    u.needsUpdate = true;
   }
   g.roof = roof;
-  
+
   g.glassSide = mergeGeos([pixelQuad("right", PX.sideR.winFront, PX.sideR.winRear, PX.sideR.winLoTop, PX.sideR.winLoBot, 0.006), pixelQuad("right", PX.sideR.winFront, PX.sideR.winRear, PX.sideR.winHiTop, PX.sideR.winHiBot, 0.006)]);
   g.glassEnds = mergeGeos([pixelQuad("front", PX.front.winLeft, PX.front.winRight, PX.front.winTop, PX.front.winBot, 0.006), pixelQuad("rear", PX.rear.winLeft, PX.rear.winRight, PX.rear.winTop, PX.rear.winBot, -0.006)]);
   g.head = mergeGeos([pixelQuad("front", PX.front.hlL0, PX.front.hlL1, PX.front.hlTop, PX.front.hlBot, 0.02), pixelQuad("front", PX.front.hlR0, PX.front.hlR1, PX.front.hlTop, PX.front.hlBot, 0.02)]);
   g.tail = mergeGeos([pixelQuad("rear", PX.rear.tlL0, PX.rear.tlL1, PX.rear.tlTop, PX.rear.tlBot, -0.02), pixelQuad("rear", PX.rear.tlR0, PX.rear.tlR1, PX.rear.tlTop, PX.rear.tlBot, -0.02)]);
   g.indL = mergeGeos([pixelQuad("front", PX.front.indL0, PX.front.indL1, PX.front.indTop, PX.front.indBot, 0.02), pixelQuad("rear", PX.rear.tlL0, PX.rear.tlL1, PX.rear.riTop, PX.rear.riBot, -0.02)]);
   g.indR = mergeGeos([pixelQuad("front", PX.front.indR0, PX.front.indR1, PX.front.indTop, PX.front.indBot, 0.02), pixelQuad("rear", PX.rear.tlR0, PX.rear.tlR1, PX.rear.riTop, PX.rear.riBot, -0.02)]);
-  
+
   const doorGeo = pixelQuad("right", PX.sideR.doorFront, PX.sideR.doorRear, PX.sideR.bodyBottom, PX.sideR.doorTop, 0.009);
   const doorPos = doorGeo.attributes.position;
   const doorNorm = doorGeo.attributes.normal;
@@ -172,22 +172,22 @@ function getShared() {
   doorPos.needsUpdate = true;
   doorNorm.needsUpdate = true;
   g.door = doorGeo;
-  
-  const mir = []; 
-  for (const side of [1, -1]) { 
-    const arm = new THREE.BoxGeometry(0.5, 0.08, 0.08); arm.translate(side * (W / 2 + 0.2), H - 0.55, L / 2 - 0.05); 
-    const hd = new THREE.BoxGeometry(0.1, 0.55, 0.3); hd.translate(side * (W / 2 + 0.45), H - 0.75, L / 2 + 0.1); 
-    mir.push(arm, hd); 
+
+  const mir = [];
+  for (const side of [1, -1]) {
+    const arm = new THREE.BoxGeometry(0.5, 0.08, 0.08); arm.translate(side * (W / 2 + 0.2), H - 0.55, L / 2 - 0.05);
+    const hd = new THREE.BoxGeometry(0.1, 0.55, 0.3); hd.translate(side * (W / 2 + 0.45), H - 0.75, L / 2 + 0.1);
+    mir.push(arm, hd);
   }
   g.mirrors = mergeGeos(mir);
-  
-  const pf = new THREE.BoxGeometry(0.8, 0.2, 0.03); pf.translate(0, 0.55, L / 2 + 0.02); 
+
+  const pf = new THREE.BoxGeometry(0.8, 0.2, 0.03); pf.translate(0, 0.55, L / 2 + 0.02);
   const pr = new THREE.BoxGeometry(0.8, 0.2, 0.03); pr.translate(0, 0.65, -L / 2 - 0.02);
   g.plates = mergeGeos([pf, pr]);
-  
+
   g.tire = new THREE.CylinderGeometry(WHEEL_RADIUS, WHEEL_RADIUS, WHEEL_WIDTH, 16); g.tire.rotateZ(Math.PI / 2);
   g.rim = new THREE.CylinderGeometry(WHEEL_RADIUS * 0.55, WHEEL_RADIUS * 0.55, WHEEL_WIDTH + 0.02, 12); g.rim.rotateZ(Math.PI / 2);
-  
+
   const ledIntParts = [];
   const ledLen = L - 1.2;
   const CEILING_Y = 2.6;
@@ -200,12 +200,12 @@ function getShared() {
     ledIntParts.push(stripLower);
   }
   g.ledInt = mergeGeos(ledIntParts);
-  
+
   const extLen = L - 1.2;
   g.ledExtGeo = new THREE.BoxGeometry(0.06, 0.06, extLen);
   g.emergency = new THREE.BoxGeometry(0.4, 0.15, 0.02);
-  
-  SHARED = g; 
+
+  SHARED = g;
   return g;
 }
 
@@ -215,24 +215,24 @@ let sharedLoader = null;
 
 function getLoader() { if (!sharedLoader) sharedLoader = new THREE.TextureLoader(); return sharedLoader; }
 
-export function loadTextureCached(path) { 
-  let t = textureCache.get(path); 
-  if (!t) { 
-    t = getLoader().load(path); 
-    t.colorSpace = THREE.SRGBColorSpace; 
-    t.anisotropy = 4; 
-    textureCache.set(path, t); 
-  } 
-  return t; 
+export function loadTextureCached(path) {
+  let t = textureCache.get(path);
+  if (!t) {
+    t = getLoader().load(path);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 4;
+    textureCache.set(path, t);
+  }
+  return t;
 }
 
-export function getSkinMaterial(path) { 
-  let m = materialCache.get("b:" + path); 
-  if (!m) { 
-    m = new THREE.MeshStandardMaterial({ map: loadTextureCached(path), roughness: 0.55, metalness: 0.15 }); 
-    materialCache.set("b:" + path, m); 
-  } 
-  return m; 
+export function getSkinMaterial(path) {
+  let m = materialCache.get("b:" + path);
+  if (!m) {
+    m = new THREE.MeshStandardMaterial({ map: loadTextureCached(path), roughness: 0.55, metalness: 0.15 });
+    materialCache.set("b:" + path, m);
+  }
+  return m;
 }
 
 function assembleBus(mats, withDoorPivot) {
@@ -253,7 +253,7 @@ function assembleBus(mats, withDoorPivot) {
   gl.renderOrder = 0;
   const ge = add(G.glassEnds, mats.glass);
   ge.renderOrder = 0;
-  
+
   let doorPivot = null;
   if (withDoorPivot) {
     doorPivot = new THREE.Group();
@@ -266,14 +266,14 @@ function assembleBus(mats, withDoorPivot) {
     const doorMesh = new THREE.Mesh(G.door, mats.door);
     root.add(doorMesh);
   }
-  
+
   const headMesh = add(G.head, mats.head);
   const tailMesh = add(G.tail, mats.tail);
   add(G.indL, mats.indL);
   add(G.indR, mats.indR);
   add(G.mirrors, sharedDark);
   add(G.plates, sharedPlate);
-  
+
   const steerPivots = [], tireMeshes = [], rimMeshes = [];
   for (const [z, isFront] of [[FRONT_AXLE_Z, true], [REAR_AXLE_Z, false]]) {
     for (const side of [1, -1]) {
@@ -288,14 +288,14 @@ function assembleBus(mats, withDoorPivot) {
       root.add(pivot);
     }
   }
-  
+
   let interiorGroup = null;
-  
+
   const ledInt = new THREE.Mesh(G.ledInt, mats.led);
   ledInt.name = "interiorLed";
   ledInt.renderOrder = 1;
   root.add(ledInt);
-  
+
   const extMat = new THREE.MeshBasicMaterial({
     map: mats.ledExtTexture,
     transparent: true,
@@ -309,7 +309,7 @@ function assembleBus(mats, withDoorPivot) {
   const ledLength = (L / 2) + frontWheelZ + 0.8;
   const ledPosZ = (-L / 2 + frontWheelZ) / 7 - 0.1;
   const ledGeo = new THREE.BoxGeometry(0.06, 0.06, ledLength);
-  
+
   for (const side of [1, -1]) {
     const upper = new THREE.Mesh(ledGeo, extMat.clone());
     upper.position.set(side * (WALL_X + 0.04), 3.40, ledPosZ);
@@ -317,7 +317,7 @@ function assembleBus(mats, withDoorPivot) {
     upper.name = "exteriorLed";
     extMeshes.push(upper);
     root.add(upper);
-    
+
     const lower = new THREE.Mesh(ledGeo, extMat.clone());
     lower.position.set(side * (WALL_X + 0.04), 2.37, ledPosZ);
     lower.renderOrder = 3;
@@ -325,13 +325,13 @@ function assembleBus(mats, withDoorPivot) {
     extMeshes.push(lower);
     root.add(lower);
   }
-  
+
   const emergencyY = rearY(PX.rear.tlTop) + 0.25;
   const emergencyZ = -L / 2 - 0.01;
   const emergencyMesh = new THREE.Mesh(G.emergency, mats.emergency);
   emergencyMesh.position.set(0, emergencyY, emergencyZ);
   root.add(emergencyMesh);
-  
+
   return {
     root, doorPivot, steerPivots, tireMeshes, rimMeshes, mats, headMesh, tailMesh, emergencyMesh, extMeshes, extMat
   };
@@ -349,7 +349,7 @@ function makeControl(a) {
         tire.rotation.x = val;
       }
     },
-    setDoor: (t) => { 
+    setDoor: (t) => {
       if(a.doorPivot) {
         a.doorPivot.position.z = (L/2 - 1.0) - t * 1.2;
       }
@@ -363,7 +363,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   const headOn = new THREE.MeshStandardMaterial({ color: 0xe8f2fa, emissive: 0xffffff, emissiveIntensity: .2, roughness: 0.5, metalness: 0.1 });
   const emergencyMat = new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0, transparent: true, opacity: 0 });
   const ledExtTexture = createLedStripTexture(0x2fb6ff);
-  
+
   const mats = {
     body: new THREE.MeshStandardMaterial({ map: texture, roughness: 0.55, metalness: 0.15 }),
     glass: new THREE.MeshStandardMaterial({ map: texture, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide }),
@@ -376,12 +376,12 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     emergency: emergencyMat,
     ledExtTexture: ledExtTexture
   };
-  
+
   const a = assembleBus(mats, true);
   const c = makeControl(a);
   const tailMaterial = a.tailMesh.material;
   const emergencyMaterial = a.emergencyMesh.material;
-  
+
   const spotL = new THREE.SpotLight(0xfff3cf, 0, 120, Math.PI / 5, 0.3, 1.0);
   spotL.position.set(-0.78, 1.05, L / 2 + 0.05);
   const spotLT = new THREE.Object3D(); spotLT.position.set(-0.78, 0, L / 2 + 25);
@@ -393,7 +393,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   a.root.add(spotL, spotLT, spotR, spotRT, tailGlow);
   spotL.target = spotLT;
   spotR.target = spotRT;
-  
+
   let signalLeft = false, signalRight = false, hazard = false;
   function update(dt) {
     c.updateDoor(dt);
@@ -402,41 +402,41 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     mats.indL.emissiveIntensity = ((signalLeft || hazard) && blink) ? 1.8 : 0.05;
     mats.indR.emissiveIntensity = ((signalRight || hazard) && blink) ? 1.8 : 0.05;
   }
-  
+
   function setHeadlights(on) {
-    if (on) { 
-      a.headMesh.material = headOn; 
+    if (on) {
+      a.headMesh.material = headOn;
       spotL.intensity = 250;
-      spotR.intensity = 150; 
-    } else { 
-      a.headMesh.material = headOff; 
-      spotL.intensity = 0; 
-      spotR.intensity = 0; 
+      spotR.intensity = 150;
+    } else {
+      a.headMesh.material = headOff;
+      spotL.intensity = 0;
+      spotR.intensity = 0;
     }
   }
-  
+
   function setTaillights(on) { tailMaterial.emissiveIntensity = on ? 0.9 : 0; tailGlow.intensity = on ? 6 : 0; }
   function setSignalLeft(on) { signalLeft = on; }
   function setSignalRight(on) { signalRight = on; }
   function setHazard(on) { hazard = on; }
   function setIndicators(on) { signalLeft = on; signalRight = on; }
-  
-  let interiorRef = null; 
+
+  let interiorRef = null;
   function setInteriorLed(on) {
     if (interiorRef && typeof interiorRef.setInteriorLed === 'function') {
       interiorRef.setInteriorLed(on);
     }
     if (a.extMeshes) {
-      a.extMeshes.forEach(mesh => { 
-        mesh.visible = on; 
-        mesh.material.opacity = on ? 1.5 : 0; 
+      a.extMeshes.forEach(mesh => {
+        mesh.visible = on;
+        mesh.material.opacity = on ? 1.5 : 0;
       });
     }
   }
-  
+
   function setEmergencyBrake(on) { emergencyMaterial.emissiveIntensity = on ? 1.2 : 0; emergencyMaterial.opacity = on ? 1 : 0; }
   function dispose() {}
-  
+
   const busObj = {
     group: a.root, texture, dimensions: BUS_DIMENSIONS, wheelRadius: WHEEL_RADIUS,
     setSteering: c.setSteering, setWheelRotation: c.setWheelRotation, setDoor: c.setDoor,
@@ -445,7 +445,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     areLightsOn: false, doorOpen: false, interiorLedOn: false,
     setInteriorReference: (interior) => { interiorRef = interior; }
   };
-  
+
   return busObj;
 }
 
@@ -460,7 +460,7 @@ export function loadNpcSkinList() {
     npcSkinPromise = Promise.resolve(npcSkinList);
     return npcSkinPromise;
   }
-  
+
   npcSkinPromise = fetch(NPC_SKIN_DIR, { cache: "no-store" })
     .then((r) => {
       if (!r.ok) throw new Error('Cannot fetch skin directory');
@@ -470,7 +470,7 @@ export function loadNpcSkinList() {
       const names = new Set();
       const doc = new DOMParser().parseFromString(html, "text/html");
       const links = doc.querySelectorAll("a[href]");
-      
+
       if (links.length) {
         links.forEach((a) => {
           const href = decodeURIComponent(a.getAttribute("href") || "").split("?")[0].split("#")[0];
@@ -480,7 +480,7 @@ export function loadNpcSkinList() {
           }
         });
       }
-      
+
       if (!names.size) {
         for (const line of html.split(/\r?\n/)) {
           const m = line.trim().match(/([^/]+\.png)$/i);
@@ -489,13 +489,13 @@ export function loadNpcSkinList() {
           }
         }
       }
-      
+
       npcSkinList = [...names].sort().map((n) => NPC_SKIN_DIR + n);
-      
+
       if (npcSkinList.length === 0) {
         npcSkinList = [NPC_SKIN_DIR + "bus_final.png"];
       }
-      
+
       return npcSkinList;
     })
     .catch((err) => {
@@ -503,7 +503,7 @@ export function loadNpcSkinList() {
       npcSkinList = [NPC_SKIN_DIR + "bus_final.png"];
       return npcSkinList;
     });
-    
+
   return npcSkinPromise;
 }
 
@@ -521,12 +521,12 @@ export function pickLedColor() {
 
 export function createNpcBus({ skinPath = null, ledColor = 0x2fb6ff } = {}) {
   const finalSkinPath = skinPath || pickNpcSkinPath();
-  
+
   const texture = loadTextureCached(finalSkinPath);
   const headOff = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0, roughness: 0.5, metalness: 0.1 });
   const emergencyMat = new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 0, transparent: true, opacity: 0 });
   const ledExtTexture = createLedStripTexture(ledColor);
-  
+
   const mats = {
     body: new THREE.MeshStandardMaterial({ map: texture, roughness: 0.55, metalness: 0.15 }),
     glass: new THREE.MeshStandardMaterial({ map: texture, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide }),
@@ -539,17 +539,17 @@ export function createNpcBus({ skinPath = null, ledColor = 0x2fb6ff } = {}) {
     emergency: emergencyMat,
     ledExtTexture: ledExtTexture
   };
-  
+
   const a = assembleBus(mats, false);
   const c = makeControl(a);
-  
+
   function setSkin(path) {
     const t = loadTextureCached(path);
     mats.body.map = t; mats.body.needsUpdate = true;
     mats.glass.map = t; mats.glass.needsUpdate = true;
     mats.door.map = t; mats.door.needsUpdate = true;
   }
-  
+
   return {
     group: a.root,
     dimensions: BUS_DIMENSIONS,
@@ -559,9 +559,9 @@ export function createNpcBus({ skinPath = null, ledColor = 0x2fb6ff } = {}) {
     setDoor: c.setDoor,
     setHeadlights: (on) => { if(a.headMesh) a.headMesh.material.emissiveIntensity = on ? 0.2 : 0; },
     setTaillights: (on) => { if(a.tailMesh) a.tailMesh.material.emissiveIntensity = on ? 0.9 : 0; },
-    setInteriorLed: (on) => { 
-      const led = a.root.getObjectByName("interiorLed"); 
-      if(led) led.visible = on; 
+    setInteriorLed: (on) => {
+      const led = a.root.getObjectByName("interiorLed");
+      if(led) led.visible = on;
     },
     setSkin,
     skinPath: finalSkinPath

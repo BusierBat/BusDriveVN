@@ -1,4 +1,5 @@
-// js/map/stationGenerator.js - COMPLEX STATION, FENCE, GATE & REAL LIGHTS
+// js/map/stationGenerator.js
+
 import * as THREE from "three";
 import { getAsphaltMaterial } from "./roadGenerator.js";
 
@@ -24,12 +25,11 @@ const benchGeo = new THREE.BoxGeometry(2, 0.5, 0.8);
 
 function addLamp(group, x, z) {
     const pole = new THREE.Mesh(lampPoleGeo, pillarMat);
-    pole.position.set(x, 4, z); group.add(pole);
+    pole.position.set(x, 4, z);
+    group.add(pole);
     const head = new THREE.Mesh(lampHeadGeo, lightMat);
-    head.position.set(x, 8, z); group.add(head);
-    // ĐÈN THẬT CHIẾU SÁNG XUỐNG MẶT ĐƯỜNG
-    const pl = new THREE.PointLight(0xffffaa, 1.5, 30, 2);
-    pl.position.set(x, 8, z); group.add(pl);
+    head.position.set(x, 8, z);
+    group.add(head);
 }
 
 function addFence(group, x1, z1, x2, z2) {
@@ -53,32 +53,39 @@ function addFence(group, x1, z1, x2, z2) {
 
 function addSign(group, x, z, name, rotY = 0) {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 6), pillarMat);
-    pole.position.set(x, 3, z); group.add(pole);
+    pole.position.set(x, 3, z);
+    group.add(pole);
     const board = new THREE.Mesh(new THREE.BoxGeometry(12, 3, 0.2), signMat);
-    board.position.set(x, 7, z); group.add(board);
+    board.position.set(x, 7, z);
+    group.add(board);
     const canvas = document.createElement('canvas');
-    canvas.width = 512; canvas.height = 128;
+    canvas.width = 512;
+    canvas.height = 128;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#0000ff'; ctx.fillRect(0, 0, 512, 128);
-    ctx.fillStyle = '#ffffff'; ctx.font = 'bold 60px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#0000ff';
+    ctx.fillRect(0, 0, 512, 128);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 60px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     ctx.fillText(name, 256, 64);
     const tex = new THREE.CanvasTexture(canvas);
     const textMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
     const textPlane = new THREE.Mesh(new THREE.PlaneGeometry(12, 3), textMat);
     textPlane.position.set(x, 7, z + 0.15);
-    textPlane.rotation.y = rotY; // Đúng hướng nhìn từ đường
+    textPlane.rotation.y = rotY;
     group.add(textPlane);
 }
 
 export function createBusStation(poi, parentGroup) {
     const group = new THREE.Group();
     group.name = poi.name || "Bus Station";
-    const yardW = 120, yardD = 100; 
+    const yardW = 120, yardD = 100;
     const yard = new THREE.Mesh(new THREE.PlaneGeometry(yardW, yardD), getAsphaltMaterial());
-    yard.rotation.x = -Math.PI / 2; yard.position.set(poi.position.x, 0.1, poi.position.z);
+    yard.rotation.x = -Math.PI / 2;
+    yard.position.set(poi.position.x, 0.1, poi.position.z);
     group.add(yard);
 
-    // NHÀ GA ĐẶT LỆCH VỀ PHÍA SAU (KHÔNG NẰM GIỮA SÂN)
     const bldW = 50, bldH = 15, bldD = 20;
     const building = new THREE.Mesh(new THREE.BoxGeometry(bldW, bldH, bldD), glassMat);
     building.position.set(poi.position.x, bldH / 2, poi.position.z - yardD / 2 + bldD / 2);
@@ -90,7 +97,7 @@ export function createBusStation(poi, parentGroup) {
     const canopy = new THREE.Mesh(new THREE.BoxGeometry(yardW * 0.8, 1, 10), roofMat);
     canopy.position.set(poi.position.x, 6, poi.position.z - 15);
     group.add(canopy);
-    for(let i = -3; i <= 3; i++) {
+    for (let i = -3; i <= 3; i++) {
         const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 6), pillarMat);
         pillar.position.set(poi.position.x + i * 15, 3, poi.position.z - 19);
         group.add(pillar);
@@ -104,7 +111,8 @@ export function createBusStation(poi, parentGroup) {
         const slotZ = poi.position.z + 20;
         poi._parkingTransforms.push({ x: slotX, z: slotZ, heading: 0 });
         const line = new THREE.Mesh(new THREE.PlaneGeometry(5, 2), lineMat);
-        line.rotation.x = -Math.PI / 2; line.position.set(slotX, 0.15, slotZ);
+        line.rotation.x = -Math.PI / 2;
+        line.position.set(slotX, 0.15, slotZ);
         group.add(line);
     }
 
@@ -127,21 +135,24 @@ export function createRestStop(poi, parentGroup) {
     group.name = poi.name || "Rest Stop";
     const yardW = 60, yardD = 50;
     const yard = new THREE.Mesh(new THREE.PlaneGeometry(yardW, yardD), getAsphaltMaterial());
-    yard.rotation.x = -Math.PI / 2; yard.position.set(poi.position.x, 0.1, poi.position.z);
+    yard.rotation.x = -Math.PI / 2;
+    yard.position.set(poi.position.x, 0.1, poi.position.z);
     group.add(yard);
     const bldW = 20, bldH = 10, bldD = 15;
     const building = new THREE.Mesh(new THREE.BoxGeometry(bldW, bldH, bldD), stationMat);
     building.position.set(poi.position.x, bldH / 2, poi.position.z - yardD/2 + bldD/2);
     group.add(building);
     const canopy = new THREE.Mesh(new THREE.BoxGeometry(yardW * 0.6, 1, 8), roofMat);
-    canopy.position.set(poi.position.x, 6, poi.position.z + 5); group.add(canopy);
+    canopy.position.set(poi.position.x, 6, poi.position.z + 5);
+    group.add(canopy);
     poi._parkingTransforms = [];
     for (let i = 0; i < 5; i++) {
         const slotX = poi.position.x - 10 + i * 5;
         const slotZ = poi.position.z + 15;
         poi._parkingTransforms.push({ x: slotX, z: slotZ, heading: 0 });
         const line = new THREE.Mesh(new THREE.PlaneGeometry(4, 2), lineMat);
-        line.rotation.x = -Math.PI / 2; line.position.set(slotX, 0.15, slotZ);
+        line.rotation.x = -Math.PI / 2;
+        line.position.set(slotX, 0.15, slotZ);
         group.add(line);
     }
     const halfW = yardW / 2, halfD = yardD / 2;
@@ -161,17 +172,22 @@ export function createGasStation(poi, parentGroup) {
     group.name = poi.name || "Gas Station";
     const yardW = 50, yardD = 40;
     const yard = new THREE.Mesh(new THREE.PlaneGeometry(yardW, yardD), getAsphaltMaterial());
-    yard.rotation.x = -Math.PI / 2; yard.position.set(poi.position.x, 0.1, poi.position.z);
+    yard.rotation.x = -Math.PI / 2;
+    yard.position.set(poi.position.x, 0.1, poi.position.z);
     group.add(yard);
     const shop = new THREE.Mesh(new THREE.BoxGeometry(15, 8, 10), stationMat);
-    shop.position.set(poi.position.x, 4, poi.position.z - 10); group.add(shop);
+    shop.position.set(poi.position.x, 4, poi.position.z - 10);
+    group.add(shop);
     const canopy = new THREE.Mesh(new THREE.BoxGeometry(30, 1, 15), roofMat);
-    canopy.position.set(poi.position.x, 7, poi.position.z + 5); group.add(canopy);
-    for(let i=-1; i<=1; i++) {
+    canopy.position.set(poi.position.x, 7, poi.position.z + 5);
+    group.add(canopy);
+    for (let i = -1; i <= 1; i++) {
         const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 7), pillarMat);
-        pillar.position.set(poi.position.x + i * 10, 3.5, poi.position.z + 5); group.add(pillar);
+        pillar.position.set(poi.position.x + i * 10, 3.5, poi.position.z + 5);
+        group.add(pillar);
         const pump = new THREE.Mesh(new THREE.BoxGeometry(1, 1.5, 1), tollMat);
-        pump.position.set(poi.position.x + i * 10, 0.75, poi.position.z + 2); group.add(pump);
+        pump.position.set(poi.position.x + i * 10, 0.75, poi.position.z + 2);
+        group.add(pump);
     }
     poi._parkingTransforms = [];
     for (let i = 0; i < 5; i++) {
@@ -190,17 +206,22 @@ export function createTollStation(poi, parentGroup) {
     group.name = poi.name || "Toll Station";
     const w = poi.size?.width || 100, d = poi.size?.depth || 40;
     const platform = new THREE.Mesh(new THREE.PlaneGeometry(w, d), getAsphaltMaterial());
-    platform.rotation.x = -Math.PI / 2; platform.position.set(poi.position.x, 0.1, poi.position.z);
+    platform.rotation.x = -Math.PI / 2;
+    platform.position.set(poi.position.x, 0.1, poi.position.z);
     group.add(platform);
     const roof = new THREE.Mesh(new THREE.BoxGeometry(w, 1, d * 1.5), roofMat);
-    roof.position.set(poi.position.x, 8, poi.position.z); group.add(roof);
+    roof.position.set(poi.position.x, 8, poi.position.z);
+    group.add(roof);
     const numLanes = Math.floor(w / 5);
     for (let i = 0; i < numLanes; i++) {
         const boothX = poi.position.x - (w / 2) + 2.5 + (i * 5);
         const booth = new THREE.Mesh(new THREE.BoxGeometry(2, 4, 2), tollMat);
-        booth.position.set(boothX, 2, poi.position.z - d / 4); group.add(booth);
+        booth.position.set(boothX, 2, poi.position.z - d / 4);
+        group.add(booth);
         const bar = new THREE.Mesh(new THREE.BoxGeometry(4, 0.2, 0.2), tollMat);
-        bar.position.set(boothX, 3.5, poi.position.z); bar.rotation.y = Math.PI / 2; group.add(bar);
+        bar.position.set(boothX, 3.5, poi.position.z);
+        bar.rotation.y = Math.PI / 2;
+        group.add(bar);
     }
     addSign(group, poi.position.x, poi.position.z - d/2 - 2, poi.name, 0);
     parentGroup.add(group);
@@ -212,9 +233,10 @@ export function createPark(poi, parentGroup) {
     const w = poi.size?.width || 60;
     const d = poi.size?.depth || 60;
     const grass = new THREE.Mesh(new THREE.PlaneGeometry(w, d), grassMat);
-    grass.rotation.x = -Math.PI / 2; grass.position.set(poi.position.x, 0.1, poi.position.z);
+    grass.rotation.x = -Math.PI / 2;
+    grass.position.set(poi.position.x, 0.1, poi.position.z);
     group.add(grass);
-    for(let i=0; i<5; i++) {
+    for (let i = 0; i < 5; i++) {
         const px = poi.position.x - w/2 + 10 + i*10;
         const pz = poi.position.z - 5;
         const bench = new THREE.Mesh(benchGeo, benchMat);
@@ -224,12 +246,15 @@ export function createPark(poi, parentGroup) {
         const treeX = px + 5;
         const treeZ = pz + 10;
         const trunk = new THREE.Mesh(sharedTreeTrunkGeo, trunkMat);
-        trunk.position.set(treeX, 2, treeZ); group.add(trunk);
+        trunk.position.set(treeX, 2, treeZ);
+        group.add(trunk);
         const leaves = new THREE.Mesh(sharedTreeLeavesGeo, leavesMat);
-        leaves.position.set(treeX, 5, treeZ); group.add(leaves);
+        leaves.position.set(treeX, 5, treeZ);
+        group.add(leaves);
     }
     const path = new THREE.Mesh(new THREE.PlaneGeometry(3, w * 0.8), getAsphaltMaterial());
-    path.rotation.x = -Math.PI / 2; path.position.set(poi.position.x, 0.12, poi.position.z);
+    path.rotation.x = -Math.PI / 2;
+    path.position.set(poi.position.x, 0.12, poi.position.z);
     group.add(path);
     parentGroup.add(group);
 }

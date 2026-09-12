@@ -32,6 +32,9 @@ export class TrafficManager {
         this._nodeMap = new Map();
         this._validSegsCache = null;
         this.MIN_TRAFFIC_SPAWN_DISTANCE = 50;
+        
+        this.stationSpawnQueue = [];
+        this.stationSpawnTimer = 0;
     }
 
     _getSegmentPoints(seg) {
@@ -120,29 +123,44 @@ export class TrafficManager {
     setupStationTraffic(stationNode) {
         if (!stationNode || !stationNode._parkingTransforms || stationNode._parkingTransforms.length === 0) return;
         for (const t of stationNode._parkingTransforms) {
-            let vehicle = this.pool.pop();
-            if (!vehicle) {
-                vehicle = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
-                this.scene.add(vehicle.group);
-            }
-            const ai = new TrafficAI({
-                vehicle, roadGraph: this.roadGraph, personality: 'BUS_DRIVER',
-                seed: this.seed + this.aiVehicles.length, isStatic: true
-            });
-            ai.collider.x = t.x; ai.collider.z = t.z;
-            ai.heading = t.heading; ai.targetHeading = ai.heading;
-            ai.vehicle.group.position.set(ai.collider.x, 0.5, ai.collider.z);
-            ai.vehicle.group.rotation.y = ai.heading;
-            ai.setActive(true);
-            if (window.collisionSystem) ai.colId = window.collisionSystem.register(ai.collider.x, ai.collider.z, 3.0, 'npc', { ai });
-            this.aiVehicles.push(ai);
-            this.activeCount++;
+            this.stationSpawnQueue.push({ transform: t });
         }
+    }
+
+    processStationQueue(deltaTime) {
+        if (this.stationSpawnQueue.length === 0) return;
+        
+        this.stationSpawnTimer += deltaTime;
+        if (this.stationSpawnTimer < 0.2) return;
+        this.stationSpawnTimer = 0;
+        
+        const req = this.stationSpawnQueue.shift();
+        let vehicle = this.pool.pop();
+        if (!vehicle) {
+            vehicle = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
+            this.scene.add(vehicle.group);
+        }
+        const ai = new TrafficAI({
+            vehicle, roadGraph: this.roadGraph, personality: 'BUS_DRIVER',
+            seed: this.seed + this.aiVehicles.length, isStatic: true
+        });
+        ai.collider.x = req.transform.x;
+        ai.collider.z = req.transform.z;
+        ai.heading = req.transform.heading;
+        ai.targetHeading = ai.heading;
+        ai.vehicle.group.position.set(ai.collider.x, 0.5, ai.collider.z);
+        ai.vehicle.group.rotation.y = ai.heading;
+        ai.setActive(true);
+        if (window.collisionSystem) ai.colId = window.collisionSystem.register(ai.collider.x, ai.collider.z, 3.0, 'npc', { ai });
+        this.aiVehicles.push(ai);
+        this.activeCount++;
     }
 
     update(deltaTime, playerPos) {
         if (!playerPos || !this.isGraphMode) return;
         this.lastPlayerPos = playerPos;
+
+        this.processStationQueue(deltaTime);
 
         const maxActive = Math.min(this.graphics.settings.maxActiveTraffic || 10, this.maxVehicles);
 

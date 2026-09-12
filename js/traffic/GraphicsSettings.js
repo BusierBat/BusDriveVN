@@ -1,11 +1,11 @@
-// js/traffic/GraphicsSettings.js - Quản lý graphics settings + render distance
+// js/traffic/GraphicsSettings.js
 import { createSeededRandom } from "../utils.js";
 
 export const GRAPHICS_PRESETS = {
     VERY_LOW: {
         label: 'Rất thấp',
-        renderDistance: 4,        // chunks
-        objectDistance: 150,       // units
+        renderDistance: 4,
+        objectDistance: 150,
         trafficDensity: 0.15,
         maxActiveTraffic: 8,
         spawnDistance: 100,
@@ -79,8 +79,7 @@ export class GraphicsSettings {
         this.currentPreset = 'MEDIUM';
         this.settings = { ...GRAPHICS_PRESETS.MEDIUM };
         this.callbacks = [];
-        
-        // Load từ localStorage nếu có
+
         this.load();
     }
 
@@ -119,7 +118,6 @@ export class GraphicsSettings {
             if (data.preset && GRAPHICS_PRESETS[data.preset]) {
                 this.currentPreset = data.preset;
                 this.settings = { ...GRAPHICS_PRESETS[data.preset] };
-                // Override với settings đã lưu nếu có
                 if (data.settings) {
                     Object.assign(this.settings, data.settings);
                 }
@@ -137,9 +135,8 @@ export class GraphicsSettings {
         }
     }
 
-    // Helper để áp dụng vào renderer
     applyToRenderer(renderer, scene) {
-        const dist = this.get('renderDistance') * 16; // chunkSize = 16
+        const dist = this.get('renderDistance') * 16;
         if (scene.fog) {
             scene.fog.far = dist * 2.5;
             scene.fog.near = dist * 0.4;
@@ -150,7 +147,6 @@ export class GraphicsSettings {
         }
     }
 
-    // Helper để lấy traffic density
     getTrafficDensity() {
         return this.get('trafficDensity');
     }
@@ -172,7 +168,6 @@ export class GraphicsSettings {
     }
 }
 
-// Singleton
 let instance = null;
 export function getGraphicsSettings() {
     if (!instance) {

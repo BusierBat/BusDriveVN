@@ -2,8 +2,8 @@
 export class CollisionSystem {
   constructor(cellSize = 50) {
     this.cellSize = cellSize;
-    this.grid = new Map(); 
-    this.colliders = new Map(); 
+    this.grid = new Map();
+    this.colliders = new Map();
     this.nextId = 1;
   }
   _key(cx, cz) { return `${cx},${cz}`; }

@@ -1,4 +1,5 @@
-// js/map/roadGenerator.js - QL1A vs HIGHWAY VISUALS
+// js/map/roadGenerator.js
+
 import * as THREE from "three";
 import { roadProfiles } from "./data/roadNetworkData.js";
 
@@ -18,7 +19,7 @@ export function getAsphaltMaterial() { return asphaltMaterial; }
 export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
     const group = new THREE.Group();
     group.name = `roads_chunk_${chunkX}_${chunkZ}`;
-    
+
     const chunkMinX = chunkX * chunkSize;
     const chunkMaxX = chunkMinX + chunkSize;
     const chunkMinZ = chunkZ * chunkSize;
@@ -73,7 +74,7 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
                 barrierMesh.position.y = 0.6;
                 barrierMesh.rotation.y = Math.atan2(dir.x, dir.z);
                 group.add(barrierMesh);
-                
+
                 const guardrailGeo = new THREE.BoxGeometry(0.2, 1, length);
                 const rightDir = new THREE.Vector3(-dir.z, 0, dir.x);
                 const leftGuardrail = new THREE.Mesh(guardrailGeo, guardrailMat);
@@ -81,7 +82,7 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
                 leftGuardrail.position.y = 0.5;
                 leftGuardrail.rotation.y = Math.atan2(dir.x, dir.z);
                 group.add(leftGuardrail);
-                
+
                 const rightGuardrail = new THREE.Mesh(guardrailGeo, guardrailMat);
                 rightGuardrail.position.copy(mid).addScaledVector(rightDir, -(halfWidth + 0.5));
                 rightGuardrail.position.y = 0.5;
@@ -101,17 +102,11 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
                 pole.position.copy(lightPos);
                 pole.position.y = 4;
                 group.add(pole);
-                
+
                 const lamp = new THREE.Mesh(streetLightLampGeo, streetLightLampMat);
                 lamp.position.copy(lightPos);
                 lamp.position.y = 8;
                 group.add(lamp);
-
-                const pl = new THREE.PointLight(0xffffaa, 1.5, 30, 2);
-                pl.position.copy(lightPos);
-                pl.position.y = 8;
-                pl.userData.isStreetLight = true;
-                group.add(pl);
             }
         }
     }

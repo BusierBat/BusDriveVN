@@ -13,7 +13,7 @@ export class HUDSystem {
                 <div class="hud-row"><span class="hud-label">Trạm tới</span><span id="hud-next" class="hud-val">Đại Lãnh (2.4 km)</span></div>
                 <div class="hud-row"><span class="hud-label">Trạng thái</span><span id="hud-status" class="hud-val">Đỗ xe</span></div>
             </div>
-            
+
             <div class="hud-panel hud-bl">
                 <div class="speed-gauge">
                     <span id="hud-speed" class="speed-num">0</span>
@@ -27,7 +27,7 @@ export class HUDSystem {
                     <div id="hud-door" class="door-status">🚪 Đóng</div>
                 </div>
             </div>
-            
+
             <div class="hud-panel hud-br">
                 <div class="hud-row"><span class="hud-label">💵 Tiền</span><span id="hud-money" class="hud-val">0 ₫</span></div>
                 <div class="hud-row"><span class="hud-label">🧍 Khách</span><span id="hud-pax" class="hud-val">0/24</span></div>
@@ -56,12 +56,12 @@ export class HUDSystem {
         document.getElementById('hud-door').textContent = data.doorOpen ? '🚪 Mở' : '🚪 Đóng';
         document.getElementById('hud-money').textContent = new Intl.NumberFormat('vi-VN').format(data.money ?? 0) + ' ₫';
         document.getElementById('hud-pax').textContent = `${data.passengers ?? 0}/${data.passengerCapacity ?? 24}`;
-        
+
         const t = data.timeMinutes ?? 0;
         const hh = String(Math.floor(t/60)%24).padStart(2,'0');
         const mm = String(Math.floor(t%60)).padStart(2,'0');
         document.getElementById('hud-time').textContent = `${hh}:${mm}`;
-        
+
         document.getElementById('hud-fps').textContent = data.fps || 60;
         document.getElementById('hud-status').textContent = (data.speedKmh > 1) ? 'Đang chạy' : 'Đỗ xe';
     }

@@ -25,7 +25,7 @@ export class TrafficAI {
         this.roadGraph = roadGraph;
         this.seed = seed || Math.random() * 999999;
         this.random = createSeededRandom(this.seed);
-        
+
         const base = DRIVER_TYPES[personality] || DRIVER_TYPES.NORMAL;
         const variance = 0.9 + this.random() * 0.2;
         this.profile = {
@@ -256,7 +256,7 @@ export class TrafficAI {
 
     _tryVietnameseBehavior(dt, allVehicles) {
         if (this.aiLevel !== 'NEAR') return;
-        
+
         if (Math.random() < 0.005) {
             const seg = this._getSegment(this.currentSegmentId);
             if (seg) {
@@ -264,7 +264,7 @@ export class TrafficAI {
                 this.targetLaneOffset = rightOffset + (Math.random() - 0.5) * 1.5;
             }
         }
-        
+
         if (this.followTarget && this.followTarget.vehicle?.group?.name === 'player_bus') {
             const dist = Math.hypot(this.followTarget.collider.x - this.collider.x, this.followTarget.collider.z - this.collider.z);
             if (dist < 15 && this.speed > this.followTarget.speed * 1.2) {
@@ -350,7 +350,7 @@ export class TrafficAI {
             const dotRight = dx * right.x + dz * right.z;
             const inTargetLane = (targetLane === 'left' && dotRight > 0) || (targetLane === 'right' && dotRight < 0);
             if (!inTargetLane) continue;
-            if (dotForward > 0) { if (dist < 25) risk += 0.4; else if (dist < 50) risk += 0.15; } 
+            if (dotForward > 0) { if (dist < 25) risk += 0.4; else if (dist < 50) risk += 0.15; }
             else { if (dist < 20) risk += 0.5; else if (dist < 40) risk += 0.2; }
             const relSpeed = Math.abs(this.speed - other.speed);
             if (relSpeed > 15 && dist < 40) risk += 0.2;
