@@ -49,7 +49,6 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
         const width = profile.width;
         const halfWidth = width / 2;
 
-        // 1. MẶT ĐƯỜNG
         const roadGeo = new THREE.PlaneGeometry(width, length);
         const roadMesh = new THREE.Mesh(roadGeo, asphaltMaterial);
         roadMesh.rotation.x = -Math.PI / 2;
@@ -58,11 +57,9 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
         roadMesh.rotation.z = Math.atan2(dir.x, dir.z);
         group.add(roadMesh);
 
-        // 2. DẢI PHÂN CÁCH (QL1A vs CAO TỐC)
         if (profile.median) {
             const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
             if (profile.medianType === 'green') {
-                // QL1A: Dải cỏ xanh
                 const medianGeo = new THREE.BoxGeometry(2, 0.5, length);
                 const medianMesh = new THREE.Mesh(medianGeo, medianGreenMat);
                 medianMesh.position.copy(mid);
@@ -70,7 +67,6 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
                 medianMesh.rotation.y = Math.atan2(dir.x, dir.z);
                 group.add(medianMesh);
             } else if (profile.medianType === 'barrier') {
-                // CAO TỐC: Vách bê tông ~1m
                 const barrierGeo = new THREE.BoxGeometry(1, 1, length);
                 const barrierMesh = new THREE.Mesh(barrierGeo, medianBarrierMat);
                 barrierMesh.position.copy(mid);
@@ -78,7 +74,6 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
                 barrierMesh.rotation.y = Math.atan2(dir.x, dir.z);
                 group.add(barrierMesh);
                 
-                // Thêm hàng rào hai bên cao tốc
                 const guardrailGeo = new THREE.BoxGeometry(0.2, 1, length);
                 const rightDir = new THREE.Vector3(-dir.z, 0, dir.x);
                 const leftGuardrail = new THREE.Mesh(guardrailGeo, guardrailMat);
@@ -95,7 +90,6 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
             }
         }
 
-        // 3. ĐÈN ĐƯỜNG (REAL POINT LIGHT)
         if (seg.type !== 'tunnel') {
             const numLights = Math.floor(length / 40);
             for (let i = 0; i < numLights; i++) {
@@ -113,11 +107,10 @@ export function createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize) {
                 lamp.position.y = 8;
                 group.add(lamp);
 
-                // TẠO POINT LIGHT THẬT CHIẾU SÁNG XUỐNG MẶT ĐƯỜNG
                 const pl = new THREE.PointLight(0xffffaa, 1.5, 30, 2);
                 pl.position.copy(lightPos);
                 pl.position.y = 8;
-                pl.userData.isStreetLight = true; // Đánh dấu để LightingSystem bật/tắt
+                pl.userData.isStreetLight = true;
                 group.add(pl);
             }
         }

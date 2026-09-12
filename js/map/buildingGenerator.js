@@ -1,4 +1,4 @@
-// js/map/buildingGenerator.js - INDUSTRIAL, BRANDS & EASTER EGG
+// js/map/buildingGenerator.js - DIVERSE HOUSES, ROOFS, SIGNAGES & EASTER EGG
 import * as THREE from "three";
 import { roadNetwork, roadProfiles, getPOIs } from "./data/roadNetworkData.js";
 
@@ -31,10 +31,10 @@ function createHouseTexture(wallColor, doorColor, windowColor) {
     ctx.fillStyle = '#' + wallColor.toString(16).padStart(6, '0');
     ctx.fillRect(0, 0, 128, 128);
     ctx.fillStyle = '#' + doorColor.toString(16).padStart(6, '0');
-    ctx.fillRect(50, 70, 28, 58); // Cửa ra vào
+    ctx.fillRect(50, 70, 28, 58); 
     ctx.fillStyle = '#' + windowColor.toString(16).padStart(6, '0');
-    ctx.fillRect(15, 80, 25, 25); ctx.fillRect(88, 80, 25, 25); // Cửa sổ tầng 1
-    ctx.fillRect(15, 30, 25, 25); ctx.fillRect(88, 30, 25, 25); ctx.fillRect(50, 30, 28, 25); // Cửa sổ tầng 2
+    ctx.fillRect(15, 80, 25, 25); ctx.fillRect(88, 80, 25, 25); 
+    ctx.fillRect(15, 30, 25, 25); ctx.fillRect(88, 30, 25, 25); ctx.fillRect(50, 30, 28, 25); 
     const tex = new THREE.CanvasTexture(canvas);
     tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
     return tex;
@@ -50,7 +50,6 @@ for (let i = 0; i < 10; i++) {
     });
 }
 
-// THƯƠNG HIỆU & EASTER EGG
 const shopNames = ["Tạp Hóa", "Văn Tèo", "Cô Ba", "Minh Anh", "Thành Công", "Sáu Phước", "Góc Phố", "Hoàng Long", "Bà Năm", "Điện Máy"];
 const shopTextures = shopNames.map(name => {
     const canvas = document.createElement('canvas');
@@ -63,7 +62,6 @@ const shopTextures = shopNames.map(name => {
     return new THREE.CanvasTexture(canvas);
 });
 
-// Thế Giới Di Động (Mặt tiền vàng)
 const tgddTex = (() => {
     const canvas = document.createElement('canvas');
     canvas.width = 256; canvas.height = 128;
@@ -76,7 +74,6 @@ const tgddTex = (() => {
 
 const tgddMat = new THREE.MeshStandardMaterial({ map: tgddTex, roughness: 0.6 });
 
-// Easter Egg House Sign
 const trustMeBroHouseTex = (() => {
     const canvas = document.createElement('canvas');
     canvas.width = 256; canvas.height = 128;
@@ -94,12 +91,39 @@ export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders
     const group = new THREE.Group();
     group.name = "buildings";
     
-    const segments = roadNetwork.segments.map(s => {
-        const f = roadNetwork.nodes.find(n => n.id === s.from), t = roadNetwork.nodes.find(n => n.id === s.to);
-        if (!f?.position || !t?.position) return null;
+    const nodes = new Map(roadNetwork.nodes.map(n => [n.id, n]));
+    
+    const chunkMinX = chunkX * chunkSize;
+    const chunkMaxX = chunkMinX + chunkSize;
+    const chunkMinZ = chunkZ * chunkSize;
+    const chunkMaxZ = chunkMinZ + chunkSize;
+    
+    const segments = [];
+    for (const s of roadNetwork.segments) {
+        const f = nodes.get(s.from);
+        const t = nodes.get(s.to);
+        if (!f?.position || !t?.position) continue;
+        
+        const p1x = f.position.x, p1z = f.position.z;
+        const p2x = t.position.x, p2z = t.position.z;
+        
+        const segMinX = Math.min(p1x, p2x);
+        const segMaxX = Math.max(p1x, p2x);
+        const segMinZ = Math.min(p1z, p2z);
+        const segMaxZ = Math.max(p1z, p2z);
+        
+        if (segMaxX < chunkMinX || segMinX > chunkMaxX || segMaxZ < chunkMinZ || segMinZ > chunkMaxZ) continue;
+        
         const profile = roadProfiles[s.type] || { width: 12 };
-        return { p1: new THREE.Vector3(f.position.x, 0, f.position.z), p2: new THREE.Vector3(t.position.x, 0, t.position.z), width: profile.width || 12, type: s.type };
-    }).filter(Boolean);
+        segments.push({
+            p1: new THREE.Vector3(p1x, 0, p1z),
+            p2: new THREE.Vector3(p2x, 0, p2z),
+            width: profile.width || 12,
+            type: s.type
+        });
+    }
+
+    if (segments.length === 0) return group;
 
     const pois = getPOIs();
     const startX = chunkX * chunkSize;
@@ -108,7 +132,7 @@ export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders
     let density = 5; let zone = 'rural';
     if (zCenter > -1000) { density = 5; zone = 'urban'; }
     else if (zCenter > -4500) { density = 3; zone = 'rural'; }
-    else if (zCenter < -13000 && zCenter > -14000) { density = 5; zone = 'industrial'; } // Khu công nghiệp
+    else if (zCenter < -13000 && zCenter > -14000) { density = 5; zone = 'industrial'; } 
     else { density = 15; zone = 'hcm'; }
 
     const buildingCount = Math.floor(random() * density) + 3;
@@ -118,7 +142,6 @@ export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders
         const seg = segments[Math.floor(random() * segments.length)];
         if (!seg || !seg.p1 || !seg.p2) continue;
         
-        // KHÔNG SPAWN NHÀ TRÊN CAO TỐC
         if (seg.type === 'expressway' || seg.type === 'highway_ramp' || seg.type === 'toll_road') continue;
         
         const segDir = new THREE.Vector3().subVectors(seg.p2, seg.p1);
@@ -150,7 +173,6 @@ export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders
         let isTall = false;
         let bodyMat;
 
-        // ZONE LOGIC
         if (zone === 'industrial') {
             height = 15 + random() * 10;
             bodyMat = industrialMat;
@@ -159,7 +181,7 @@ export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders
             bodyMat = houseTextures[Math.floor(random() * houseTextures.length)].mat;
         } else {
             if (random() > 0.7) isShop = true;
-            if (random() > 0.95) bodyMat = tgddMat; // 5% là Thế Giới Di Động
+            if (random() > 0.95) bodyMat = tgddMat; 
             else bodyMat = isShop ? new THREE.MeshStandardMaterial({ map: shopTextures[Math.floor(random() * shopTextures.length)], roughness: 0.8 }) : houseTextures[Math.floor(random() * houseTextures.length)].mat;
         }
 
@@ -191,7 +213,6 @@ export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders
         if (colliders) colliders.push({ x: spawnPos.x, z: spawnPos.z, r: Math.max(width, depth) / 2, type: 'static', chunkKey: `${chunkX},${chunkZ}` });
     }
 
-    // EASTER EGG SIGN (Ngã tư trung tâm)
     if (!trustMeBroSignPlaced && chunkX === 0 && chunkZ === 0) {
         const signMat = new THREE.MeshBasicMaterial({ map: trustMeBroHouseTex, transparent: true, side: THREE.DoubleSide });
         const sign = new THREE.Mesh(new THREE.PlaneGeometry(8, 4), signMat);
@@ -201,7 +222,6 @@ export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders
         trustMeBroSignPlaced = true;
     }
     
-    // EASTER EGG HOUSE (Random hiếm)
     if (!trustMeBroHousePlaced && random() > 0.95) {
         const houseMat = new THREE.MeshStandardMaterial({ color: 0x808080 });
         const house = new THREE.Mesh(sharedHouseBodyGeo, houseMat);
@@ -216,7 +236,6 @@ export function generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders
         trustMeBroHousePlaced = true;
     }
 
-    // Tạo Công viên
     for (const poi of pois) {
         if (poi.type === 'park' && poi.position.x >= startX && poi.position.x <= startX + chunkSize && poi.position.z >= startZ && poi.position.z <= startZ + chunkSize) {
             const parkW = poi.size?.width || 60;

@@ -1,6 +1,5 @@
 // js/main.js - COACHVN ULTRA STABLE & FULL INTEGRATION
 import * as THREE from "three";
-import { createMovingAverage, formatTime } from "./utils.js";
 import { createMap } from "./map.js";
 import { createUI } from "./ui.js";
 import { createNPC } from "./npc.js";
@@ -22,6 +21,7 @@ let playerColId = -1;
 let lastTime = performance.now();
 let webglLost = false;
 let isConsoleOpen = false;
+let speedCameraFlashTimer = 0;
 
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent);
 const isLowEnd = (navigator.hardwareConcurrency || 4) <= 4 || (navigator.deviceMemory || 4) <= 4;
@@ -83,6 +83,14 @@ function updateVehiclePhysics(dt) {
     }
     if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z);
     bus.group.updateMatrixWorld(true);
+
+    // WEIGHT TRANSFER
+    const targetPitch = isBrake ? -0.04 : (isAccel ? 0.02 : 0);
+    bus.group.rotation.x = THREE.MathUtils.lerp(bus.group.rotation.x, targetPitch, dt * 4);
+
+    // ROLL
+    const targetRoll = -steerAngle * 0.03 * (speedKmh / 60);
+    bus.group.rotation.z = THREE.MathUtils.lerp(bus.group.rotation.z, targetRoll, dt * 3);
 }
 
 function initInput() {
@@ -141,8 +149,8 @@ function handleCommand(cmd) {
 }
 
 function togglePause() {
-    if (gameState === "playing") { paused = true; ui.showPauseMenu(); }
-    else if (paused) { paused = false; ui.hidePauseMenu(); clock.getDelta(); }
+    if (gameState === "playing") { paused = true; }
+    else if (paused) { paused = false; clock.getDelta(); }
 }
 
 let hudTimer = 0;
@@ -169,7 +177,7 @@ async function boot() {
     ui = createUI({ map: null });
     if (isMobile || isLowEnd) { ui.saveSettings(); }
     ui.showMainMenu();
-    scene = new THREE.Scene(); // KHỞI TẠO SCENE Ở ĐÂY
+    scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87ceeb);
     scene.fog = new THREE.Fog(0x87ceeb, 150, 800);
     camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 30000);
@@ -179,32 +187,86 @@ async function boot() {
     await new Promise(r => setTimeout(r, 200));
     initRenderer();
     setupMenuEvents();
-    setupMobileControls();
     window.requestAnimationFrame(loop);
 }
 
-function setupMobileControls() {
-    const steerWheel = document.getElementById('steering-wheel');
-    const wheelKnob = document.getElementById('wheel-knob');
-    let touchId = null, centerX = 0, centerY = 0;
-    const handleSteer = (t) => {
-        const dx = t.clientX - centerX, dy = t.clientY - centerY;
-        let angle = Math.atan2(dy, dx) * 180 / Math.PI - 90;
-        if (angle > 180) angle -= 360; if (angle < -180) angle += 360;
-        let clamp = Math.max(-90, Math.min(90, angle));
-        mobileInput.steer = clamp / 90;
-        wheelKnob.style.transform = `translateX(-50%) rotate(${clamp}deg)`;
-    };
-    steerWheel?.addEventListener('touchstart', (e) => { e.preventDefault(); const r = steerWheel.getBoundingClientRect(); centerX = r.left + r.width / 2; centerY = r.top + r.height / 2; touchId = e.changedTouches[0].identifier; handleSteer(e.changedTouches[0]); });
-    steerWheel?.addEventListener('touchmove', (e) => { e.preventDefault(); for (let t of e.touches) if (t.identifier === touchId) handleSteer(t); });
-    steerWheel?.addEventListener('touchend', (e) => { e.preventDefault(); touchId = null; mobileInput.steer = 0; wheelKnob.style.transform = `translateX(-50%) rotate(0deg)`; });
+function setupMenuEvents() {
+    document.getElementById("btn-new-game")?.addEventListener("click", startGameFromMenu);
     
-    const setupPedal = (id, key) => { const btn = document.getElementById(id); btn?.addEventListener('touchstart', (e) => { e.preventDefault(); mobileInput[key] = 1; }); btn?.addEventListener('touchend', (e) => { e.preventDefault(); mobileInput[key] = 0; }); };
-    setupPedal('m-gas', 'accel'); setupPedal('m-brake', 'brake');
-    const simulateKey = (code) => { window.dispatchEvent(new KeyboardEvent('keydown', { code })); setTimeout(() => window.dispatchEvent(new KeyboardEvent('keyup', { code })), 100); };
-    document.getElementById('m-horn')?.addEventListener('touchstart', (e) => { e.preventDefault(); simulateKey('KeyH'); });
-    document.getElementById('m-light')?.addEventListener('touchstart', (e) => { e.preventDefault(); simulateKey('KeyF'); });
-    document.getElementById('m-door')?.addEventListener('touchstart', (e) => { e.preventDefault(); simulateKey('KeyK'); });
+    const settingsPanel = document.getElementById('settings-panel');
+    const btnSettings = document.getElementById('btn-settings-main');
+    const btnCloseSettings = document.getElementById('btn-close-settings');
+    const btnApplySettings = document.getElementById('btn-apply-settings');
+    const rngNpc = document.getElementById('setting-npc-density');
+    const valNpc = document.getElementById('val-npc-density');
+    const rngCamSens = document.getElementById('setting-cam-sens');
+    const valCamSens = document.getElementById('val-cam-sens');
+    
+    rngNpc?.addEventListener('input', () => { if(valNpc) valNpc.textContent = rngNpc.value; });
+    rngCamSens?.addEventListener('input', () => { if(valCamSens) valCamSens.textContent = rngCamSens.value; });
+
+    btnSettings?.addEventListener("click", () => { if(settingsPanel) settingsPanel.style.display = 'flex'; });
+    btnCloseSettings?.addEventListener("click", () => { if(settingsPanel) settingsPanel.style.display = 'none'; });
+    
+    btnApplySettings?.addEventListener("click", () => {
+        const selGraphics = document.getElementById('setting-graphics');
+        if(selGraphics) gameSettings.graphics = selGraphics.value;
+        if(rngNpc) gameSettings.npcDensity = parseInt(rngNpc.value);
+        if(rngCamSens) gameSettings.camSens = parseInt(rngCamSens.value);
+        
+        if(cameraSystem) cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
+        if(renderer) renderer.toneMapping = (gameSettings.graphics === 'low') ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+        if(trafficManager) trafficManager.maxVehicles = gameSettings.npcDensity;
+        
+        ui?.toast("Da ap dung cai dat!");
+        if(settingsPanel) settingsPanel.style.display = 'none';
+    });
+
+    const uvPanel = document.getElementById('uv-skin-panel');
+    const btnUvSkin = document.getElementById('btn-uv-skin');
+    const btnCloseUvSkin = document.getElementById('btn-close-uv-skin');
+    const btnChooseSkin = document.getElementById('btn-choose-skin');
+    const uvInput = document.getElementById('uv-skin-input');
+    const uvStatus = document.getElementById('uv-skin-status');
+    const uvDownload = document.getElementById('uv-skin-download');
+
+    btnUvSkin?.addEventListener('click', () => { 
+        if(uvPanel) uvPanel.style.display = 'flex'; 
+        if(uvStatus) uvStatus.innerHTML = ''; 
+        if(uvDownload) uvDownload.style.display = 'none'; 
+    });
+    btnCloseUvSkin?.addEventListener('click', () => { if(uvPanel) uvPanel.style.display = 'none'; });
+    btnChooseSkin?.addEventListener('click', () => { if(uvInput) uvInput.click(); });
+    
+    uvInput?.addEventListener('change', (e) => {
+        const file = e.target.files[0]; 
+        if (!file) return;
+        if(uvStatus) { uvStatus.textContent = 'Dang kiem tra...'; uvStatus.style.color = '#fff'; }
+        if(uvDownload) uvDownload.style.display = 'none';
+        
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const arr = new Uint8Array(ev.target.result);
+            const isPng = arr.length >= 8 && arr[0] === 0x89 && arr[1] === 0x50 && arr[2] === 0x4E && arr[3] === 0x47;
+            if (!isPng) { 
+                if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = 'File khong phai PNG'; } 
+                return; 
+            }
+            const img = new Image();
+            img.onload = () => {
+                if (img.width !== 2048 || img.height !== 1024) { 
+                    if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = `Kich thuoc sai. Yeu cau: 2048x1024. File: ${img.width}x${img.height}`; } 
+                    return; 
+                }
+                if(uvStatus) { uvStatus.style.color = '#00ff99'; uvStatus.innerHTML = 'UV Skin hop le'; } 
+                const url = URL.createObjectURL(file); 
+                if(uvDownload) { uvDownload.href = url; uvDownload.download = 'bus_final.png'; uvDownload.style.display = 'block'; }
+            };
+            img.onerror = () => { if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = 'Loi doc file'; } };
+            img.src = URL.createObjectURL(file);
+        };
+        reader.readAsArrayBuffer(file);
+    });
 }
 
 async function startGameFromMenu() {
@@ -216,22 +278,20 @@ async function startGameFromMenu() {
         const spawn = map.getSpawnPoint();
         bus.group.position.set(spawn.x, 0.5, spawn.z);
         bus.group.rotation.y = (spawn.heading || 0) + Math.PI / 2;
+        bus.group.name = 'player_bus'; // Đặt tên để NPC nhận diện
         if (window.collisionSystem) playerColId = window.collisionSystem.register(bus.group.position.x, bus.group.position.z, 4.0, 'player');
         cameraSystem = new CameraSystem(camera, bus.group); cameraSystem.setMode("driver");
-        cameraSystem.settings.cameraSensitivity = 0.006; await new Promise(r => setTimeout(r, 300));
+        cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000; await new Promise(r => setTimeout(r, 300));
         
         ui.setLoading("Giao thông...", 0.8); await loadNpcSkinList(); npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: { x: spawn.x, z: spawn.z } }); 
         trafficManager = createTrafficManager({ scene, roadGraph: roadNetwork, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 }); 
         
-        // KHỞI TẠO NPC BẾN XE (STATIC COACHES)
         const thSt = getNode('py_st'); if (thSt) trafficManager.setupStationTraffic(thSt);
         const mdSt = getNode('sg_md'); if (mdSt) trafficManager.setupStationTraffic(mdSt);
         const restStop = getNode('dc_rest'); if (restStop) trafficManager.setupStationTraffic(restStop);
         const gasStation = getNode('exp_gas'); if (gasStation) trafficManager.setupStationTraffic(gasStation);
 
-        // KHỞI TẠO PASSENGER SYSTEM (Đã có scene hợp lệ)
-        passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui }); 
-        await new Promise(r => setTimeout(r, 300));
+        passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui }); await new Promise(r => setTimeout(r, 300));
         
         ui.setLoading("Hoàn tất...", 1.0); await new Promise(r => setTimeout(r, 100)); ui.hideLoading();
         gameState = "playing"; paused = false; document.getElementById("hud").style.display = "block"; initInput(); clock.start(); lastTime = performance.now();
@@ -240,88 +300,6 @@ async function startGameFromMenu() {
         alert("Lỗi tải game:\n" + error.message + "\n\nStack: " + error.stack); 
         ui.showMainMenu(); 
     }
-}
-
-function setupMenuEvents() {
-    document.getElementById("btn-new-game")?.addEventListener("click", startGameFromMenu);
-    
-    // --- LOGIC SETTINGS PANEL THẬT ---
-    const settingsPanel = document.getElementById('settings-panel');
-    const btnSettings = document.getElementById('btn-settings-main');
-    const btnCloseSettings = document.getElementById('btn-close-settings');
-    const btnApplySettings = document.getElementById('btn-apply-settings');
-    
-    btnSettings?.addEventListener("click", () => { if (settingsPanel) settingsPanel.style.display = 'flex'; });
-    btnCloseSettings?.addEventListener("click", () => { if (settingsPanel) settingsPanel.style.display = 'none'; });
-    btnApplySettings?.addEventListener("click", () => {
-        const selGraphics = document.getElementById('setting-graphics');
-        const rngNpc = document.getElementById('setting-npc-density');
-        const rngCamSens = document.getElementById('setting-cam-sens');
-        
-        // Lưu và áp dụng setting thật
-        gameSettings.graphics = selGraphics ? selGraphics.value : 'low';
-        gameSettings.npcDensity = rngNpc ? parseInt(rngNpc.value) : 5;
-        gameSettings.camSens = rngCamSens ? parseInt(rngCamSens.value) : 30;
-        
-        if (cameraSystem) cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
-        if (renderer) {
-            renderer.toneMapping = (gameSettings.graphics === 'low') ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
-        }
-        ui?.toast("⚙ Đã áp dụng cài đặt!");
-        if (settingsPanel) settingsPanel.style.display = 'none';
-    });
-
-    // --- LOGIC UV SKIN THẬT ---
-    const uvPanel = document.getElementById('uv-skin-panel');
-    const uvInput = document.getElementById('uv-skin-input') || document.getElementById('btn-choose-skin');
-    const uvStatus = document.getElementById('uv-skin-status');
-    const uvDownload = document.getElementById('uv-skin-download');
-
-    document.getElementById('btn-uv-skin')?.addEventListener('click', () => { 
-        if (uvPanel) uvPanel.style.display = 'flex'; 
-        if (uvStatus) uvStatus.innerHTML = ''; 
-        if (uvDownload) uvDownload.style.display = 'none'; 
-    });
-    document.getElementById('btn-close-uv-skin')?.addEventListener('click', () => { if (uvPanel) uvPanel.style.display = 'none'; });
-    
-    uvInput?.addEventListener('change', (e) => {
-        const file = e.target.files[0]; if (!file) return;
-        if (uvStatus) { uvStatus.textContent = '⏳ ĐANG KIỂM TRA...'; uvStatus.style.color = '#fff'; }
-        if (uvDownload) uvDownload.style.display = 'none';
-        
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            const arr = new Uint8Array(ev.target.result);
-            // Kiểm tra PNG signature
-            const isPng = arr.length >= 8 && arr[0] === 0x89 && arr[1] === 0x50 && arr[2] === 0x4E && arr[3] === 0x47 && arr[4] === 0x0D && arr[5] === 0x0A && arr[6] === 0x1A && arr[7] === 0x0A;
-            if (!isPng) { 
-                if (uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = '❌ FILE KHÔNG PHẢI PNG HỢP LỆ'; }
-                return; 
-            }
-            const img = new Image();
-            img.onload = () => {
-                // Kiểm tra kích thước 2048x1024
-                if (img.width !== 2048 || img.height !== 1024) { 
-                    if (uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = `❌ UV SKIN KHÔNG HỢP LỆ\nYêu cầu: 2048×1024\nFile: ${img.width}×${img.height}`; }
-                    return; 
-                }
-                try { 
-                    const tex = new THREE.Texture(img); 
-                    tex.needsUpdate = true; 
-                    if (!tex.image || tex.image.width === 0) throw new Error(); 
-                    tex.dispose(); // Dọn dẹp test
-                    if (uvStatus) { uvStatus.style.color = '#00ff99'; uvStatus.innerHTML = `✅ UV SKIN HỢP LỆ\nKích thước: ${img.width} × ${img.height}`; } 
-                    const url = URL.createObjectURL(file); 
-                    if (uvDownload) { uvDownload.href = url; uvDownload.download = 'bus_final.png'; uvDownload.style.display = 'block'; }
-                } catch (err) { 
-                    if (uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = '❌ TEXTURE KHÔNG HỢP LỆ'; } 
-                }
-            };
-            img.onerror = () => { if (uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = '❌ KHÔNG THỂ ĐỌC FILE'; } };
-            img.src = URL.createObjectURL(file);
-        };
-        reader.readAsArrayBuffer(file);
-    });
 }
 
 function updateWorld(delta) {
@@ -333,6 +311,29 @@ function updateWorld(delta) {
     if (trafficManager) trafficManager.update(delta, { x: bus.group.position.x, z: bus.group.position.z });
     if (passengerSystem) passengerSystem.update(delta);
     if (bus?.group && camera && lighting) updateEnderman(scene, camera, lighting, { x: bus.group.position.x, z: bus.group.position.z }, bus.group.rotation.y, delta);
+
+    // HỆ THỐNG PHẠT NGUỘI
+    const speedKmh = Math.abs(vehiclePhysics.currentSpeedKmh);
+    if (speedKmh > 80 && Math.random() < 0.005) {
+        speedCameraFlashTimer = 0.3;
+        ui?.toast("📷 Phạt nguội! Vượt quá 80km/h");
+    }
+    if (speedCameraFlashTimer > 0) {
+        speedCameraFlashTimer -= delta;
+        if (renderer) renderer.setClearColor(0xff0000, speedCameraFlashTimer);
+    } else if (renderer) {
+        renderer.setClearColor(0x87ceeb, 1);
+    }
+
+    // TRẠM THU PHÍ ETC
+    const busPos = bus?.group?.position;
+    if (busPos) {
+        const distToTollN = Math.hypot(busPos.x - 250, busPos.z - (-2500));
+        const distToTollS = Math.hypot(busPos.x - 400, busPos.z - (-3700));
+        if ((distToTollN < 40 || distToTollS < 40) && speedKmh > 25) {
+            ui?.toast("⚠️ Trạm thu phí ETC: Vượt quá 25km/h!");
+        }
+    }
 }
 
 function updateHUD(delta) {

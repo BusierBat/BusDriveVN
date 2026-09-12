@@ -21,27 +21,48 @@ export function generateChunk({ chunkX, chunkZ, worldSeed, chunkSize, parkingSlo
     let seed = worldSeed + chunkX * 73856093 ^ chunkZ * 19349663;
     const random = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
 
-    // 1. TERRAIN
     const ground = new THREE.Mesh(sharedGroundGeo, terrainMat);
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(chunkX * chunkSize + chunkSize / 2, 0, chunkZ * chunkSize + chunkSize / 2);
     group.add(ground);
 
-    // 2. ROAD
     const roadMesh = createRoadMeshForChunk(roadNetwork, chunkX, chunkZ, chunkSize);
     group.add(roadMesh);
 
-    // 3. BUILDINGS
     const colliders = [];
     const buildings = generateBuildings({ chunkX, chunkZ, chunkSize, random, colliders });
     group.add(buildings);
 
-    // 4. VEGETATION
     const nodes = new Map(roadNetwork.nodes.map(n => [n.id, n]));
-    const segments = roadNetwork.segments.map(s => {
-        const f = nodes.get(s.from); const t = nodes.get(s.to);
-        return f && t ? { p1: new THREE.Vector3(f.position.x, 0, f.position.z), p2: new THREE.Vector3(t.position.x, 0, t.position.z), width: 24 } : null;
-    }).filter(Boolean);
+    
+    // TỐI ƯU: Lọc segment theo Bounding Box của chunk thay vì map toàn bộ
+    const chunkMinX = chunkX * chunkSize;
+    const chunkMaxX = chunkMinX + chunkSize;
+    const chunkMinZ = chunkZ * chunkSize;
+    const chunkMaxZ = chunkMinZ + chunkSize;
+    
+    const segments = [];
+    for (const s of roadNetwork.segments) {
+        const f = nodes.get(s.from);
+        const t = nodes.get(s.to);
+        if (!f?.position || !t?.position) continue;
+        
+        const p1x = f.position.x, p1z = f.position.z;
+        const p2x = t.position.x, p2z = t.position.z;
+        
+        const segMinX = Math.min(p1x, p2x);
+        const segMaxX = Math.max(p1x, p2x);
+        const segMinZ = Math.min(p1z, p2z);
+        const segMaxZ = Math.max(p1z, p2z);
+        
+        if (segMaxX < chunkMinX || segMinX > chunkMaxX || segMaxZ < chunkMinZ || segMinZ > chunkMaxZ) continue;
+        
+        segments.push({
+            p1: new THREE.Vector3(p1x, 0, p1z),
+            p2: new THREE.Vector3(p2x, 0, p2z),
+            width: 24
+        });
+    }
 
     const startX = chunkX * chunkSize;
     const startZ = chunkZ * chunkSize;

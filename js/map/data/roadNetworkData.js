@@ -1,24 +1,23 @@
-// js/map/data/roadNetworkData.js - LOGICAL & EXPANDABLE ROAD NETWORK
+// js/map/data/roadNetworkData.js - MASSIVE EXPANDED & OPTIMIZED ROAD NETWORK
+
 export const roadProfiles = {
-    urban: { lanes: 4, width: 20, median: false, shoulder: false, env: 'urban' },
-    ql1a: { lanes: 4, width: 24, median: true, medianType: 'green', shoulder: false, env: 'mixed' },
-    mountain_pass: { lanes: 2, width: 12, median: false, shoulder: false, env: 'mountain' },
-    highway_ramp: { lanes: 2, width: 14, median: false, shoulder: false, env: 'highway' },
-    expressway: { lanes: 4, width: 28, median: true, medianType: 'barrier', shoulder: true, guardrail: true, env: 'highway' },
-    bus_station_road: { lanes: 2, width: 16, median: false, shoulder: false, env: 'station' },
-    local: { lanes: 2, width: 10, median: false, shoulder: false, env: 'residential' }
+    urban: { lanes: 4, width: 20, median: false, shoulder: false },
+    ql1a: { lanes: 4, width: 24, median: true, medianType: 'green', shoulder: false },
+    mountain_pass: { lanes: 2, width: 12, median: false, shoulder: false },
+    highway_ramp: { lanes: 2, width: 14, median: false, shoulder: false },
+    expressway: { lanes: 4, width: 28, median: true, medianType: 'barrier', shoulder: true, guardrail: true },
+    bus_station_road: { lanes: 2, width: 16, median: false, shoulder: false },
+    local: { lanes: 2, width: 10, median: false, shoulder: false }
 };
 
-export const roadNetwork = {
-    nodes: [
-        // 1. BẾN XE PHÚ YÊN & NỘI ĐÔ
+export const roadNetwork = (() => {
+    const nodes = [
         { id: 'py_st', type: 'bus_station', position: { x: 67, z: 105 }, name: 'Bến xe Phú Yên', size: { width: 200, depth: 150 }, parkingSlots: 15 },
         { id: 'py_st_exit', type: 'junction', position: { x: 0, z: 105 }, name: 'Lối ra Bến xe' },
         { id: 'py_u1', type: 'intersection', position: { x: 0, z: 0 }, name: 'Ngã tư Trung tâm' },
         { id: 'py_u2', type: 'intersection', position: { x: -20, z: -150 }, name: 'Ngã tư Lê Duẩn' },
         { id: 'py_out', type: 'highway_junction', position: { x: 50, z: -400 }, name: 'Cổng Nam Phú Yên' },
 
-        // 2. ĐẠI LÃNH & ĐÈO CẢ
         { id: 'dl_junc', type: 'junction', position: { x: 50, z: -800 }, name: 'Ngã ba Đại Lãnh' },
         { id: 'dc_rest', type: 'rest_area', position: { x: 120, z: -850 }, name: 'Trạm dừng Đèo Cả', size: { width: 150, depth: 100 }, parkingSlots: 5 },
         { id: 'dc_pass_n', type: 'mountain_pass', position: { x: 80, z: -1100 } },
@@ -27,35 +26,28 @@ export const roadNetwork = {
         { id: 'dc_pass_s', type: 'mountain_pass', position: { x: 120, z: -1900 } },
         { id: 'dc_bridge', type: 'bridge', position: { x: 150, z: -2100 }, name: 'Cầu Đà Rằng' },
 
-        // 3. ĐƯỜNG DẪN & TRẠM THU PHÍ BẮC
         { id: 'hwy_ramp_n', type: 'highway_ramp', position: { x: 200, z: -2300 }, name: 'Đường dẫn CT Bắc' },
         { id: 'toll_n', type: 'toll_station', position: { x: 250, z: -2500 }, name: 'Trạm thu phí Bắc', size: { width: 100, depth: 40 } },
 
-        // 4. CAO TỐC (Tách biệt hoàn toàn)
         { id: 'exp_1', type: 'highway_junction', position: { x: 300, z: -2700 } },
         { id: 'exp_gas_junc', type: 'highway_ramp', position: { x: 350, z: -3000 }, name: 'Nút ra Cây xăng CT' },
         { id: 'exp_gas', type: 'fuel_station', position: { x: 400, z: -3000 }, name: 'Cây xăng Petrolimex CT', size: { width: 200, depth: 150 }, parkingSlots: 5 },
         { id: 'exp_2', type: 'highway_junction', position: { x: 350, z: -3300 } },
         
-        // 5. TRẠM THU PHÍ NAM & NÚT GIAO DẦU GIÂY
         { id: 'toll_s', type: 'toll_station', position: { x: 400, z: -3700 }, name: 'Trạm thu phí Nam', size: { width: 100, depth: 40 } },
         { id: 'hwy_ramp_s', type: 'highway_ramp', position: { x: 450, z: -3900 } },
         { id: 'sg_out', type: 'highway_junction', position: { x: 500, z: -4100 }, name: 'Nút giao Dầu Giây' },
 
-        // 6. ĐÔ THỊ SÀI GÒN
         { id: 'sg_u1', type: 'intersection', position: { x: 550, z: -4400 }, name: 'Ngã tư Xa Lộ Hà Nội' },
         { id: 'sg_u2', type: 'intersection', position: { x: 600, z: -4700 }, name: 'Ngã tư Hoàng Hữu Nam' },
         { id: 'sg_md_entry', type: 'junction', position: { x: 650, z: -5000 }, name: 'Cổng vào Miền Đông' },
-        
-        // 7. BẾN XE MIỀN ĐÔNG
         { id: 'sg_md', type: 'bus_station', position: { x: 700, z: -5200 }, name: 'Bến xe Miền Đông Mới', size: { width: 500, depth: 350 }, parkingSlots: 50 },
         { id: 'sg_md_exit', type: 'junction', position: { x: 750, z: -5400 }, name: 'Cổng ra Miền Đông' },
-        
-        // 8. WORLD TIẾP TỤC (Không kết thúc ở bến xe)
         { id: 'sg_u3', type: 'intersection', position: { x: 800, z: -5600 }, name: 'Ngã tư Long Bình' },
         { id: 'sg_continued', type: 'intersection', position: { x: 850, z: -6000 }, name: 'Đi tiếp Trung tâm SG' }
-    ],
-    segments: [
+    ];
+
+    const segments = [
         { id: 's_py_st_exit', from: 'py_st', to: 'py_st_exit', type: 'bus_station_road', twoWay: false },
         { id: 's_py_exit_u1', from: 'py_st_exit', to: 'py_u1', type: 'urban', twoWay: true },
         { id: 's_py_u1_u2', from: 'py_u1', to: 'py_u2', type: 'urban', twoWay: true },
@@ -83,30 +75,118 @@ export const roadNetwork = {
         { id: 's_md_md_exit', from: 'sg_md', to: 'sg_md_exit', type: 'bus_station_road', twoWay: false },
         { id: 's_md_exit_u3', from: 'sg_md_exit', to: 'sg_u3', type: 'urban', twoWay: true },
         { id: 's_u3_continued', from: 'sg_u3', to: 'sg_continued', type: 'urban', twoWay: true }
-    ],
-    pois: [
-        { id: 'py_st', type: 'bus_station', position: { x: 67, z: 105 }, name: 'Bến xe Phú Yên', size: { width: 200, depth: 150 }, parkingSlots: 15 },
-        { id: 'dc_rest', type: 'rest_area', position: { x: 120, z: -850 }, name: 'Trạm dừng Đèo Cả', size: { width: 150, depth: 100 }, parkingSlots: 5 },
-        { id: 'toll_n', type: 'toll_station', position: { x: 250, z: -2500 }, name: 'Trạm thu phí Bắc', size: { width: 100, depth: 40 } },
-        { id: 'exp_gas', type: 'fuel_station', position: { x: 400, z: -3000 }, name: 'Cây xăng Cao tốc', size: { width: 200, depth: 150 }, parkingSlots: 5 },
-        { id: 'toll_s', type: 'toll_station', position: { x: 400, z: -3700 }, name: 'Trạm thu phí Nam', size: { width: 100, depth: 40 } },
-        { id: 'sg_md', type: 'bus_station', position: { x: 700, z: -5200 }, name: 'Bến xe Miền Đông Mới', size: { width: 500, depth: 350 }, parkingSlots: 50 }
-    ],
-    route: [ 'py_st', 'py_st_exit', 'py_u1', 'py_u2', 'py_out', 'dl_junc', 'dc_pass_n', 'dc_tunnel_in', 'dc_tunnel_out', 'dc_pass_s', 'dc_bridge', 'hwy_ramp_n', 'toll_n', 'exp_1', 'exp_gas_junc', 'exp_2', 'toll_s', 'hwy_ramp_s', 'sg_out', 'sg_u1', 'sg_u2', 'sg_md_entry', 'sg_md' ]
-};
+    ];
 
+    let genId = 0;
+    function addNode(type, x, z, name) {
+        const id = `gen_${genId++}`;
+        nodes.push({ id, type, position: { x, z }, name: name || `Khu vực ${id}` });
+        return id;
+    }
+
+    function addSeg(from, to, type, twoWay = true) {
+        segments.push({ id: `gen_s_${genId++}`, from, to, type, twoWay });
+    }
+
+    // --- X5 EXPANSION: TUY HÒA CITY GRID ---
+    const pyGridSize = 8;
+    const pySpacing = 120;
+    const pyGrid = [];
+    for (let i = 0; i < pyGridSize; i++) {
+        for (let j = 0; j < pyGridSize; j++) {
+            const x = -500 + i * pySpacing;
+            const z = -300 + j * pySpacing;
+            if (Math.abs(x) < 200 && Math.abs(z) < 200) continue;
+            pyGrid.push({ id: addNode('junction', x, z, `Đường PY ${i}-${j}`), i, j });
+        }
+    }
+    for (let i = 0; i < pyGridSize; i++) {
+        for (let j = 0; j < pyGridSize; j++) {
+            const current = pyGrid.find(g => g.i === i && g.j === j);
+            if (!current) continue;
+            if (i < pyGridSize - 1) {
+                const right = pyGrid.find(g => g.i === i + 1 && g.j === j);
+                if (right) addSeg(current.id, right.id, 'local');
+            }
+            if (j < pyGridSize - 1) {
+                const down = pyGrid.find(g => g.i === i && g.j === j + 1);
+                if (down) addSeg(current.id, down.id, 'local');
+            }
+        }
+    }
+    const pyTopLeft = pyGrid.find(g => g.i === 0 && g.j === 0);
+    if (pyTopLeft) addSeg('py_u1', pyTopLeft.id, 'local');
+
+    // --- X5 EXPANSION: SÀI GÒN MEGA GRID ---
+    const sgGridSize = 12;
+    const sgSpacing = 100;
+    const sgGrid = [];
+    for (let i = 0; i < sgGridSize; i++) {
+        for (let j = 0; j < sgGridSize; j++) {
+            const x = 400 + i * sgSpacing;
+            const z = -4500 + j * sgSpacing;
+            if (Math.abs(x - 650) < 200 && Math.abs(z + 5000) < 200) continue;
+            sgGrid.push({ id: addNode('intersection', x, z, `Đường SG ${i}-${j}`), i, j });
+        }
+    }
+    for (let i = 0; i < sgGridSize; i++) {
+        for (let j = 0; j < sgGridSize; j++) {
+            const current = sgGrid.find(g => g.i === i && g.j === j);
+            if (!current) continue;
+            if (i < sgGridSize - 1) {
+                const right = sgGrid.find(g => g.i === i + 1 && g.j === j);
+                if (right) addSeg(current.id, right.id, 'urban');
+            }
+            if (j < sgGridSize - 1) {
+                const down = sgGrid.find(g => g.i === i && g.j === j + 1);
+                if (down) addSeg(current.id, down.id, 'urban');
+            }
+        }
+    }
+    const sgTopLeft = sgGrid.find(g => g.i === 0 && g.j === 0);
+    if (sgTopLeft) addSeg('sg_u1', sgTopLeft.id, 'urban');
+
+    // --- X5 EXPANSION: RURAL ROADS & VILLAGES ---
+    for(let i=0; i<40; i++) {
+        const z = -500 - Math.random() * 2000;
+        const x = -200 + Math.random() * 400;
+        const vId = addNode('residential', x, z, `Thôn ${i}`);
+        if(Math.random() > 0.5) addSeg('dl_junc', vId, 'local');
+        else addSeg('py_out', vId, 'local');
+    }
+
+    return {
+        nodes,
+        segments,
+        pois: [
+            { id: 'py_st', type: 'bus_station', position: { x: 67, z: 105 }, name: 'Bến xe Phú Yên', size: { width: 200, depth: 150 }, parkingSlots: 15 },
+            { id: 'dc_rest', type: 'rest_area', position: { x: 120, z: -850 }, name: 'Trạm dừng Đèo Cả', size: { width: 150, depth: 100 }, parkingSlots: 5 },
+            { id: 'toll_n', type: 'toll_station', position: { x: 250, z: -2500 }, name: 'Trạm thu phí Bắc', size: { width: 100, depth: 40 } },
+            { id: 'exp_gas', type: 'fuel_station', position: { x: 400, z: -3000 }, name: 'Cây xăng Cao tốc', size: { width: 200, depth: 150 }, parkingSlots: 5 },
+            { id: 'toll_s', type: 'toll_station', position: { x: 400, z: -3700 }, name: 'Trạm thu phí Nam', size: { width: 100, depth: 40 } },
+            { id: 'sg_md', type: 'bus_station', position: { x: 700, z: -5200 }, name: 'Bến xe Miền Đông Mới', size: { width: 500, depth: 350 }, parkingSlots: 50 }
+        ],
+        route: [ 'py_st', 'py_st_exit', 'py_u1', 'py_u2', 'py_out', 'dl_junc', 'dc_pass_n', 'dc_tunnel_in', 'dc_tunnel_out', 'dc_pass_s', 'dc_bridge', 'hwy_ramp_n', 'toll_n', 'exp_1', 'exp_gas_junc', 'exp_2', 'toll_s', 'hwy_ramp_s', 'sg_out', 'sg_u1', 'sg_u2', 'sg_md_entry', 'sg_md' ]
+    };
+})();
+
+let _graphInitialized = false;
 function buildGraph() {
+    if (_graphInitialized) return;
     const nodeMap = new Map(roadNetwork.nodes.map(n => [n.id, n]));
-    for (const node of roadNetwork.nodes) node.connections = [];
+    for (const node of roadNetwork.nodes) node.connections = new Set();
     for (const seg of roadNetwork.segments) {
         const f = nodeMap.get(seg.from), t = nodeMap.get(seg.to);
         if (f && t) {
-            if (!f.connections.includes(seg.id)) f.connections.push(seg.id);
-            if (seg.twoWay && !t.connections.includes(seg.id)) t.connections.push(seg.id);
+            f.connections.add(seg.id);
+            if (seg.twoWay) t.connections.add(seg.id);
         }
     }
+    for (const node of roadNetwork.nodes) {
+        node.connections = Array.from(node.connections);
+    }
+    _graphInitialized = true;
 }
-buildGraph();
 
 export function getNode(id) { return roadNetwork.nodes.find(n => n.id === id); }
 export function getRouteNodes() { return roadNetwork.route.map(id => getNode(id)).filter(Boolean); }
@@ -123,5 +203,8 @@ export function getPOIs() { return roadNetwork.pois; }
 export function getSpawnPoint() { return { x: 67.4, z: 105.1, y: 0.5, heading: -Math.PI / 2 }; }
 export function getRouteWaypoints() { return getRouteNodes().map(n => ({ id: n.id, x: n.position.x, y: 0, z: n.position.z })); }
 export function getMinimapData() { return { segments: roadNetwork.segments.map(s => { const f = getNode(s.from), t = getNode(s.to); return { from: f.position, to: t.position }; }), route: getRouteWaypoints().map(w => ({ x: w.x, z: w.z })), pois: getPOIs().map(p => p.position) }; }
-export function getWorldBounds() { return { minX: -1000, maxX: 1000, minZ: -7000, maxZ: 1000 }; }
-export function getJunctions() { return roadNetwork.nodes.filter(n => n.connections && n.connections.length > 1); }
+export function getWorldBounds() { return { minX: -1000, maxX: 1500, minZ: -6500, maxZ: 1000 }; }
+export function getJunctions() { 
+    if (!_graphInitialized) buildGraph();
+    return roadNetwork.nodes.filter(n => n.connections && n.connections.length > 1); 
+}

@@ -1,4 +1,4 @@
-// js/lighting.js - DAY/NIGHT CYCLE & REAL LIGHTS ACTIVATION
+// js/lighting.js - DAY/NIGHT CYCLE & WEATHER SYSTEM
 import * as THREE from "three";
 
 export class LightingSystem {
@@ -20,9 +20,12 @@ export class LightingSystem {
         this._tmpCol2 = new THREE.Color();
         this._tmpSky = new THREE.Color();
         this._tmpSunCol = new THREE.Color();
+        this.isRaining = false;
+        this.rainParticles = null;
         this._initLights();
-        this._updateTimeOfDay(); // Gọi hàm này để khởi tạo màu trời ban đầu
-        this._updateStreetLights(); // Đảm bảo đèn đường phù hợp với giờ hiện tại
+        this._initRain();
+        this._updateTimeOfDay();
+        this._updateStreetLights();
     }
 
     _initLights() {
@@ -36,6 +39,22 @@ export class LightingSystem {
         this.scene.add(this.lights.moon);
         this.lights.hemisphere = new THREE.HemisphereLight(0x87CEEB, 0x362d1b, 0.5);
         this.scene.add(this.lights.hemisphere);
+    }
+
+    _initRain() {
+        const rainGeo = new THREE.BufferGeometry();
+        const rainCount = 3000;
+        const positions = new Float32Array(rainCount * 3);
+        for (let i = 0; i < rainCount; i++) {
+            positions[i * 3] = (Math.random() - 0.5) * 300;
+            positions[i * 3 + 1] = Math.random() * 100;
+            positions[i * 3 + 2] = (Math.random() - 0.5) * 300;
+        }
+        rainGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const rainMat = new THREE.PointsMaterial({ color: 0xaaaaaa, size: 0.2, transparent: true, opacity: 0.6 });
+        this.rainParticles = new THREE.Points(rainGeo, rainMat);
+        this.rainParticles.visible = false;
+        this.scene.add(this.rainParticles);
     }
 
     _lerp(targetColor, c1, c2, t) {
@@ -55,6 +74,7 @@ export class LightingSystem {
         
         this._updateTimeOfDay();
         this._updateStreetLights();
+        this._updateWeather(deltaTime);
     }
 
     _updateTimeOfDay() {
@@ -65,25 +85,31 @@ export class LightingSystem {
         
         let sunInt = 0, moonInt = 0, ambInt = 0.2;
         
-        if (hours >= 5 && hours < 7) { // Bình minh
+        if (hours >= 5 && hours < 7) {
             const t = (hours - 5) / 2;
             this._lerp(this._tmpSky, 0x0a0a1a, 0xff7e5f, t);
             sunInt = t * 0.8; ambInt = 0.2 + t * 0.3;
             this._lerp(this._tmpSunCol, 0xff0000, 0xffccaa, t);
-        } else if (hours >= 7 && hours < 17) { // Ban ngày
+        } else if (hours >= 7 && hours < 17) {
             this._tmpSky.setHex(0x87CEEB);
             sunInt = 1.0; ambInt = 0.5;
             this._tmpSunCol.setHex(0xffffff);
-        } else if (hours >= 17 && hours < 19) { // Hoàng hôn
+        } else if (hours >= 17 && hours < 19) {
             const t = (hours - 17) / 2;
             this._lerp(this._tmpSky, 0xff7e5f, 0x0a0a1a, t);
             sunInt = 0.8 - t * 0.8; ambInt = 0.5 - t * 0.3;
             this._lerp(this._tmpSunCol, 0xffccaa, 0xff0000, t);
-        } else { // Ban đêm
+        } else {
             this._tmpSky.setHex(0x0a0a1a);
             sunInt = 0; moonInt = 0.3; ambInt = 0.2;
         }
         
+        if (this.isRaining) {
+            sunInt *= 0.3;
+            ambInt *= 0.5;
+            this._tmpSky.multiplyScalar(0.5);
+        }
+
         this.scene.background.copy(this._tmpSky);
         this.scene.fog.color.copy(this._tmpSky);
         this.lights.sun.intensity = sunInt;
@@ -92,7 +118,6 @@ export class LightingSystem {
         this.lights.sun.color.copy(this._tmpSunCol);
     }
     
-    // BẬT/TẮT ĐÈN ĐƯỜNG (POINT LIGHTS) THEO GIỜ
     _updateStreetLights() {
         const hours = this.gameTimeMinutes / 60;
         const isNight = hours >= 18 || hours <= 5;
@@ -102,6 +127,28 @@ export class LightingSystem {
                 object.visible = isNight;
             }
         });
+    }
+
+    _updateWeather(dt) {
+        if (Math.random() < 0.001) {
+            this.isRaining = !this.isRaining;
+        }
+        
+        if (this.isRaining) {
+            this.rainParticles.visible = true;
+            const positions = this.rainParticles.geometry.attributes.position.array;
+            for (let i = 0; i < positions.length; i += 3) {
+                positions[i + 1] -= 40 * dt;
+                if (positions[i + 1] < 0) {
+                    positions[i + 1] = 100;
+                    positions[i] = (Math.random() - 0.5) * 300;
+                    positions[i + 2] = (Math.random() - 0.5) * 300;
+                }
+            }
+            this.rainParticles.geometry.attributes.position.needsUpdate = true;
+        } else {
+            this.rainParticles.visible = false;
+        }
     }
     
     getGameTime() { return this.gameTimeMinutes; }
