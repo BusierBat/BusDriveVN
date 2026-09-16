@@ -1,10 +1,9 @@
 // js/traffic/TrafficAI.js
-
 import * as THREE from "three";
-import { createSeededRandom, lerpAngle } from "../utils.js";
+import { createSeededRandom, lerpAngle, clamp } from "../utils.js";
+import { findPath } from "../map/data/roadNetworkData.js";
 
 const TWO_PI = Math.PI * 2;
-
 const DRIVER_TYPES = {
     CAREFUL: { speedFactor: 0.65, followingDistance: 12, acceleration: 2.5, deceleration: 10, overtakeProbability: 0.05, yieldProbability: 0.9, reactionTime: 0.4, isBus: false },
     NORMAL: { speedFactor: 0.8, followingDistance: 8, acceleration: 4, deceleration: 8, overtakeProbability: 0.2, yieldProbability: 0.5, reactionTime: 0.25, isBus: false },
@@ -22,10 +21,10 @@ export const AI_STATE = {
 export class TrafficAI {
     constructor({ vehicle, roadGraph, personality = 'NORMAL', seed = null, isStatic = false, isParked = false, parkTimer = 0 }) {
         this.vehicle = vehicle;
-        this.roadGraph = roadGraph;
+        this.roadGraph = roadGraph; // Đồ thị thật
         this.seed = seed || Math.random() * 999999;
         this.random = createSeededRandom(this.seed);
-
+        
         const base = DRIVER_TYPES[personality] || DRIVER_TYPES.NORMAL;
         const variance = 0.9 + this.random() * 0.2;
         this.profile = {
@@ -39,7 +38,7 @@ export class TrafficAI {
             isBus: base.isBus,
             busStopProbability: base.busStopProbability || 0
         };
-
+        
         this.isStatic = isStatic;
         this.state = isParked ? AI_STATE.PARKED : AI_STATE.DRIVING;
         this.parkTimer = parkTimer;
@@ -61,13 +60,19 @@ export class TrafficAI {
         this.busStopNode = null;
         this.busStopTimer = 0;
         this.reactionTimer = 0;
-        this.collider = { x: 0, z: 0, r: 1.4 };
+        
+        // Collider 3D
+        this.collider = { x: 0, y: 0.5, z: 0, r: 1.4 };
         this.active = true;
         this.colId = -1;
         this.aiLevel = 'NEAR';
         this.updateInterval = 1 / 30;
         this.lastUpdateTime = 0;
-
+        
+        // Pathfinding
+        this.pathNodes = []; // Mảng các node ID cần đi qua
+        this.currentPathIndex = 0;
+        
         if (!isStatic && !isParked) this._initPosition();
     }
 
@@ -103,7 +108,7 @@ export class TrafficAI {
         this._updatePositionFromSegment();
         this.heading = this._getSegmentHeading();
         this.targetHeading = this.heading;
-        this.vehicle.group.position.set(this.collider.x, 0.5, this.collider.z);
+        this.vehicle.group.position.set(this.collider.x, this.collider.y, this.collider.z);
         this.vehicle.group.rotation.y = this.heading;
     }
 
@@ -116,7 +121,6 @@ export class TrafficAI {
     }
 
     _getRightLaneOffset(seg, dir) { return this._getLaneOffset(seg, dir, 0); }
-
     _getLeftLaneOffset(seg, dir) {
         const lanesPerDir = seg.twoWay ? Math.max(1, (seg.lanes || 2) / 2) : (seg.lanes || 2);
         if (lanesPerDir < 2) return null;
@@ -152,35 +156,40 @@ export class TrafficAI {
         return Math.atan2(pts.p1.x - pts.p0.x, pts.p1.z - pts.p0.z);
     }
 
+    // === 3D POSITION UPDATE ===
     _updatePositionFromSegment() {
         const pts = this._getSegmentPoints();
         if (!pts) return;
+        // Lerp Y để xe leo dốc/xuống dốc
         this.collider.x = pts.p0.x + (pts.p1.x - pts.p0.x) * this.progress;
         this.collider.z = pts.p0.z + (pts.p1.z - pts.p0.z) * this.progress;
+        this.collider.y = pts.p0.y + (pts.p1.y - pts.p0.y) * this.progress; // Y interpolation
+        
         const angle = this._getSegmentHeading();
         this.collider.x += Math.cos(angle) * this.laneOffset;
-        this.collider.z += -Math.sin(angle) * this.laneOffset;
+        this.collider.z -= Math.sin(angle) * this.laneOffset;
+        
+        // Dùng raycast để bám terrain nếu cần, nhưng graph Y đã đủ chính xác cho road
+        this.collider.y += 0.5; // Wheel radius offset
     }
 
     update(deltaTime, playerPos, allVehicles) {
         if (!this.active || this.isStatic) return;
-
         this.lastUpdateTime += deltaTime;
         if (this.aiLevel !== 'NEAR' && this.lastUpdateTime < this.updateInterval) {
             this._updateVehicle();
             return;
         }
         this.lastUpdateTime = 0;
-
         const dt = Math.min(deltaTime, 0.1);
-
+        
         if (this.state === AI_STATE.PARKED || this.state === AI_STATE.BUS_STOPPING || this.state === AI_STATE.BUS_MERGING) {
             this._updateBusStop(dt, allVehicles);
             this._updateSpeed(dt);
             this._updateVehicle();
             return;
         }
-
+        
         this._checkBusStop();
         this._findFollowTarget(allVehicles);
         this._tryVietnameseBehavior(dt, allVehicles);
@@ -256,7 +265,6 @@ export class TrafficAI {
 
     _tryVietnameseBehavior(dt, allVehicles) {
         if (this.aiLevel !== 'NEAR') return;
-
         if (Math.random() < 0.005) {
             const seg = this._getSegment(this.currentSegmentId);
             if (seg) {
@@ -264,7 +272,6 @@ export class TrafficAI {
                 this.targetLaneOffset = rightOffset + (Math.random() - 0.5) * 1.5;
             }
         }
-
         if (this.followTarget && this.followTarget.vehicle?.group?.name === 'player_bus') {
             const dist = Math.hypot(this.followTarget.collider.x - this.collider.x, this.followTarget.collider.z - this.collider.z);
             if (dist < 15 && this.speed > this.followTarget.speed * 1.2) {
@@ -281,7 +288,6 @@ export class TrafficAI {
         if (this.followTarget) {
             const dist = Math.hypot(this.followTarget.collider.x - this.collider.x, this.followTarget.collider.z - this.collider.z);
             const followDist = this.profile.followingDistance + (this.followTarget.speed || 0) * 0.5;
-
             if (dist < followDist * 0.4) {
                 this.state = AI_STATE.BRAKING;
                 this.targetSpeed = 0;
@@ -301,7 +307,6 @@ export class TrafficAI {
             this.state = AI_STATE.DRIVING;
             this.targetSpeed = this.maxSpeed * this.profile.speedFactor;
         }
-
         if (this.state === AI_STATE.OVERTAKING) this._updateOvertaking(dt, allVehicles);
         this.laneOffset = this._calculateLaneChangeSpeed(this.laneOffset, this.targetLaneOffset, dt);
     }
@@ -389,10 +394,30 @@ export class TrafficAI {
         const curId = this.direction === 0 ? seg.to : seg.from;
         const node = this._getNode(curId);
         if (!node?.connections?.length) { this._uTurn(); return; }
+        
+        // Smart Pathfinding: Nếu có path, ưu tiên theo path
+        if (this.pathNodes.length > 0 && this.currentPathIndex < this.pathNodes.length - 1) {
+            const nextNodeId = this.pathNodes[this.currentPathIndex + 1];
+            const nextSeg = node.connections.find(id => {
+                const s = this._getSegment(id);
+                return s && (s.from === nextNodeId || s.to === nextNodeId);
+            });
+            if (nextSeg) {
+                this._setNewSegment(nextSeg, curId);
+                this.currentPathIndex++;
+                return;
+            }
+        }
+        
+        // Random path nếu không có destination
         const nextSegs = node.connections.filter(id => id !== this.currentSegmentId);
         if (nextSegs.length === 0) { this._uTurn(); return; }
         const nextSeg = this._getSegment(nextSegs[Math.floor(this.random() * nextSegs.length)]);
         if (!nextSeg) { this._uTurn(); return; }
+        this._setNewSegment(nextSeg, curId);
+    }
+    
+    _setNewSegment(nextSeg, curId) {
         if (nextSeg.from === curId) this.direction = 0;
         else if (nextSeg.to === curId) this.direction = 1;
         else { this._uTurn(); return; }
@@ -453,8 +478,27 @@ export class TrafficAI {
 
     _updateVehicle() {
         if (!this.vehicle) return;
-        this.vehicle.group.position.set(this.collider.x, 0.5, this.collider.z);
+        this.vehicle.group.position.set(this.collider.x, this.collider.y, this.collider.z);
         this.vehicle.group.rotation.y = this.heading;
+        // Auto pitch roll based on slope (visual)
+        const pts = this._getSegmentPoints();
+        if (pts) {
+            const dy = pts.p1.y - pts.p0.y;
+            const dxz = Math.hypot(pts.p1.x - pts.p0.x, pts.p1.z - pts.p0.z);
+            const pitch = Math.atan2(dy, dxz) * (this.direction === 0 ? -1 : 1);
+            this.vehicle.group.rotation.x = THREE.MathUtils.lerp(this.vehicle.group.rotation.x, pitch * 0.5, 0.1);
+        }
+    }
+
+    setDestination(endNodeId) {
+        const currentSeg = this._getSegment(this.currentSegmentId);
+        if (!currentSeg) return;
+        const startNodeId = this.direction === 0 ? currentSeg.to : currentSeg.from;
+        const path = findPath(startNodeId, endNodeId);
+        if (path && path.length > 0) {
+            this.pathNodes = path;
+            this.currentPathIndex = 0;
+        }
     }
 
     setAILevel(level) {

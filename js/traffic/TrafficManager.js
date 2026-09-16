@@ -1,5 +1,4 @@
 // js/traffic/TrafficManager.js
-
 import * as THREE from "three";
 import { createNpcBus, pickNpcSkinPath, pickLedColor, loadNpcSkinList } from "../bus.js";
 import { TrafficAI, AI_STATE } from "./TrafficAI.js";
@@ -20,19 +19,16 @@ export class TrafficManager {
         this.graphics = getGraphicsSettings();
         this.graphics.onChange(() => this._onSettingsChanged());
         loadNpcSkinList();
-
         this.spawnDistance = 200;
         this.despawnDistance = 500;
         this.spawnTimer = 0;
         this.spawnInterval = 0.5;
         this.maxSpawnPerFrame = 2;
-
         this.lastPlayerPos = { x: 0, z: 0 };
         this.isGraphMode = (roadGraph && Array.isArray(roadGraph.segments) && Array.isArray(roadGraph.nodes));
         this._nodeMap = new Map();
         this._validSegsCache = null;
         this.MIN_TRAFFIC_SPAWN_DISTANCE = 50;
-        
         this.stationSpawnQueue = [];
         this.stationSpawnTimer = 0;
     }
@@ -66,16 +62,14 @@ export class TrafficManager {
             const dir = seg.twoWay ? Math.floor(this.random() * 2) : 0;
             const pts = this._getSegmentPoints(seg);
             if (!pts) continue;
-
             const p0 = dir === 0 ? pts.p0 : pts.p1;
             const p1 = dir === 0 ? pts.p1 : pts.p0;
             const progress = 0.2 + this.random() * 0.6;
             const x = p0.x + (p1.x - p0.x) * progress;
             const z = p0.z + (p1.z - p0.z) * progress;
-
             const distPlayer = Math.hypot(x - this.lastPlayerPos.x, z - this.lastPlayerPos.z);
             if (distPlayer < this.spawnDistance * 0.5 || distPlayer > this.spawnDistance) continue;
-
+            
             let tooClose = false;
             for (const other of this.aiVehicles) {
                 if (Math.hypot(x - other.collider.x, z - other.collider.z) < this.MIN_TRAFFIC_SPAWN_DISTANCE) {
@@ -86,7 +80,6 @@ export class TrafficManager {
             candidate = { seg, dir, progress, x, z };
             break;
         }
-
         if (!candidate) return null;
 
         let vehicle = this.pool.pop();
@@ -94,15 +87,13 @@ export class TrafficManager {
             vehicle = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
             this.scene.add(vehicle.group);
         }
-
+        
         const personalities = ['CAREFUL', 'NORMAL', 'AGGRESSIVE', 'BUS_DRIVER'];
         const personality = personalities[Math.floor(this.random() * personalities.length)];
-
         const ai = new TrafficAI({
             vehicle, roadGraph: this.roadGraph, personality,
             seed: this.seed + this.aiVehicles.length
         });
-
         ai.currentSegmentId = candidate.seg.id;
         ai.direction = candidate.dir;
         ai.progress = candidate.progress;
@@ -113,8 +104,9 @@ export class TrafficManager {
         ai.speed = 10 + this.random() * 10;
         ai.targetSpeed = ai.speed;
         ai.setActive(true);
-
-        if (window.collisionSystem) ai.colId = window.collisionSystem.register(ai.collider.x, ai.collider.z, 3.0, 'npc', { ai });
+        
+        // FIX: Cập nhật Y cho collider khi spawn
+        if (window.collisionSystem) ai.colId = window.collisionSystem.register(ai.collider.x, ai.collider.z, 3.0, 'npc', { ai }, ai.collider.y, 4.0);
         this.aiVehicles.push(ai);
         this.activeCount++;
         return ai;
@@ -129,7 +121,6 @@ export class TrafficManager {
 
     processStationQueue(deltaTime) {
         if (this.stationSpawnQueue.length === 0) return;
-        
         this.stationSpawnTimer += deltaTime;
         if (this.stationSpawnTimer < 0.2) return;
         this.stationSpawnTimer = 0;
@@ -146,12 +137,15 @@ export class TrafficManager {
         });
         ai.collider.x = req.transform.x;
         ai.collider.z = req.transform.z;
+        ai.collider.y = req.transform.y || 0; // Lấy Y từ transform
         ai.heading = req.transform.heading;
         ai.targetHeading = ai.heading;
-        ai.vehicle.group.position.set(ai.collider.x, 0.5, ai.collider.z);
+        ai.vehicle.group.position.set(ai.collider.x, ai.collider.y, ai.collider.z);
         ai.vehicle.group.rotation.y = ai.heading;
         ai.setActive(true);
-        if (window.collisionSystem) ai.colId = window.collisionSystem.register(ai.collider.x, ai.collider.z, 3.0, 'npc', { ai });
+        
+        // FIX: Cập nhật Y cho collider khi spawn ở station
+        if (window.collisionSystem) ai.colId = window.collisionSystem.register(ai.collider.x, ai.collider.z, 3.0, 'npc', { ai }, ai.collider.y, 4.0);
         this.aiVehicles.push(ai);
         this.activeCount++;
     }
@@ -159,17 +153,13 @@ export class TrafficManager {
     update(deltaTime, playerPos) {
         if (!playerPos || !this.isGraphMode) return;
         this.lastPlayerPos = playerPos;
-
         this.processStationQueue(deltaTime);
-
+        
         const maxActive = Math.min(this.graphics.settings.maxActiveTraffic || 10, this.maxVehicles);
-
         for (let i = this.aiVehicles.length - 1; i >= 0; i--) {
             const ai = this.aiVehicles[i];
             if (ai.isStatic) continue;
-
             const dist = Math.hypot(ai.collider.x - playerPos.x, ai.collider.z - playerPos.z);
-
             if (dist > this.despawnDistance) {
                 ai.setActive(false);
                 this.pool.push(ai.vehicle);
@@ -178,19 +168,19 @@ export class TrafficManager {
                 this.activeCount--;
                 continue;
             }
-
             if (dist < 150) ai.setAILevel('NEAR');
             else if (dist < 300) ai.setAILevel('MID');
             else ai.setAILevel('FAR');
-
+            
             ai.update(Math.min(deltaTime, 0.1), playerPos, this.aiVehicles);
-
+            
+            // FIX: Cập nhật Y cho collider khi NPC di chuyển
             if (window.collisionSystem && ai.colId) {
-                window.collisionSystem.update(ai.colId, ai.collider.x, ai.collider.z);
+                window.collisionSystem.update(ai.colId, ai.collider.x, ai.collider.z, ai.collider.y);
             }
             this._checkCollision(ai);
         }
-
+        
         this.spawnTimer += deltaTime;
         if (this.activeCount < maxActive && this.spawnTimer > this.spawnInterval) {
             this.spawnTimer = 0;
@@ -203,7 +193,7 @@ export class TrafficManager {
 
     _checkCollision(ai) {
         if (!window.collisionSystem || ai.isStatic) return;
-        const hit = window.collisionSystem.check(ai.collider.x, ai.collider.z, ai.collider.r, ai.colId, ['npc', 'static']);
+        const hit = window.collisionSystem.check(ai.collider.x, ai.collider.z, ai.collider.r, ai.colId, ['npc', 'static'], ai.collider.y, 4.0);
         if (hit) {
             if (hit.data?.ai) {
                 const other = hit.data.ai;

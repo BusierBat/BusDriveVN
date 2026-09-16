@@ -1,5 +1,4 @@
 // js/main.js
-
 import * as THREE from "three";
 import { createMap } from "./map.js";
 import { createUI } from "./ui.js";
@@ -27,28 +26,41 @@ let speedCameraFlashTimer = 0;
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent);
 const isLowEnd = (navigator.hardwareConcurrency || 4) <= 4 || (navigator.deviceMemory || 4) <= 4;
 let gameSettings = { graphics: 'low', renderDist: 2, npcDensity: 5, camSens: 30, fov: 70 };
-if (isMobile || isLowEnd) { gameSettings.renderDist = 1; gameSettings.npcDensity = 3; }
+
+if (isMobile || isLowEnd) { 
+    gameSettings.renderDist = 1; 
+    gameSettings.npcDensity = 3; 
+}
 
 let mobileInput = { steer: 0, accel: 0, brake: 0 };
 
-// TỐI ƯU TỐC ĐỘ: 1 km/h = 0.4 units/s (thay vì 0.28) để xe chạy nhanh hơn
+// TỐI ƯU TỐC ĐỘ: 1 km/h = 0.4 units/s
 const SPEED_CONVERSION = 0.4;
-
 const vehiclePhysics = {
     speed: 0,
     maxSpeedKmh: 160,
     maxSpeed: 160 * SPEED_CONVERSION,
     maxReverseSpeed: -40 * SPEED_CONVERSION,
-    acceleration: 20.0 * SPEED_CONVERSION, // Tăng gia tốc
-    braking: 40.0 * SPEED_CONVERSION,       // Tăng phanh
+    acceleration: 20.0 * SPEED_CONVERSION,
+    braking: 40.0 * SPEED_CONVERSION,
     drag: 2.0 * SPEED_CONVERSION,
     currentSpeedKmh: 0,
     isReversing: false,
     forwardVector: new THREE.Vector3()
 };
+
 let steerAngle = 0, steerTarget = 0;
 const keysPressed = new Set();
 let lKeyTimer = 0, lastFPressTime = 0, lastCameraPressTime = 0, lastHornPressTime = 0;
+
+// === 3D PHYSICS RAYCAST VARS ===
+const _raycaster = new THREE.Raycaster();
+const _downVector = new THREE.Vector3(0, -1, 0);
+const _groundIntersect = new THREE.Vector3();
+const _tmpForward = new THREE.Vector3();
+const _tmpRight = new THREE.Vector3();
+const _tmpNormal = new THREE.Vector3();
+let _lastValidGroundY = 10.0; // Fallback chống rơi xuống void
 
 function updateVehiclePhysics(dt) {
     if (!bus?.group) return;
@@ -56,7 +68,7 @@ function updateVehiclePhysics(dt) {
     const isAccel = keysPressed.has("KeyW") || mobileInput.accel > 0;
     const isBrake = keysPressed.has("KeyS") || mobileInput.brake > 0;
     const isShift = keysPressed.has("ShiftLeft") || keysPressed.has("ShiftRight");
-
+    
     if (isShift && isAccel) {
         phys.speed += phys.acceleration * dt;
         phys.speed = Math.min(phys.speed, phys.maxSpeed);
@@ -83,47 +95,80 @@ function updateVehiclePhysics(dt) {
     } else {
         phys.speed = phys.speed > 0 ? Math.max(phys.speed - phys.drag * dt, 0) : Math.min(phys.speed + phys.drag * dt, 0);
     }
-
+    
     phys.currentSpeedKmh = phys.speed / SPEED_CONVERSION;
     const speedKmh = Math.abs(phys.currentSpeedKmh);
     const speedSteerLimit = 1 - Math.min(0.7, speedKmh / 160);
-
+    
     if (keysPressed.has("KeyA")) steerTarget = 0.5 * speedSteerLimit;
     else if (keysPressed.has("KeyD")) steerTarget = -0.5 * speedSteerLimit;
     else if (mobileInput.steer !== 0) steerTarget = 0.5 * speedSteerLimit * mobileInput.steer;
     else steerTarget = 0;
-
+    
     if (steerTarget === 0) steerAngle += (0 - steerAngle) * Math.min(1, dt * 3.5);
     else steerAngle += (steerTarget - steerAngle) * Math.min(1, dt * 2.5);
+    
     if (Math.abs(phys.speed) > 0.1) bus.group.rotation.y += steerAngle * dt * 1.5 * Math.sign(phys.speed);
-
+    
     if (Math.abs(phys.speed) > 0.001) {
         const forward = phys.forwardVector.set(0, 0, 1).applyQuaternion(bus.group.quaternion);
         const moveDistance = phys.speed * dt;
         const newX = bus.group.position.x + forward.x * moveDistance;
         const newZ = bus.group.position.z + forward.z * moveDistance;
+        
         let canMove = true;
         if (window.collisionSystem) {
             const hit = window.collisionSystem.check(newX, newZ, 4.0, playerColId);
             if (hit) {
+                // CHỐNG KẸT TƯỜNG VÔ HÌNH: Thay vì speed = 0 ngay lập tức, giảm speed từ từ
+                // và đẩy lùi nhẹ để xe không bị stuck vào mesh
+                phys.speed *= -0.5; // Đẩy lùi nhẹ
                 canMove = false;
-                phys.speed = 0;
                 if (hit.type === 'npc' && hit.data?.ai) hit.data.ai.speed = 0;
             }
         }
+        
         if (canMove) {
             bus.group.position.x = newX;
-            bus.group.position.y += forward.y * moveDistance;
             bus.group.position.z = newZ;
         }
     }
+    
+    // === 3D RAYCAST GROUND DETECTION & SLOPE PHYSICS (CHỐNG RƠI XUỐNG HỐ) ===
+    if (map) {
+        _raycaster.set(bus.group.position, _downVector);
+        _raycaster.far = 50;
+        const intersects = _raycaster.intersectObject(map.group, true);
+        if (intersects.length > 0) {
+            _groundIntersect.copy(intersects[0].point);
+            _lastValidGroundY = _groundIntersect.y; // Lưu lại Y hợp lệ cuối cùng
+            const targetY = _groundIntersect.y + 0.5; // Wheel radius offset
+            bus.group.position.y = THREE.MathUtils.lerp(bus.group.position.y, targetY, Math.min(1, dt * 10));
+            
+            if (intersects[0].face) {
+                _tmpNormal.copy(intersects[0].face.normal);
+                _tmpNormal.transformDirection(intersects[0].object.matrixWorld);
+                
+                _tmpForward.set(0, 0, 1).applyQuaternion(bus.group.quaternion);
+                _tmpRight.set(1, 0, 0).applyQuaternion(bus.group.quaternion);
+                
+                const pitchAngle = Math.asin(THREE.MathUtils.clamp(_tmpNormal.dot(_tmpForward), -1, 1));
+                const rollAngle = Math.asin(THREE.MathUtils.clamp(_tmpNormal.dot(_tmpRight), -1, 1));
+                
+                const targetPitch = -pitchAngle * 0.5; 
+                const targetRoll = rollAngle * 0.5 - steerAngle * 0.03 * (speedKmh / 60);
+                
+                bus.group.rotation.x = THREE.MathUtils.lerp(bus.group.rotation.x, targetPitch, dt * 4);
+                bus.group.rotation.z = THREE.MathUtils.lerp(bus.group.rotation.z, targetRoll, dt * 3);
+            }
+        } else {
+            // FALLBACK: Nếu Raycast miss (đi qua hố), giữ nguyên Y cũ, không cho rơi xuống void
+            bus.group.position.y = THREE.MathUtils.lerp(bus.group.position.y, _lastValidGroundY + 0.5, dt * 5);
+        }
+    }
+    
     if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z);
     bus.group.updateMatrixWorld(true);
-
-    const targetPitch = isBrake ? -0.04 : (isAccel ? 0.02 : 0);
-    bus.group.rotation.x = THREE.MathUtils.lerp(bus.group.rotation.x, targetPitch, dt * 4);
-    const targetRoll = -steerAngle * 0.03 * (speedKmh / 60);
-    bus.group.rotation.z = THREE.MathUtils.lerp(bus.group.rotation.z, targetRoll, dt * 3);
 }
 
 function initInput() {
@@ -138,7 +183,6 @@ function initInput() {
         if (gameState !== "playing" || paused) return;
         keysPressed.add(e.code);
         if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
-        
         if (e.code === "KeyF" && performance.now() - lastFPressTime > 150 && bus) {
             lastFPressTime = performance.now();
             bus.areLightsOn = !bus.areLightsOn;
@@ -240,7 +284,6 @@ async function boot() {
 
 function setupMenuEvents() {
     document.getElementById("btn-new-game")?.addEventListener("click", startGameFromMenu);
-    
     const settingsPanel = document.getElementById('settings-panel');
     const btnSettings = document.getElementById('btn-settings-main');
     const btnCloseSettings = document.getElementById('btn-close-settings');
@@ -249,27 +292,21 @@ function setupMenuEvents() {
     const valNpc = document.getElementById('val-npc-density');
     const rngCamSens = document.getElementById('setting-cam-sens');
     const valCamSens = document.getElementById('val-cam-sens');
-    
     rngNpc?.addEventListener('input', () => { if(valNpc) valNpc.textContent = rngNpc.value; });
     rngCamSens?.addEventListener('input', () => { if(valCamSens) valCamSens.textContent = rngCamSens.value; });
-
     btnSettings?.addEventListener("click", () => { if(settingsPanel) settingsPanel.style.display = 'flex'; });
     btnCloseSettings?.addEventListener("click", () => { if(settingsPanel) settingsPanel.style.display = 'none'; });
-    
     btnApplySettings?.addEventListener("click", () => {
         const selGraphics = document.getElementById('setting-graphics');
         if(selGraphics) gameSettings.graphics = selGraphics.value;
         if(rngNpc) gameSettings.npcDensity = parseInt(rngNpc.value);
         if(rngCamSens) gameSettings.camSens = parseInt(rngCamSens.value);
-        
         if(cameraSystem) cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
         if(renderer) renderer.toneMapping = (gameSettings.graphics === 'low') ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
         if(trafficManager) trafficManager.maxVehicles = gameSettings.npcDensity;
-        
         ui?.toast("Da ap dung cai dat!");
         if(settingsPanel) settingsPanel.style.display = 'none';
     });
-
     const uvPanel = document.getElementById('uv-skin-panel');
     const btnUvSkin = document.getElementById('btn-uv-skin');
     const btnCloseUvSkin = document.getElementById('btn-close-uv-skin');
@@ -277,7 +314,6 @@ function setupMenuEvents() {
     const uvInput = document.getElementById('uv-skin-input');
     const uvStatus = document.getElementById('uv-skin-status');
     const uvDownload = document.getElementById('uv-skin-download');
-
     btnUvSkin?.addEventListener('click', () => {
         if(uvPanel) uvPanel.style.display = 'flex';
         if(uvStatus) uvStatus.innerHTML = '';
@@ -285,13 +321,11 @@ function setupMenuEvents() {
     });
     btnCloseUvSkin?.addEventListener('click', () => { if(uvPanel) uvPanel.style.display = 'none'; });
     btnChooseSkin?.addEventListener('click', () => { if(uvInput) uvInput.click(); });
-    
     uvInput?.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
         if(uvStatus) { uvStatus.textContent = 'Dang kiem tra...'; uvStatus.style.color = '#fff'; }
         if(uvDownload) uvDownload.style.display = 'none';
-        
         const reader = new FileReader();
         reader.onload = (ev) => {
             const arr = new Uint8Array(ev.target.result);
@@ -327,20 +361,20 @@ async function startGameFromMenu() {
         lighting.update(0.1);
         await new Promise(r => setTimeout(r, 300));
         
-        ui.setLoading("Bản đồ...", 0.4);
+        ui.setLoading("Bản đồ World Network...", 0.4);
         await new Promise(r => setTimeout(r, 50));
         map = createMap({ scene, seed: 2026, lighting });
         ui.setupMinimap(map);
         await new Promise(r => setTimeout(r, 100));
         
-        ui.setLoading("Xe khách...", 0.6);
+        ui.setLoading("Xe khách 3D...", 0.6);
         bus = createBus();
         interior = createBusInterior();
         if (!interior?.isObject3D) interior = new THREE.Group();
         bus.group.add(interior);
         scene.add(bus.group);
         const spawn = map.getSpawnPoint();
-        bus.group.position.set(spawn.x, 0.5, spawn.z);
+        bus.group.position.set(spawn.x, spawn.y, spawn.z);
         bus.group.rotation.y = (spawn.heading || 0) + Math.PI / 2;
         bus.group.name = 'player_bus';
         if (window.collisionSystem) playerColId = window.collisionSystem.register(bus.group.position.x, bus.group.position.z, 4.0, 'player');
@@ -349,7 +383,7 @@ async function startGameFromMenu() {
         cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
         await new Promise(r => setTimeout(r, 300));
         
-        ui.setLoading("Giao thông...", 0.8);
+        ui.setLoading("Giao thông & Hành khách...", 0.8);
         await loadNpcSkinList();
         npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: { x: spawn.x, z: spawn.z } });
         trafficManager = createTrafficManager({ scene, roadGraph: roadNetwork, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 });
@@ -360,7 +394,7 @@ async function startGameFromMenu() {
         const gasStation = getNode('exp_gas'); if (gasStation) trafficManager.setupStationTraffic(gasStation);
         const khGas = getNode('kh_gas'); if (khGas) trafficManager.setupStationTraffic(khGas);
         const bdGas = getNode('bd_gas'); if (bdGas) trafficManager.setupStationTraffic(bdGas);
-
+        
         passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui });
         await new Promise(r => setTimeout(r, 10));
         
@@ -394,7 +428,7 @@ function updateWorld(delta) {
     if (trafficManager) trafficManager.update(delta, { x: bus.group.position.x, z: bus.group.position.z });
     if (passengerSystem) passengerSystem.update(delta);
     if (bus?.group && camera && lighting) updateEnderman(scene, camera, lighting, { x: bus.group.position.x, z: bus.group.position.z }, bus.group.rotation.y, delta);
-
+    
     const speedKmh = Math.abs(vehiclePhysics.currentSpeedKmh);
     if (speedKmh > 80 && Math.random() < 0.005) {
         speedCameraFlashTimer = 0.3;
@@ -406,7 +440,7 @@ function updateWorld(delta) {
     } else if (renderer) {
         renderer.setClearColor(0x87ceeb, 1);
     }
-
+    
     const busPos = bus?.group?.position;
     if (busPos) {
         const distToTollN = Math.hypot(busPos.x - 450, busPos.z - (-4800));
@@ -447,7 +481,6 @@ function updateHUD(delta) {
 
 const FIXED_STEP = 1/30;
 let accumulator = 0;
-
 function loop() {
     try {
         if (webglLost) return;
@@ -455,7 +488,6 @@ function loop() {
         let rawDelta = (now - lastTime) / 1000;
         lastTime = now;
         if (rawDelta > 0.1) rawDelta = 0.1;
-
         if (gameState === "playing" && !paused && !isConsoleOpen) {
             accumulator += rawDelta;
             let steps = 0;
@@ -466,7 +498,6 @@ function loop() {
             }
             if (steps >= 2) accumulator = 0;
         }
-
         if (renderer && scene && camera) renderer.render(scene, camera);
         if (gameState === "playing") updateHUD(rawDelta);
     } catch (e) {

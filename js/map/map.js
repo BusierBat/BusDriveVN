@@ -1,5 +1,4 @@
 // js/map/map.js
-
 import * as THREE from "three";
 import { generateChunk } from "./chunkGenerator.js";
 import { createRoadNetworkMesh } from "./roadGenerator.js";
@@ -15,9 +14,12 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
     const group = new THREE.Group();
     group.name = "map";
     scene.add(group);
+    
+    // Render road network mesh (hiện tại là stub rỗng vì chunk lo hết)
     const roadMesh = createRoadNetworkMesh(roadNetwork);
     group.add(roadMesh);
     
+    // Build Stations globally (không phụ thuộc chunk để tránh station bị mất khi unload)
     const pois = getPOIs();
     const parkingSlots = [];
     for (const poi of pois) {
@@ -33,7 +35,7 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
     const chunkBuildQueue = [];
     const worldSeed = seed;
     let chunkBuildTimer = 0;
-
+    
     function buildChunk(cx, cz) {
         const key = `${cx},${cz}`;
         if (chunks.has(key)) return;
@@ -42,26 +44,26 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
         if (chunkGroup) {
             group.add(chunkGroup);
             const chunkColliders = chunkGroup.userData.colliders || [];
-            
             const regIds = [];
             for (const c of chunkColliders) {
                 if (window.collisionSystem) {
-                    const id = window.collisionSystem.register(c.x, c.z, c.r, 'static');
+                    // Đăng ký collider với Y và Height để hỗ trợ 3D collision
+                    const id = window.collisionSystem.register(c.x, c.z, c.r, 'static', null, c.y || 0, c.height || 10);
                     regIds.push(id);
                 }
             }
-            
             chunks.set(key, { group: chunkGroup, x: cx, z: cz, colliderIds: regIds });
             staticColliders.push(...chunkColliders);
         }
     }
-
+    
     function unloadChunk(cx, cz) {
         const key = `${cx},${cz}`;
         const entry = chunks.get(key);
         if (!entry) return;
         
         group.remove(entry.group);
+        // VRAM Management: Dispose geometry để tránh memory leak
         entry.group.traverse(child => {
             if (child.geometry) child.geometry.dispose();
         });
@@ -78,8 +80,9 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
         }
         chunks.delete(key);
     }
-
+    
     let lastPlayerChunkX = null, lastPlayerChunkZ = null;
+    
     function updateChunks(playerX, playerZ) {
         const cx = Math.floor(playerX / CHUNK_SIZE);
         const cz = Math.floor(playerZ / CHUNK_SIZE);
@@ -95,8 +98,10 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
             }
         }
         
+        // Unload chunks not needed
         for (const [key, entry] of chunks) if (!needed.has(key)) unloadChunk(entry.x, entry.z);
         
+        // Queue needed chunks
         chunkBuildQueue.length = 0;
         for (const key of needed) {
             if (!chunks.has(key)) {
@@ -105,13 +110,13 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
             }
         }
     }
-
+    
     const spawn = getRouteSpawn();
     const cx0 = Math.floor(spawn.x / CHUNK_SIZE);
     const cz0 = Math.floor(spawn.z / CHUNK_SIZE);
     
+    // Pre-build spawn chunk immediately
     buildChunk(cx0, cz0);
-    
     for (let dx = -1; dx <= 1; dx++) {
         for (let dz = -1; dz <= 1; dz++) {
             if (dx === 0 && dz === 0) continue;
@@ -119,18 +124,18 @@ export function createMap({ scene, seed = WORLD_SEED, lighting } = {}) {
         }
     }
     updateChunks(spawn.x, spawn.z);
-
+    
     function processQueue() {
         chunkBuildTimer++;
+        // Throttle: Build 1 chunk every 10 frames to avoid FPS drop
         if (chunkBuildTimer < 10) return;
         chunkBuildTimer = 0;
-        
         if (chunkBuildQueue.length > 0) {
             const next = chunkBuildQueue.shift();
             buildChunk(next.x, next.z);
         }
     }
-
+    
     return {
         group,
         bounds: getWorldBounds(),
