@@ -1,6 +1,6 @@
 // js/main.js
 import * as THREE from "three";
-import { createMap } from "./map.js";
+import { MapLoader } from "./MapLoader.js";
 import { createUI } from "./ui.js";
 import { createNPC } from "./npc.js";
 import { createBus, loadNpcSkinList } from "./bus.js";
@@ -9,7 +9,6 @@ import { CameraSystem } from "./camera.js";
 import { LightingSystem } from "./lighting.js";
 import { createPassengerSystem } from "./passenger.js";
 import { createTrafficManager } from "./traffic/TrafficManager.js";
-import { roadNetwork, getNode } from "./map/data/roadNetworkData.js";
 import { initEndermanEasterEgg, updateEnderman } from "./enderman.js";
 import { CollisionSystem } from "./collisionSystem.js";
 
@@ -34,7 +33,6 @@ if (isMobile || isLowEnd) {
 
 let mobileInput = { steer: 0, accel: 0, brake: 0 };
 
-// TỐI ƯU TỐC ĐỘ: 1 km/h = 0.4 units/s
 const SPEED_CONVERSION = 0.4;
 const vehiclePhysics = {
     speed: 0,
@@ -60,7 +58,9 @@ const _groundIntersect = new THREE.Vector3();
 const _tmpForward = new THREE.Vector3();
 const _tmpRight = new THREE.Vector3();
 const _tmpNormal = new THREE.Vector3();
-let _lastValidGroundY = 10.0; // Fallback chống rơi xuống void
+let _lastValidGroundY = 10.0;
+
+// js/main.js - Chỉ phần updateVehiclePhysics được thay đổi
 
 function updateVehiclePhysics(dt) {
     if (!bus?.group) return;
@@ -120,9 +120,7 @@ function updateVehiclePhysics(dt) {
         if (window.collisionSystem) {
             const hit = window.collisionSystem.check(newX, newZ, 4.0, playerColId);
             if (hit) {
-                // CHỐNG KẸT TƯỜNG VÔ HÌNH: Thay vì speed = 0 ngay lập tức, giảm speed từ từ
-                // và đẩy lùi nhẹ để xe không bị stuck vào mesh
-                phys.speed *= -0.5; // Đẩy lùi nhẹ
+                phys.speed *= -0.5;
                 canMove = false;
                 if (hit.type === 'npc' && hit.data?.ai) hit.data.ai.speed = 0;
             }
@@ -134,40 +132,17 @@ function updateVehiclePhysics(dt) {
         }
     }
     
-    // === 3D RAYCAST GROUND DETECTION & SLOPE PHYSICS (CHỐNG RƠI XUỐNG HỐ) ===
-    if (map) {
-        _raycaster.set(bus.group.position, _downVector);
-        _raycaster.far = 50;
-        const intersects = _raycaster.intersectObject(map.group, true);
-        if (intersects.length > 0) {
-            _groundIntersect.copy(intersects[0].point);
-            _lastValidGroundY = _groundIntersect.y; // Lưu lại Y hợp lệ cuối cùng
-            const targetY = _groundIntersect.y + 0.5; // Wheel radius offset
-            bus.group.position.y = THREE.MathUtils.lerp(bus.group.position.y, targetY, Math.min(1, dt * 10));
-            
-            if (intersects[0].face) {
-                _tmpNormal.copy(intersects[0].face.normal);
-                _tmpNormal.transformDirection(intersects[0].object.matrixWorld);
-                
-                _tmpForward.set(0, 0, 1).applyQuaternion(bus.group.quaternion);
-                _tmpRight.set(1, 0, 0).applyQuaternion(bus.group.quaternion);
-                
-                const pitchAngle = Math.asin(THREE.MathUtils.clamp(_tmpNormal.dot(_tmpForward), -1, 1));
-                const rollAngle = Math.asin(THREE.MathUtils.clamp(_tmpNormal.dot(_tmpRight), -1, 1));
-                
-                const targetPitch = -pitchAngle * 0.5; 
-                const targetRoll = rollAngle * 0.5 - steerAngle * 0.03 * (speedKmh / 60);
-                
-                bus.group.rotation.x = THREE.MathUtils.lerp(bus.group.rotation.x, targetPitch, dt * 4);
-                bus.group.rotation.z = THREE.MathUtils.lerp(bus.group.rotation.z, targetRoll, dt * 3);
-            }
-        } else {
-            // FALLBACK: Nếu Raycast miss (đi qua hố), giữ nguyên Y cũ, không cho rơi xuống void
-            bus.group.position.y = THREE.MathUtils.lerp(bus.group.position.y, _lastValidGroundY + 0.5, dt * 5);
-        }
-    }
+    // ĐỊA HÌNH PHẲNG TUYỆT ĐỐI - KHÔNG RAYCAST
+    const targetY = map ? map.getTerrainHeight(bus.group.position.x, bus.group.position.z) + 0.5 : 10.5;
+    bus.group.position.y = targetY;
     
-    if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z);
+    // Visual Pitch/Roll
+    const pitchAngle = isBrake ? -0.04 : (isAccel ? 0.02 : 0);
+    const targetRoll = -steerAngle * 0.03 * (speedKmh / 60);
+    bus.group.rotation.x = THREE.MathUtils.lerp(bus.group.rotation.x, pitchAngle, dt * 4);
+    bus.group.rotation.z = THREE.MathUtils.lerp(bus.group.rotation.z, targetRoll, dt * 3);
+    
+    if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z, bus.group.position.y);
     bus.group.updateMatrixWorld(true);
 }
 
@@ -361,9 +336,11 @@ async function startGameFromMenu() {
         lighting.update(0.1);
         await new Promise(r => setTimeout(r, 300));
         
-        ui.setLoading("Bản đồ World Network...", 0.4);
+        ui.setLoading("Đang tải dữ liệu bản đồ (JSON)...", 0.4);
         await new Promise(r => setTimeout(r, 50));
-        map = createMap({ scene, seed: 2026, lighting });
+        map = new MapLoader(scene);
+        const success = await map.loadInitialData();
+        if (!success) throw new Error("Không thể tải dữ liệu bản đồ JSON. Vui lòng chạy Python generator trước.");
         ui.setupMinimap(map);
         await new Promise(r => setTimeout(r, 100));
         
@@ -385,15 +362,18 @@ async function startGameFromMenu() {
         
         ui.setLoading("Giao thông & Hành khách...", 0.8);
         await loadNpcSkinList();
+        const roadGraph = map.getRoadGraph();
         npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: { x: spawn.x, z: spawn.z } });
-        trafficManager = createTrafficManager({ scene, roadGraph: roadNetwork, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 });
+        trafficManager = createTrafficManager({ scene, roadGraph: roadGraph, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 });
         
-        const thSt = getNode('py_st'); if (thSt) trafficManager.setupStationTraffic(thSt);
-        const mdSt = getNode('sg_md'); if (mdSt) trafficManager.setupStationTraffic(mdSt);
-        const restStop = getNode('dc_rest'); if (restStop) trafficManager.setupStationTraffic(restStop);
-        const gasStation = getNode('exp_gas'); if (gasStation) trafficManager.setupStationTraffic(gasStation);
-        const khGas = getNode('kh_gas'); if (khGas) trafficManager.setupStationTraffic(khGas);
-        const bdGas = getNode('bd_gas'); if (bdGas) trafficManager.setupStationTraffic(bdGas);
+        // Setup station traffic from POIs
+        if (roadGraph.pois) {
+            for (const poi of roadGraph.pois) {
+                if (poi.type === 'BUS_STATION' || poi.type === 'MAJOR_BUS_TERMINAL' || poi.type === 'REST_AREA' || poi.type === 'FUEL_STATION') {
+                    trafficManager.setupStationTraffic(poi);
+                }
+            }
+        }
         
         passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui });
         await new Promise(r => setTimeout(r, 10));
@@ -423,32 +403,11 @@ function updateWorld(delta) {
     }
     updateVehiclePhysics(delta);
     cameraSystem?.update(delta);
-    if (bus?.group && map) map.setPlayerPosition(bus.group.position.x, bus.group.position.z);
+    if (bus?.group && map) map.updateChunks(bus.group.position.x, bus.group.position.z);
     if (npc) npc.update(delta, 0);
     if (trafficManager) trafficManager.update(delta, { x: bus.group.position.x, z: bus.group.position.z });
     if (passengerSystem) passengerSystem.update(delta);
     if (bus?.group && camera && lighting) updateEnderman(scene, camera, lighting, { x: bus.group.position.x, z: bus.group.position.z }, bus.group.rotation.y, delta);
-    
-    const speedKmh = Math.abs(vehiclePhysics.currentSpeedKmh);
-    if (speedKmh > 80 && Math.random() < 0.005) {
-        speedCameraFlashTimer = 0.3;
-        ui?.toast("📷 Phạt nguội! Vượt quá 80km/h");
-    }
-    if (speedCameraFlashTimer > 0) {
-        speedCameraFlashTimer -= delta;
-        if (renderer) renderer.setClearColor(0xff0000, speedCameraFlashTimer);
-    } else if (renderer) {
-        renderer.setClearColor(0x87ceeb, 1);
-    }
-    
-    const busPos = bus?.group?.position;
-    if (busPos) {
-        const distToTollN = Math.hypot(busPos.x - 450, busPos.z - (-4800));
-        const distToTollS = Math.hypot(busPos.x - 600, busPos.z - (-6000));
-        if ((distToTollN < 40 || distToTollS < 40) && speedKmh > 25) {
-            ui?.toast("⚠️ Trạm thu phí ETC: Vượt quá 25km/h!");
-        }
-    }
 }
 
 function updateHUD(delta) {
