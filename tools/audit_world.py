@@ -108,11 +108,289 @@ if best_cc < len(nodes) * 0.99:
         % (100.0 * best_cc / max(1, len(nodes))))
 
 # ---------------------------------------------------------------- rule 8/59
+# Chỉ đếm ĐƯỜNG PHỦ bị cắt. ALLEY/INTERNAL/SERVICE degree-1 là HỢP LỆ: ngõ cụt
+# trong ngách, làn đỗ xe trong sân bến (xe lùi vào rồi chạy ra), đường vào
+# trạm xăng. Trước đây audit đếm cả 3 loại nên luôn báo lỗi trong khi
+# generator đã dọn đúng phần vi phạm thật.
+BA = defaultdict(list)
+for sg in segs:
+    BA[sg["from"]].append(sg)
+    BA[sg["to"]].append(sg)
+DEAD_CLS = ("COLLECTOR", "LOCAL", "ARTERIAL", "RURAL_LOCAL", "NATIONAL")
 leaves = [nid for nid in nodes if deg.get(nid, 0) == 1]
-print("  degree-1 (cuc/tuan ket): %d" % len(leaves))
-if len(leaves) > max(60, len(nodes) * 0.04):
-    bad("8/59", "qua nhieu node degree-1: %d/%d (%.1f%%) — dead-end spam"
-        % (len(leaves), len(nodes), 100.0 * len(leaves) / max(1, len(nodes))))
+leaf_road = []
+for nid in leaves:
+    for sg in BA.get(nid, ()):
+        if sg.get("class") in DEAD_CLS and not sg.get("bridge"):
+            leaf_road.append(nid)
+            break
+print("  degree-1 (cuc/tuan ket): %d | tren duong PHU bi cat: %d"
+      % (len(leaves), len(leaf_road)))
+if len(leaf_road) > max(60, len(nodes) * 0.035):
+    bad("8/59", "qua nhieu duong phu bi cat: %d/%d (%.1f%%) — dead-end spam"
+        % (len(leaf_road), len(nodes),
+           100.0 * len(leaf_road) / max(1, len(nodes))))
+
+# ================================================================ 1b. LUAT TOPOLOGY
+# Mot khoi rieng cho cac quy tac do CHINH tang topology sinh ra. Dat o day vi
+# `tools/map_generator.py` la SOURCE OF TRUTH va audit PHAI dung cung dinh
+# nghia voi no, neu khong mot ben im lang con ben kia bao loi.
+print("=== 1b. LUAT TOPOLOGY (khoang cach / bac node / giao lo) ===")
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("mg", os.path.join(ROOT, "tools",
+                                                        "map_generator.py"))
+_mg = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_mg)
+TOPO_RANK = _mg.TOPO_RANK
+TOPO_LEGAL = _mg.TOPO_LEGAL
+TOPO_DEGREE_CAP = _mg.TOPO_DEGREE_CAP
+CROSS_MISS = _mg.CROSS_MISS
+
+# --- (a) node type: "link" la node HINH HOC giua duong, khong phai nga giao ---
+type_hist = Counter()
+for nid in nodes:
+    type_hist[nodes[nid].get("type") or "?"] += 1
+print("  node type: %s" % dict(type_hist.most_common(6)))
+# node bac >=3 duoc gan nhanh 'junction' o generator -> phai ton tai
+junc = sum(1 for nid, a in BA.items() if len(a) >= 3)
+linkish = type_hist.get("link", 0)
+print("  nga giao that (bac>=3) = %d | node hinh hoc (link) = %d" % (junc, linkish))
+if linkish == 0 and junc > 200:
+    bad("T2", "khong co node 'link' nao ma van co %d nga giao — node giua duong "
+              "dang bi dem la nga giao" % junc)
+
+# --- (b) T1: hai nga giao lien tiep < 45m tren cung duong -----------------
+JUNC_T = ("junction", "local", "highway", "crossing", "ramp", "tunnel")
+ACC_CLS = ("STATION_ACCESS", "INTERNAL", "SERVICE")
+adj_j = 0
+close_by_cls = Counter()
+for nid, arr in BA.items():
+    if nodes[nid].get("type") not in JUNC_T:
+        continue
+    for sg in arr:
+        if sg.get("class") in ACC_CLS:
+            continue
+        o = sg["to"] if sg["from"] == nid else sg["from"]
+        if nodes[o].get("type") not in JUNC_T:
+            continue
+        dd = math.hypot(nodes[o]["x"] - nodes[nid]["x"],
+                        nodes[o]["z"] - nodes[nid]["z"])
+        if dd < 45.0 and o > nid:          # moi cap dem 1 lan
+            adj_j += 1
+            close_by_cls[sg.get("class")] += 1
+print("  cap nut giao lien tiep < 45m tren cung duong: %d %s"
+      % (adj_j, dict(close_by_cls)))
+if adj_j > 60:
+    bad("T1", "%d cap nut giao lien tiep < 45m tren cung duong (>60) — can 1 "
+              "node hinh hoc o giua hoac tach xa them" % adj_j)
+
+# --- (c) T2/T3: bac node trong SAN BEN -----------------------------------
+for stn in stations:
+    if stn.get("type") not in ("BUS_STATION", "MAJOR_BUS_TERMINAL"):
+        continue
+    hw, hd = stn.get("w", 190) * 0.5 + 90, stn.get("d", 140) * 0.5 + 90
+    inside = [nid for nid, nd in nodes.items()
+              if abs(nd["x"] - stn["x"]) <= hw and abs(nd["z"] - stn["z"]) <= hd]
+    if not inside:
+        continue
+    mx = max(len(BA.get(q, ())) for q in inside)
+    print("     %-24s max bac node trong san = %d | node = %d"
+          % (stn.get("name"), mx, len(inside)))
+    if mx > 8:
+        bad("T3", "san %s co node %d nhanh — layout san phai la luong thang, "
+                  "khong phai nan quat" % (stn.get("name"), mx))
+
+# --- (d) T4: giao lo THAT THIEU -----------------------------------------
+# Do phan bo do duoc tren 6886 segment: 96/157 diem cat da cach nga giao that
+# <=25m (da la nga tu 4 nhanh), 50 o 25-75m, chi 33 o 75-200m, 11 >200m.
+# => LUAT: nga giao thieu THAT khi diem cat cach >100m moi nga giao.
+# Doi nguong 25m thi audit bao 63 loi GIA dong thoi generator tach nut o 25m
+# => sinh 145 cap nut giao cach nhau 23-31m (doi loi "giao lo" lay loi "nut
+# dinh nhau").
+CROSS_CELL = 220.0
+cgrid = defaultdict(list)
+for sg in segs:
+    if sg.get("class") in ("TUNNEL", "EXPRESSWAY", "RAMP"):
+        continue
+    a, b = nodes[sg["from"]], nodes[sg["to"]]
+    hwid = (sg.get("width", 12) or 12) * 0.5
+    for cx in range(int((min(a["x"], b["x"]) - hwid) // CROSS_CELL),
+                    int((max(a["x"], b["x"]) + hwid) // CROSS_CELL) + 1):
+        for cz in range(int((min(a["z"], b["z"]) - hwid) // CROSS_CELL),
+                        int((max(a["z"], b["z"]) + hwid) // CROSS_CELL) + 1):
+            cgrid[(cx, cz)].append(sg)
+JCELL = 256
+jgrid = defaultdict(list)
+for nid, nd in nodes.items():
+    if deg.get(nid, 0) >= 3:
+        jgrid[(int(nd["x"] // JCELL), int(nd["z"] // JCELL))].append(
+            (nd["x"], nd["z"]))
+
+
+def near_junction(x, z):
+    cx, cz = int(x // JCELL), int(z // JCELL)
+    best = 1e18
+    for dx in range(-1, 2):
+        for dz in range(-1, 2):
+            for jx, jz in jgrid.get((cx + dx, cz + dz), ()):
+                dd = math.hypot(jx - x, jz - z)
+                if dd < best:
+                    best = dd
+    return best
+
+
+def _seg_x(p1, p2, q1, q2):
+    d1x, d1z = p2[0] - p1[0], p2[1] - p1[1]
+    d2x, d2z = q2[0] - q1[0], q2[1] - q1[1]
+    den = d1x * d2z - d1z * d2x
+    if abs(den) < 1e-9:
+        return None
+    t = ((q1[0] - p1[0]) * d2z - (q1[1] - p1[1]) * d2x) / den
+    u = ((q1[0] - p1[0]) * d1z - (q1[1] - p1[1]) * d1x) / den
+    if 0.02 < t < 0.98 and 0.02 < u < 0.98:
+        return (p1[0] + d1x * t, p1[1] + d1z * t)
+    return None
+
+
+cross_n = cross_near = 0
+cross_pairs = []
+cross_hist = defaultdict(int)
+cdone = set()
+for sg in segs:
+    if sg.get("class") in ("TUNNEL", "EXPRESSWAY", "RAMP") or sg["id"] in cdone:
+        continue
+    a, b = nodes[sg["from"]], nodes[sg["to"]]
+    hwid = (sg.get("width", 12) or 12) * 0.5
+    for cx in range(int((min(a["x"], b["x"]) - hwid) // CROSS_CELL),
+                    int((max(a["x"], b["x"]) + hwid) // CROSS_CELL) + 1):
+        for cz in range(int((min(a["z"], b["z"]) - hwid) // CROSS_CELL),
+                        int((max(a["z"], b["z"]) + hwid) // CROSS_CELL) + 1):
+            for o in cgrid.get((cx, cz), ()):
+                if o["id"] <= sg["id"] or o["id"] in cdone:
+                    continue
+                if o["from"] in (sg["from"], sg["to"]) or \
+                        o["to"] in (sg["from"], sg["to"]):
+                    continue
+                q1, q2 = nodes[o["from"]], nodes[o["to"]]
+                pt = _seg_x((a["x"], a["z"]), (b["x"], b["z"]),
+                            (q1["x"], q1["z"]), (q2["x"], q2["z"]))
+                if pt is None:
+                    continue
+                dj = near_junction(*pt)
+                for _b in (25, 50, 75, 100, 150, 200, 10 ** 7):
+                    if dj <= _b:
+                        cross_hist[_b] += 1
+                        break
+                if dj <= CROSS_MISS:
+                    cross_near += 1
+                else:
+                    cross_n += 1
+                    if len(cross_pairs) < 6:
+                        cross_pairs.append((sg["id"], o["id"],
+                                            sg.get("class"), o.get("class"),
+                                            round(dj, 1)))
+    cdone.add(sg["id"])
+print("  giao lo KHONG NUT that: %d (diem cat lech >%dm tu nga giao) | "
+      "cung co nga tu that lech <=%dm: %d"
+      % (cross_n, int(CROSS_MISS), int(CROSS_MISS), cross_near))
+print("     phan bo giao lo theo khoang cach toi nga giao that:")
+for _b in (25, 50, 75, 100, 150, 200, 10 ** 7):
+    _lbl = (">200m" if _b > 10 ** 6 else "<=%dm" % _b)
+    print("        %-7s : %4d" % (_lbl, cross_hist[_b]))
+if cross_n > 8:
+    bad("T4", "%d cap duong cat nhau o diem CACH ngai giao that >%dm, khong co nut "
+              "(nguong chung voi generator; tran >8): %s"
+        % (cross_n, int(CROSS_MISS), cross_pairs[:4]))
+
+# --- (e) T5: cấp nối theo MA TRAN cua generator -------------------------
+# KHÔNG hiểu "lệch > 1 bậc": node giao cao tốc (bậc 0) + QL1A (bậc 2) là
+# nút giao HỢP LỆ, heuristic đó báo 660 lỗi sai. Dùng chính TOPO_LEGAL.
+hier_bad = 0
+hier_ex = []
+
+
+def _cls_of(nid):
+    best_r, best_c = 9, "LOCAL"
+    for sg in BA.get(nid, ()):
+        r = TOPO_RANK.get(sg.get("class"), 4)
+        if r < best_r:
+            best_r, best_c = r, sg.get("class")
+    return best_c
+
+
+for nid, arr in BA.items():
+    # CÓ NHÁNH CẦU VƯỢT => giao KHÁC MỨC, hợp pháp. QL1A giao CT01 là ngã giao
+    # khác mức thật (đo được: n_303 / n_1410, cả nhánh QL1A đều bridge=True).
+    if any(sg.get("bridge") for sg in arr):
+        continue
+    present = set(sg.get("class") for sg in arr)
+    for c in present:
+        for dd in present:
+            if dd == c:
+                continue
+            if c not in TOPO_LEGAL.get(dd, ()):
+                hier_bad += 1
+                if len(hier_ex) < 6:
+                    hier_ex.append((nid, c, dd))
+                break
+print("  cap noi khong hop phap theo ma tran generator: %d %s"
+      % (hier_bad, hier_ex[:3]))
+if hier_bad:
+    bad("T5", "%d cap noi khong nam trong ma tran TOPO_LEGAL %s"
+        % (hier_bad, hier_ex[:4]))
+
+# --- (f) T6: duong CONG xuyen san ben ------------------------------------
+YARD_CLS = ("INTERNAL", "STATION_ACCESS")
+thru = 0
+for sg in segs:
+    if sg.get("class") in YARD_CLS:
+        continue
+    a, b = nodes[sg["from"]], nodes[sg["to"]]
+    for stn in stations:
+        if stn.get("type") not in ("BUS_STATION", "MAJOR_BUS_TERMINAL"):
+            continue
+        if (abs(a["x"] - stn["x"]) < stn.get("w", 190) * 0.5 and
+                abs(a["z"] - stn["z"]) < stn.get("d", 140) * 0.5 and
+                abs(b["x"] - stn["x"]) < stn.get("w", 190) * 0.5 and
+                abs(b["z"] - stn["z"]) < stn.get("d", 140) * 0.5):
+            thru += 1
+            break
+print("  duong cong xuyen qua san ben: %d" % thru)
+if thru:
+    bad("T6", "%d doan duong CONG xuyen qua san ben" % thru)
+
+# --- (g) T7: doan duong qua dai ----------------------------------------
+# Lop bug hinh hoc "im lang": `_add_link_road` tung dung vector phap tuyen CHUA
+# chuan hoa (`nx,nz = -dz,dx`, do lon = L) nen duong noi 2km bi keo thanh vong
+# di-ve 100km => 38 doan >1.5km (dai nhat 51 334m) + 588km mat tien ao =>
+# ~63.000 nha phat sinh tren duong khong ton tai.
+_lw, _le, _ex = 0, 0, []
+for sg in segs:
+    a, b = nodes[sg["from"]], nodes[sg["to"]]
+    ln = math.hypot(a["x"] - b["x"], a["z"] - b["z"])
+    if ln > 8000.0:
+        _le += 1
+        if len(_ex) < 5:
+            _ex.append((sg["id"], sg.get("class"), round(ln),
+                        sg.get("name") or "-"))
+    elif ln > 2000.0:
+        _lw += 1
+print("  doan duong: >8km (LOI) = %d | >2km (canh bao) = %d %s" % (_le, _lw, _ex))
+if _lw > 12:
+    bad("T7", "%d doan duong > 2km — duong bi keo dai khong co gi giua" % _lw)
+if _le:
+    bad("T7", "%d doan duong > 8km: %s" % (_le, _ex))
+
+# --- (h) tran bac node theo RANK ----------------------------------------
+over_rank = 0
+for nid, arr in BA.items():
+    r = min(TOPO_RANK.get(sg.get("class"), 4) for sg in arr)
+    cap_n = TOPO_DEGREE_CAP.get(r, 6)
+    if len(arr) > cap_n:
+        over_rank += 1
+print("  node vuot TRAN BAC THEO RANK: %d" % over_rank)
+if over_rank:
+    bad("T3", "%d node vuot tran bac theo rank" % over_rank)
 
 # ---------------------------------------------------------------- rule 12
 # GIAO LỠ: (a) node qua nhieu nhanh  (b) 2 nhanh cung goc = 2 duong chong nhau
