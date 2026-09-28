@@ -4899,9 +4899,87 @@ class MapGenerator:
             # BIẾN. Ghi đè nó bằng cao độ đường là phá mốc, và lần
             # `_grade_roads` sau sẽ lại trượt cửa sổ từ đó.
             lifted += 1
+        ramp = self._ramp_after_unbury()
         print("      duong choi duoi dat: nang %d len mat dat (toan bo %d node, "
               "sau toi da %0.1fm)" % (lifted, len(need), worst))
+        print("      san bang doc sau khi nang: %d node vuon qua mat dat "
+              "(thuong nhat +%.1fm), %d doan van >16%%" % ramp)
         return lifted
+
+    def _ramp_after_unbury(self, max_grade=0.14, cap=45.0, rounds=30):
+        """P69 — SAN PHANG DO DOC SAU KHI NANG DUONG.
+
+        `_unbury_roads` nang mot node len mat dat (do duoc: toi da 65.3m) nhung
+        KHONG dua theo hai dau xom -> doan do bien thanh doc 29.6%. Bi chuoi:
+        `_fix_final_slopes` goi `_limit_slopes` nhung no chay TRUOC luc nang,
+        nen hau nhu khong anh huong gi; sau do no chi danh dau doan >16% la
+        CAU VUOT de cho qua. Do duoc tren ban that:
+
+            surface >16% = 0 doan   (mat duong da duoc grade rat tot)
+            bridge  >16% = 6 doan   (worst 29.6%: s_7971, s_2739/s_2738 Vanh dai 3)
+            tunnel  >16% = 0 doan
+
+        va `validate()` van DO CA bridge -> VALIDATION FAILED -> khong export.
+
+        Khong the tai tao terrain (khong co che do carve theo duong) va khong
+        the ha node vi chinh no da bi chon vi DUOI mat dat. Cach con lai: moi
+        node THAP hon duoc nang len cho do doc <= max_grade, lan ra theo chuoi.
+        Mat duong van nam tren mat dat tai dung diem chon; phan con lai tro
+        thanh vuon dat (skirt ve mat dat) — dung nhu duong dap that.
+
+        Chi bo qua TUNNEL (ha tuong dua node len se lam huong ham).
+        Tra ve (so node vuon qua mat dat, do vuon lon nhat, so doan con >16%).
+        """
+        raised = set()
+        for _ in range(rounds):
+            moved = 0
+            for sg in self.segments.values():
+                if sg["class"] == "TUNNEL":
+                    continue
+                a = self.nodes.get(sg["from"])
+                b = self.nodes.get(sg["to"])
+                if a is None or b is None:
+                    continue
+                run = dist(a["x"], a["z"], b["x"], b["z"])
+                if run < 1.0:
+                    continue
+                dy = b["y"] - a["y"]
+                if abs(dy) <= max_grade * run:
+                    continue
+                lo, hi = (a, b) if dy > 0.0 else (b, a)
+                tgt = hi["y"] - max_grade * run
+                if tgt <= lo["y"]:
+                    continue
+                th = self.get_elevation(lo["x"], lo["z"])
+                if tgt > th + cap:          # chan tran: khong cho vuon mau thap
+                    tgt = th + cap
+                    if tgt <= lo["y"]:
+                        continue
+                lo["y"] = tgt
+                raised.add(id(lo))
+                moved += 1
+            if not moved:
+                break
+        nf, worst, left = 0, 0.0, 0
+        for sg in self.segments.values():
+            if sg["class"] == "TUNNEL":
+                continue
+            a = self.nodes.get(sg["from"])
+            b = self.nodes.get(sg["to"])
+            if a is None or b is None:
+                continue
+            run = dist(a["x"], a["z"], b["x"], b["z"])
+            if run >= 1.0 and abs(b["y"] - a["y"]) / run > 0.16:
+                left += 1
+        for nd in self.nodes.values():
+            if id(nd) not in raised:
+                continue
+            d = nd["y"] - self.get_elevation(nd["x"], nd["z"])
+            if d > 1.0:
+                nf += 1
+                if d > worst:
+                    worst = d
+        return nf, worst, left
 
     def _fix_final_slopes(self, max_grade=0.16):
         """ÉP LẠI ĐỘ DỐC SAU CÙNG (rule 20/36: xe khách không leo dốc >16%).
