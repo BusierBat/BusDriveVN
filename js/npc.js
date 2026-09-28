@@ -18,8 +18,14 @@ export class BusStationManager {
         this.maxStaticBuses = 12;
         this.spawnTimer = 0;
         this.spawnQueue = [];
+        // ref TrafficManager — dùng để hỏi bãi CHUNG (isBayFree/markBayBusy).
+        // main.js gán sau khi createNPC() xong, nên `traffic` còn null lúc
+        // constructor chạy.
+        this.traffic = null;
         this.prepareStationSpawns();
     }
+
+    setTrafficManager(tm) { this.traffic = tm || null; }
     prepareStationSpawns() {
         const availableSlots = this.parkingSlots.filter(s => !s.occupied);
         let selectedSlots = availableSlots.slice(0, this.maxStaticBuses);
@@ -28,15 +34,30 @@ export class BusStationManager {
             selectedSlots = selectedSlots.filter(slot => Math.hypot(slot.position.x - spawnX, slot.position.z - spawnZ) > 20);
         }
         for (const slot of selectedSlots) { this.spawnQueue.push(slot); }
-        for (let i = 0; i < Math.min(3, this.spawnQueue.length); i++) { this._spawnOneBus(this.spawnQueue.shift()); }
+        // KHÔNG xả hàng ngay tại đây: lúc constructor chạy thì main.js chưa
+        // gọi `setTrafficManager()` -> không hỏi được bãi chung với
+        // TrafficManager, và 3 xe đầu sẽ đâm thẳng vào xe queue kia (đo được
+        // 10/15 slot có 2 xe chồng nhau). Hàng đợi xả ở lần update() sau.
     }
     _spawnOneBus(slot) {
         if (!slot) return;
+        // Không chồng lên xe TrafficManager đã đỗ đúng slot này. Hai hệ thống
+        // giờ cùng một registry -> mỗi slot đúng 1 xe.
+        if (this.traffic) {
+            if (!this.traffic.isBayFree(slot.position.x, slot.position.z, 7)) {
+                slot.occupied = true;
+                return;
+            }
+            this.traffic.markBayBusy(slot.position.x, slot.position.z);
+        }
         const bus = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
         // Y lấy từ data (generator/MapLoader) để xe tĩnh bám mặt sân bến thật
         const sy = (slot.position && typeof slot.position.y === "number") ? slot.position.y : 0.5;
         bus.group.position.set(slot.position.x, sy, slot.position.z);
-        bus.group.rotation.y = slot.rotation || 0;
+        // slot.rotation là heading CỦA GENERATOR (baySlots[].heading), khác
+        // quy ước rotation.y đúng 90° — cùng chỗ thiếu `+ Math.PI/2` như
+        // TrafficManager. Xe không cộng sẽ nằm dọc hàng rồi chồng lên nhau.
+        bus.group.rotation.y = (slot.rotation || 0) + Math.PI / 2;
         slot.occupied = true;
         this.busGroup.add(bus.group);
         this.stationBuses.push({ bus, state: 'PARKED' });
@@ -172,7 +193,12 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
         group, update, dispose, getWaitingPassengers: () => waitingPassengers,
         pickUpPassenger: (id) => { const idx = waitingPassengers.findIndex(p => p.id === id); if (idx !== -1) { waitingPassengers.splice(idx, 1); return true; } return false; },
         getMovingVehicleCount: () => (trafficManagerRef ? trafficManagerRef.getMovingCount() : spawnManager.getActiveCount()),
-        setTrafficManager(tm) { trafficManagerRef = tm || null; },
+        setTrafficManager(tm) {
+            trafficManagerRef = tm || null;
+            // BusStationManager cũng cần ref để kiểm tra bãi CHUNG — không
+            // thì hai bên vẫn đỗ chồng lên nhau dù có isBayFree().
+            if (stationManager) stationManager.setTrafficManager(trafficManagerRef);
+        },
         setPlayerBus(b) { playerRef = b; }
     };
 }

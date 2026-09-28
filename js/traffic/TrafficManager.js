@@ -64,6 +64,9 @@ export class TrafficManager {
 
         this.stationSpawnQueue = [];
         this.stationSpawnTimer = 0;
+        // vị trí bãi ĐÃ đỗ — chung với BusStationManager (npc.js), xem
+        // `isBayFree`/`markBayBusy` ở dưới.
+        this._bayBusy = [];
 
         // --- participant = NPC + người chơi (NPC PHẢI nhường xe của player) ---
         this._participants = [];
@@ -159,11 +162,17 @@ export class TrafficManager {
             const z = p0.z + (p1.z - p0.z) * progress;
 
             const distPlayer = Math.hypot(x - px, z - pz);
-            // không nhổ xe quá gần...
-            if (distPlayer < this.spawnDistance * 0.5 || distPlayer > this.spawnDistance) continue;
+            // Lệch tối đa giữa tâm đường và vị trí THẬT sau placeOnSegment
+            // (xe nằm ở làn, không ở centerline) -> cổng spawn phải trừ hao
+            // chừng đó, nếu không xe vẫn lọt vào vùng cấm theo toạ độ thật.
+            const meta = this.roadGraph.getLaneMeta ? this.roadGraph.getLaneMeta(seg) : null;
+            const drift = (meta ? meta.half : 7) + 0.5;
+            // không nhổ xe quá gần / quá xa (theo vị trí thật)...
+            if (distPlayer < this.spawnDistance * 0.5 + drift ||
+                distPlayer > this.spawnDistance - drift) continue;
             // ...và KHÔNG nhổ trước camera trong bán kính thấy rõ
             const dot = (x - px) * fwdX + (z - pz) * fwdZ;
-            if (dot > 0 && distPlayer < 260) continue;
+            if (dot > -drift && distPlayer < 260 + drift) continue;
 
             if (!this._spawnSpotFree(seg.id, dir, progress, x, z)) continue;
 
@@ -229,6 +238,26 @@ export class TrafficManager {
         }
     }
 
+    // ------------------------------------------------- bãi đỗ: 1 slot = 1 xe
+    // HAI HỆ THỐNG cùng đỗ một bãi: BusStationManager (npc.js) và queue
+    // `setupStationTraffic` này. Trước đây mỗi bên chỉ nhìn danh sách của
+    // MÌNH (cái này chỉ so `aiVehicles`, cái kia chỉ so `slot.occupied` của
+    // một mảng copy khác) -> đo được 10/15 slot có 2 xe chồng nhau đúng một
+    // vị trí. Một registry chung => mỗi slot đúng 1 xe, cả hai API giữ nguyên.
+    isBayFree(x, z, r = 7) {
+        const busy = this._bayBusy || [];
+        for (const b of busy) if (Math.hypot(b.x - x, b.z - z) < r) return false;
+        for (const v of this.aiVehicles) {
+            if (Math.hypot(v.collider.x - x, v.collider.z - z) < r) return false;
+        }
+        return true;
+    }
+
+    markBayBusy(x, z) {
+        if (!this._bayBusy) this._bayBusy = [];
+        this._bayBusy.push({ x, z });
+    }
+
     processStationQueue(deltaTime) {
         if (this.stationSpawnQueue.length === 0) return;
         this.stationSpawnTimer += deltaTime;
@@ -237,10 +266,11 @@ export class TrafficManager {
 
         const req = this.stationSpawnQueue.shift();
         const tx = req.transform.x, tz = req.transform.z;
-        // không chồng xe lên xe tĩnh/bến đã có (BusStationManager cũng đặt xe ở bến)
-        for (const other of this.aiVehicles) {
-            if (Math.hypot(other.collider.x - tx, other.collider.z - tz) < 7) return;
-        }
+        // slot này đã có người đỗ (BusStationManager hoặc một xe khác) -> bỏ,
+        // không spawn chồng lên. Trả về chứ không `continue` là đúng: shift()
+        // đã lấy mất yêu cầu, mà lý do bỏ chính là "đã có xe ở đó".
+        if (!this.isBayFree(tx, tz, 7)) return;
+        this.markBayBusy(tx, tz);
 
         let vehicle = this.pool.pop();
         if (!vehicle) {
@@ -256,10 +286,17 @@ export class TrafficManager {
         ai.collider.x = tx;
         ai.collider.z = tz;
         ai.collider.y = req.transform.y || 0;
-        ai.heading = req.transform.heading || 0;
-        ai.targetHeading = ai.heading;
+        // heading CỦA GENERATOR (baySlots[].heading = rot ± PI/2) khác quy ước
+        // rotation.y mà TrafficAI đang dùng (`_getSegmentHeading` =
+        // atan2(ux,uz)) đúng 90°. main.js:616 đã cộng `+ Math.PI/2` cho xe
+        // player; đây là chỗ duy nhất quên. Hệ quả đo được: xe bãi nằm DỌC
+        // hàng (AABB 8.4 x 12.9) thay vì xoay mũi vào (12.6 x 7.8), trong khi
+        // khe bãi chỉ 11m cho xe dài 12.8m -> xe chồng lên nhau.
+        const bayHeading = (req.transform.heading || 0) + Math.PI / 2;
+        ai.heading = bayHeading;
+        ai.targetHeading = bayHeading;
         ai.vehicle.group.position.set(ai.collider.x, ai.collider.y, ai.collider.z);
-        ai.vehicle.group.rotation.y = ai.heading;
+        ai.vehicle.group.rotation.y = bayHeading;
         ai.setActive(true);
 
         if (window.collisionSystem) {
@@ -390,6 +427,10 @@ export class TrafficManager {
         if (along > BUS_LEN_APPROX * 0.95 || side > BUS_W_APPROX * 1.05) return;   // không thực sự chồng
 
         if (hit.data && hit.data.ai) {
+            // Đang tự giải cứu xe chồng nhau (_stuckT): applyAvoidance sẽ xích
+            // target lệch rồi bị re-center giằng lại -> xe bị GHIM ở một bên,
+            // không tách ra được. Bỏ qua để escape tự xử lý.
+            if (ai._stuckT > 4) return;
             ai.applyAvoidance(hx, hz, 1);
         } else {
             // xe tĩnh / xe của player: hãm tới khi hết chồng (không dịch toạ độ)
