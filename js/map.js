@@ -536,7 +536,9 @@ function makeMaterials() {
         median: new THREE.MeshLambertMaterial({ color: 0x9a9a8a, side: roadSide }),
         shoulder: new THREE.MeshLambertMaterial({ color: 0x6b6558, side: roadSide }),
         laneLine: new THREE.MeshLambertMaterial({ color: 0xf0ead0, side: roadSide }),
-        concrete: new THREE.MeshLambertMaterial({ color: 0x8a8a86 }),
+        // P58: sân bến nằm trên sườn nên có cả mặt dưới; `FrontSide` làm mất
+    // mặt khi nhìn từ dưới (và làm lộ tam giac nguoc chieu, P58).
+    concrete: new THREE.MeshLambertMaterial({ color: 0x8a8a86, side: THREE.DoubleSide }),
         dirt: new THREE.MeshLambertMaterial({ color: 0x6b5540 }),
         tunnel: new THREE.MeshStandardMaterial({ color: 0x1a1a1c, roughness: 0.95, side: roadSide }),
         tunnelShell: new THREE.MeshStandardMaterial({ color: 0x2a2a2e, roughness: 0.98, side: THREE.BackSide }),
@@ -609,25 +611,57 @@ function makeGeometries() {
 // =============================================================================
 class MeshAccum {
     constructor() { this.pos = []; this.idx = []; this.n = 0; }
+    // P58: tam giac thu hai PHAI LA (a, c, d), khong phai (b, d, c).
+    // (b,d,c) nguoc chieu voi (a,b,c) ⇒ mot tam giac huong len mot tam giac
+    // huong xuong ⇒ normal trung binh ~0 (do duoc: 4 dinh san be, 1 len,
+    // 1 xuong, trung binh 0) va mat tam giac bi CULL tren vat lieu
+    // `FrontSide`. Duong mat BAN DUOC che vi dung `DoubleSide`, nen loi nay
+    // ton tai ma khong ai thay; san be thi `FrontSide` nen no lo ra ngay.
     quad(a, b, c, d) {
         const base = this.n;
         this.pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2]);
-        this.idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
+        this.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
         this.n += 4;
     }
+    // P58: cung loi chieu kim nhu `quad` — tam giac (a,b,d) va (b,c,d).
     strip(a, b, c, d) {
         const base = this.n;
         this.pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2]);
-        this.idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+        this.idx.push(base, base + 1, base + 3, base + 1, base + 2, base + 3);
         this.n += 4;
     }
-    // triangle fan cho polygon đã clip (có thể 3..8 đỉnh)
+    // Triangle fan cho polygon đã clip (3..8 đỉnh).
+    //
+    // P59 — CHUẨN HOÁ CHIỀU KIM. Fan `(p0, pi, pi+1)` lấy chiều kim từ input,
+    // nên polygon đi vào sai chiều là mặt nằm SẮP. Đo được trong game:
+    //     MINOR 1 | MAJOR 1 | __LINE__ 1        (đúng)
+    //     __JUNCTION__MINOR -0.99 | __JUNCTION__MAJOR -0.98
+    //     __SIDEWALK__ -1 | __STOPLINE__ -0.2   (sai)
+    // Mặt giao lỡ (convex hull) vừa là mảng to nhất vừa nằm giữa đường ⇒ đó
+    // là thứ nhìn thấy "mảng tối" trong ảnh.
+    //
+    // Dấu hiệu: ap dụng trên mặt đường ĐÃ đúng — 4 đỉnh (0,hw) (L,hw)
+    // (L,-hw) (0,-hw) cho normal Y = +1 và shoelace = -4·L·hw (ÂM).
+    // ⇒ âm là hướng lên; ≥ 0 thì đảo danh sách.
     poly(points) {
-        if (points.length < 3) return;
+        const n = points.length;
+        if (n < 3) return;
+        let sh = 0;
+        for (let i = 0; i < n; i++) {
+            const a = points[i], b = points[(i + 1) % n];
+            sh += a[0] * b[2] - b[0] * a[2];
+        }
         const base = this.n;
-        for (const p of points) this.pos.push(p[0], p[1], p[2]);
-        for (let i = 1; i < points.length - 1; i++) this.idx.push(base, base + i, base + i + 1);
-        this.n += points.length;
+        if (sh < 0) {
+            for (const p of points) this.pos.push(p[0], p[1], p[2]);
+        } else {
+            for (let i = n - 1; i >= 0; i--) {
+                const p = points[i];
+                this.pos.push(p[0], p[1], p[2]);
+            }
+        }
+        for (let i = 1; i < n - 1; i++) this.idx.push(base, base + i, base + i + 1);
+        this.n += n;
     }
 
     // P41/P51 — VÁY BÊN (+ MẶT ĐÁY): biến mặt phẳng thành KHỐI có thân.
@@ -1215,6 +1249,32 @@ export class MapLoader {
         return best;
     }
 
+    // P56: điểm có nằm trong sân bến nào không (quyết định có vẽ mặt
+    // đường `INTERNAL` trong sân hay không).
+    //
+    // Lấy từ `stationsData` — JS KHÔNG có `stationZones` (đó là biến của
+    // generator; P56 v1 tự bịa nó ⇒ hàm luôn False ⇒ vẽ đường ngoài sân, bỏ
+    // hết đường trong sân — đúng ngược).
+    //
+    // Kiểm trong HỆ CỤC BỘ của sân (có `rot`): sân xoay khác 0, AABB không
+    // xoay sẽ hoặc bỏ sót (vẽ đường trong sân) hoặc bắt nhầm (bỏ đường
+    // ngoài sân).
+    _insideStationYard(x, z) {
+        const list = this.stationsData;
+        if (!list) return false;
+        for (let i = 0; i < list.length; i++) {
+            const s = list[i];
+            if (s.type !== "BUS_STATION" && s.type !== "MAJOR_BUS_TERMINAL") continue;
+            const r = s.rot || 0;
+            const dx = x - s.x, dz = z - s.z;
+            const lx = dx * Math.cos(r) - dz * Math.sin(r);
+            const lz = dx * Math.sin(r) + dz * Math.cos(r);
+            if (Math.abs(lx) <= (s.w || 180) * 0.5 &&
+                Math.abs(lz) <= (s.d || 130) * 0.5) return true;
+        }
+        return false;
+    }
+
     _buildRoadGroup() { /* roads render theo chunk trong _loadChunk */ }
 
     // ---------------------------------------------------------------------
@@ -1447,6 +1507,18 @@ export class MapLoader {
             const p1 = this.roadGraph.getNode(seg.from);
             const p2 = this.roadGraph.getNode(seg.to);
             if (!p1 || !p2) continue;
+            // P56: SÂN BẾN = 1 BẢNG BÊ TÔNG LIỀN. Đoạn `INTERNAL` nằm TRONG
+            // sân không vẽ mặt đường — nếu vẽ, sân bị cắt thành dải xám chồng
+            // nhau (đã thấy trong ảnh). Đường nội bộ chỉ là đườNG ĐỂ LÁI XE
+            // TRÊN NGỮ CẢNH, nên bỏ VẼ chứ KHÔNG bỏ graph: `_surfaceAt` vẫn
+            // trả đúng cao độ ở đó và xe vẫn chạy đúng. Sân thật ở Việt Nam là
+            // bảng bê tông liền, chỉ có vạch sơn đỗ xe + nan cánh.
+            // Đoạn `INTERNAL`/`STATION_ACCESS` nằm NGOÀI sân (đường vào bến)
+            // thì VẪN vẽ bình thường.
+            if (seg.class === "INTERNAL" || seg.class === "STATION_ACCESS") {
+                if (this._insideStationYard(p1.x, p1.z) &&
+                    this._insideStationYard(p2.x, p2.z)) continue;
+            }
             const w = seg.width || 12;
             const dx = p2.x - p1.x, dz = p2.z - p1.z;
             const len = Math.hypot(dx, dz);
@@ -2469,7 +2541,13 @@ export class MapLoader {
                     [-W / 2, 0, -D / 2], [W / 2, 0, -D / 2],
                     [W / 2, 0, D / 2], [-W / 2, 0, D / 2]
                 ].map(q => [q[0], yl, q[2]]);
-                top.quad(ring[0], ring[1], ring[2], ring[3]);
+                // P57: chiều kim phải để pháp tuyến hướng LÊN (+Y).
+                // `quad(a,b,c,d)` sinh (a,b,c)+(b,d,c); với ring theo chiều
+                // kim đồng hồ từ trên xuống thì cross((b-a),(c-b)) = (0,-W*D,0)
+                // ⇒ pháp tuyến hướng XUỐNG ⇒ `MeshLambertMaterial` cho sân
+                // ĐEN. Đo được: `concrete` là 0x8a8a86 (xám sáng) mà sân vẫn
+                // đen. Đảo chiều ở đây.
+                top.quad(ring[1], ring[0], ring[3], ring[2]);
                 const sa_ = Math.sin(s.rot || 0), ca_ = Math.cos(s.rot || 0);
                 const bots = ring.map(q => {
                     const wx = s.x + q[0] * sa_ + q[2] * ca_;

@@ -121,7 +121,7 @@ export class TrafficAI {
         this.overtakeTarget = null;
         this.busStopNode = null;
         this.busStopTimer = 0;
-        this.reactionTimer = 0;
+        this.reactTimer = 0;        // phản xạ trễ khi phanh (dùng trong _decide/_updateAccel)
 
         this.collider = { x: 0, y: 0.5, z: 0, r: HALF_W + 0.6 };
         this.active = true;
@@ -936,9 +936,21 @@ export class TrafficAI {
         if (this.meta) this.lane = clamp(this.lane, 0, this.meta.lanesPerDir - 1);
         this.targetLaneOffset = this._laneCenter(this.lane);
         this.targetHeading = this._getSegmentHeading();
-        this.turning = true;
-        this.turnTimer = 0;
-        this.state = AI_STATE.TURNING;
+        // Chỉ vào FSM "rẽ" khi góc đổi hướng ĐÁNG KỂ. Bug cũ: mọi lần sang
+        // đoạn mới (đường thẳng tắp cũng vậy) đều bật turning -> speed *= 0.35
+        // mỗi đoạn -> xe giật cục giảm tốc liên tục. Góc nhỏ: heading tự mượt
+        // qua lerpAngle trong _updateHeading (nhánh không turning).
+        let hd = this.targetHeading - this.oldHeading;
+        while (hd > Math.PI) hd -= TWO_PI;
+        while (hd < -Math.PI) hd += TWO_PI;
+        if (Math.abs(hd) > 0.30) {                     // ~17 độ: thật sự rẽ
+            this.turning = true;
+            this.turnTimer = 0;
+            this.state = AI_STATE.TURNING;
+        } else {
+            this.turning = false;
+            this.turnTimer = 0;
+        }
         this._updatePositionFromSegment();
     }
 
