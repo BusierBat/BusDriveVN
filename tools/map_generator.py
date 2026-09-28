@@ -2341,6 +2341,14 @@ class MapGenerator:
         # đổi class, nên sau chúng thì ma trận vẫn sạch.
         self._repair_matrix_violations()
         self._build_node_seg_index()
+        # P60: CẮN LẠI ĐỘ DỐC SAU MỌI THAY ĐỔI HÌNH HỌC. `validate` chặn
+        # export khi đoạn >16% — đo được `16.1%` ⇒ chặn. Nguyên nhân: lần
+        # `_fix_final_slopes()` chạy TRƯỚC `_weld_by_rank` và
+        # `_repair_matrix_violations`, mà hai hàm đó gộp/cắt đoạn nên tạo
+        # dốc mới (đoạn 12m cong lại 2m = 16.7%). Nguyên tắc chung: mỗi thay
+        # đổi hình học đều phải được theo sau bằng một lần cắn lại độ dốc.
+        self._fix_final_slopes()
+        self._build_node_seg_index()
         self._resnap_bus_stops()
         self._dedupe_edges()
         self._prune_orphans()
@@ -5469,8 +5477,15 @@ class MapGenerator:
             # lưới chỉ 195m => LƯỚI TỰ GẤP LÊN TRÊN THÂN CHÍNH NÓ (nham bi).
             # Đo được trong game: đường thành phố chạy thành dãy thẳng dài
             # hàng km thay vì lưới có block.
+            # P61: mỗi thị trấn MỘT bước lưới và MỘT mức méo riêng. Trước
+            # đây `sp["step"]` và `0.36` CỐ ĐỊNH theo cỡ ⇒ 28 thị trấn chỉ có
+            # 4 khuôn. `rng` đã seed theo `self.seed` nên vẫn TẤT ĐỊNH.
             R = sp["radius"]
-            sc = sp["step"] * 0.36
+            st_step = sp["step"] * rng.uniform(0.78, 1.26)
+            sc = st_step * rng.uniform(0.18, 0.62)
+            # TỈ LỆ KÉO DÀI: thị trấn ven đường dọc, thành phố vuông, thị
+            # trấn trải rộng ngang. Đây là đổi HÌNH DẠNG, không phải rung lệch.
+            aspect = rng.uniform(0.50, 1.50)
             # nhưng phải trên đất liền, không dưới nước / quá sát biển
             if self.water_factor(cx, cz) > 0.05 or self.dist_to_coast(cx, cz) < 25.0:
                 moved = False
@@ -5507,14 +5522,15 @@ class MapGenerator:
             px_, pz_ = -az_, ax_
 
             # --- lưới offset (mỗi tuyến 1 khoảng cách KHÁC NHAU) ---
+            # P61: `v` = phương DỌC QL1A ⇒ kéo dài theo `aspect`.
             us, u = [], -R
             while u <= R + 1.0:
                 us.append(u)
-                u += sp["step"] * rng.uniform(0.82, 1.26)
-            vs, v = [], -R
-            while v <= R + 1.0:
+                u += st_step * rng.uniform(0.82, 1.26)
+            vs, v = [], -R * aspect
+            while v <= R * aspect + 1.0:
                 vs.append(v)
-                v += sp["step"] * rng.uniform(0.84, 1.24)
+                v += st_step * rng.uniform(0.84, 1.24)
 
             # mỗi nút QL1A chỉ phục vụ MỘT phố cắt qua (xem chỗ dùng)
             ql_straddle = set()
@@ -5533,7 +5549,7 @@ class MapGenerator:
                 ang = math.atan2(pu, pv)
                 rr = R * (1.0 + 0.13 * math.sin(ang * 3.0 + ai)
                           + 0.06 * math.sin(ang * 5.0 - ai * 0.9))
-                return (pu * pu + pv * pv) <= rr * rr
+                return (pu * pu + (pv * pv) / (aspect * aspect)) <= rr * rr
 
             big = size in ("city", "town")
 
@@ -5552,9 +5568,23 @@ class MapGenerator:
                     return False
                 return self._seg_clear(x, z, 9.0, 3.0)
 
+            # P61: SUPERBLOCK — bỏ 1-2 hàng và 1-2 cột NGUYÊN của lưới ⇒
+            # thị trấn có block lớn như thật, không phải lưới ô vuông đều tăm
+            # tắp (đo được `ty ngang:doc = 1.00` trong audit là dấu hiệu).
+            drop_u = set()
+            drop_v = set()
+            if len(us) >= 7 and len(vs) >= 7:
+                for _b in range(rng.randint(1, 2)):
+                    drop_u.add(rng.randrange(1, len(us) - 1))
+                    drop_v.add(rng.randrange(1, len(vs) - 1))
+
             nid_of = {}
             for iu, uu in enumerate(us):
+                if iu in drop_u:
+                    continue
                 for iv, vv in enumerate(vs):
+                    if iv in drop_v:
+                        continue
                     x = cx + px_ * uu + ax_ * vv
                     z = cz + pz_ * uu + az_ * vv
                     wa, wb = _warp(x, z)
