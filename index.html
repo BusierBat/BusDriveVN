@@ -5,11 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BusDriveVN</title>
     <link rel="stylesheet" href="style.css">
+    <!--
+      Three.js 0.160.0 được VENDOR trong `vendor/three/` — KHÔNG lấy từ CDN.
+      Lý do (đo được, không đoán): game không vào được với
+      `net::ERR_TUNNEL_CONNECTION_FAILED` từ cdn.jsdelivr.net, trong khi
+      PowerShell vẫn tải được 1.27MB qua chính CDN đó (chỉ browser bị chặn
+      qua proxy). Game offline phải chạy được offline.
+      Cập nhật: vendor/three/build/three.module.js + vendor/three/examples/jsm/**
+    -->
     <script type="importmap">
       {
         "imports": {
-          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+          "three": "./vendor/three/build/three.module.js",
+          "three/addons/": "./vendor/three/examples/jsm/"
         }
       }
     </script>

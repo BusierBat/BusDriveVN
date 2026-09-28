@@ -69,8 +69,9 @@ export class TrafficAI {
         
         this.pathNodes = [];
         this.currentPathIndex = 0;
+        this.goalNodeId = null;   // rule 57: xe luon co dich de A* noi duong
         
-        if (!isStatic && !isParked) this._initPosition();
+        if (!isStatic && !isParked) { this._initPosition(); this._retarget(); }
     }
 
     _getSegment(id) { return this.roadGraph.getSegment(id); }
@@ -370,7 +371,11 @@ export class TrafficAI {
         const curId = this.direction === 0 ? seg.to : seg.from;
         const node = this._getNode(curId);
         if (!node?.connections?.length) { this._uTurn(); return; }
-        
+
+        // --- DA TOI DICH -> chon dich moi (rule 57: xe phai CO duong di) ---
+        if (this.goalNodeId && curId === this.goalNodeId) this._retarget();
+
+        // 1) di theo path da len ke hoach
         if (this.pathNodes.length > 0 && this.currentPathIndex < this.pathNodes.length - 1) {
             const nextNodeId = this.pathNodes[this.currentPathIndex + 1];
             const nextSeg = node.connections.find(id => {
@@ -382,13 +387,103 @@ export class TrafficAI {
                 this.currentPathIndex++;
                 return;
             }
+            this.pathNodes = [];          // path hong -> tinh lai
         }
-        
-        const nextSegs = node.connections.filter(id => id !== this.currentSegmentId);
-        if (nextSegs.length === 0) { this._uTurn(); return; }
-        const nextSeg = this._getSegment(nextSegs[Math.floor(this.random() * nextSegs.length)]);
+
+        // 2) het path -> gan lai dich (A* chay 1 lan, khong phai moi nga)
+        if (this.goalNodeId && this.pathNodes.length === 0) {
+            const from2 = this._curNodeId();
+            if (from2 && from2 !== this.goalNodeId) {
+                if (typeof this.roadGraph.findPath === "function") {
+                    const p2 = this.roadGraph.findPath(from2, this.goalNodeId, this.currentSegmentId);
+                    if (p2 && p2.length) { this.pathNodes = p2; this.currentPathIndex = 0; }
+                }
+            }
+        }
+        if (this.goalNodeId && this.pathNodes.length === 0 &&
+            typeof this.roadGraph.nextSegmentToward === "function") {
+            const nextSegId = this.roadGraph.nextSegmentToward(curId, this.goalNodeId, this.currentSegmentId);
+            if (nextSegId) {
+                const s2 = this._getSegment(nextSegId);
+                if (s2) { this._setNewSegment(s2, curId); return; }
+            }
+        }
+
+        // 3) chua gan dich -> nhanh RE nhat, cam U-turn tai nga
+        const outs = typeof this.roadGraph.neighbors === "function"
+            ? this.roadGraph.neighbors(curId)
+            : node.connections.map(id => ({ seg: id, to: null, cost: 1, len: 1 }));
+        const cand = outs.filter(c => c.seg !== this.currentSegmentId);
+        if (cand.length === 0) { this._uTurn(); return; }
+        let best = cand[0];
+        for (const c of cand) {
+            if ((c.cost / (c.len || 1)) < (best.cost / (best.len || 1))) best = c;
+        }
+        const nextSeg = this._getSegment(best.seg);
         if (!nextSeg) { this._uTurn(); return; }
         this._setNewSegment(nextSeg, curId);
+    }
+
+    // Gan dich moi. Uu tien POI that (ben / tram nghi / cay xang) gan, neu
+    // khong co thi chon node duong lon 0.4-2.5km. Dich phai CUNG thanh phan
+    // lien thong voi xe, neu khong A* se khong ra duong.
+    //
+    // ⚠ CHI CHAY A* MOT LAN o day. Truoc do _handleJunction goi A* o MOI nga
+    // (do 40ms x 10 xe = 12% CPU tren N5000). Bay len duong 1 lan roi di theo
+    // pathNodes; khi het path hoac path hong moi tinh lai.
+    setGoal(nodeId) {
+        this.goalNodeId = nodeId || null;
+        this.pathNodes = [];
+        this.currentPathIndex = 0;
+        const from = this._curNodeId();
+        if (!this.goalNodeId || !from) return;
+        if (typeof this.roadGraph.findPath !== "function") return;
+        const p = this.roadGraph.findPath(from, this.goalNodeId, this.currentSegmentId);
+        if (p && p.length) {
+            this.pathNodes = p;
+            this.currentPathIndex = 0;
+        }
+    }
+
+    _curNodeId() {
+        const s = this._getSegment(this.currentSegmentId);
+        if (!s) return null;
+        return this.direction === 0 ? s.to : s.from;
+    }
+
+    _retarget() {
+        const rg = this.roadGraph;
+        if (!rg || typeof rg.neighbors !== "function") { this.goalNodeId = null; return; }
+        const hereId = this._curNodeId();
+        const here = hereId ? rg.getNode(hereId) : null;
+        if (!here) { this.goalNodeId = null; return; }
+        const ox = here.x, oz = here.z;
+
+        // 1) POI that trong 350m-6km
+        if (rg.pois && rg.pois.length && this.random() < 0.55) {
+            const cand = [];
+            for (const p of rg.pois) {
+                const d = Math.hypot(p.position.x - ox, p.position.z - oz);
+                if (d < 350 || d > 6000) continue;
+                cand.push(p);
+            }
+            if (cand.length) {
+                const pick = cand[Math.floor(this.random() * cand.length)];
+                const n = rg.nearestNode(pick.position.x, pick.position.z);
+                if (n && rg.canReach(hereId, n.id)) { this.setGoal(n.id); return; }
+            }
+        }
+        // 2) node duong lon ngau nhien 0.4-2.5km
+        const BIG = new Set(["NATIONAL", "EXPRESSWAY", "ARTERIAL", "COLLECTOR"]);
+        for (let tries = 0; tries < 8; tries++) {
+            const n = rg.nodes[Math.floor(this.random() * rg.nodes.length)];
+            const d = Math.hypot(n.x - ox, n.z - oz);
+            if (d < 400 || d > 2500) continue;
+            if (!rg.neighbors(n.id).some(e => BIG.has(e.cls))) continue;
+            this.setGoal(n.id);
+            return;
+        }
+        this.goalNodeId = null;
     }
     
     _setNewSegment(nextSeg, curId) {

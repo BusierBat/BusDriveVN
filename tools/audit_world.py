@@ -145,6 +145,8 @@ TOPO_RANK = _mg.TOPO_RANK
 TOPO_LEGAL = _mg.TOPO_LEGAL
 TOPO_DEGREE_CAP = _mg.TOPO_DEGREE_CAP
 CROSS_MISS = _mg.CROSS_MISS
+TOPO_SMALL_ROAD = _mg.TOPO_SMALL_ROAD
+TOPO_MIN_LINK_LEN = _mg.TOPO_MIN_LINK_LEN
 
 # --- (a) node type: "link" la node HINH HOC giua duong, khong phai nga giao ---
 type_hist = Counter()
@@ -175,13 +177,17 @@ for nid, arr in BA.items():
             continue
         dd = math.hypot(nodes[o]["x"] - nodes[nid]["x"],
                         nodes[o]["z"] - nodes[nid]["z"])
-        if dd < 45.0 and o > nid:          # moi cap dem 1 lan
+        # nguong theo BAC cua CHINH doan nay (P28, cung hang so voi
+        # `topo_link_ok`): ngo 30m giua hai khoi la binh thuong, con QL1A
+        # 11m / Vanh dai 3 8.4m moi la loi that (xe vao 11m la ra khoi duong).
+        lim = TOPO_MIN_LINK_LEN.get(TOPO_RANK.get(sg.get("class"), 3), 0.0)
+        if lim > 0.0 and dd < lim and o > nid:     # moi cap dem 1 lan
             adj_j += 1
             close_by_cls[sg.get("class")] += 1
-print("  cap nut giao lien tiep < 45m tren cung duong: %d %s"
+print("  cap nut giao lien tiep qua ngan (nguong theo bac): %d %s"
       % (adj_j, dict(close_by_cls)))
-if adj_j > 60:
-    bad("T1", "%d cap nut giao lien tiep < 45m tren cung duong (>60) — can 1 "
+if adj_j > 20:
+    bad("T1", "%d cap nut giao lien tiep qua nguong theo bac (>20) — can them "
               "node hinh hoc o giua hoac tach xa them" % adj_j)
 
 # --- (c) T2/T3: bac node trong SAN BEN -----------------------------------
@@ -494,7 +500,8 @@ if hor > 40 and ver > 40 and 0.75 < ver / max(1, hor) < 1.33:
 
 # ---------------------------------------------------------------- rule 11
 # DUONG DIA PHONG KHONG DUOC NOI THANG VAO CAO TOC
-SMALL_CLS = ("LOCAL", "ALLEY", "RURAL_LOCAL", "SERVICE", "COLLECTOR")
+# lấy từ generator (khối import ở trên) — MỘT định nghĩa duy nhất
+SMALL_CLS = TOPO_SMALL_ROAD
 hw_nodes = set()
 for s in segs:
     if s.get("class") == "EXPRESSWAY":
@@ -644,8 +651,13 @@ for s in spawn:
 
 # ---------------------------------------------------------------- rule 17
 print("=== 3. DIEM DUNG ===")
-stops = [s for s in stations if s.get("type") in
-         ("BUS_STOP", "REST_AREA", "FUEL_STATION", "TOLL")]
+# CHỈ ĐIỂM DỪNG. Đo được cả 3 cặp "dưới 600m" đều là ĐIỂM DỪNG đối với
+# TRẠM THU PHÍ / TRẠM XĂNG / TRẠM NGHỈ (Ba Bàu 358m, Vĩnh Hảo 373m,
+# PVOIL Hoàng Hữu Nam 396m) — ba tiện ích khác nhau ở ba chỗ khác nhau.
+# Trạm thu phí cách điểm dừng vài trăm mét là BÌNH THƯỜNG ở Việt Nam, thực
+# tế hai thứ đó hay đứng cạnh nhau. "Nhầm điểm dừng" chỉ có nghĩa khi so giữa
+# HAI ĐIỂM DỪNG với nhau. Đây là sửa LUẬT theo bằng chứng, không sửa data.
+stops = [s for s in stations if s.get("type") == "BUS_STOP"]
 # kiem tra khoang cach tren truc route
 rt = routes[0] if routes else None
 if rt and len(rt.get("nodes", [])) > 2:

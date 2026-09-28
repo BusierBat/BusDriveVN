@@ -147,7 +147,9 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         const busPos = bus.group.position;
         for (const p of onboardPassengers) {
             if (p.destination === destination) {
-                const dropPos = new THREE.Vector3(busPos.x + (Math.random() - 0.5) * 4, 0.5, busPos.z + (Math.random() - 0.5) * 4);
+                // trả khách xuống mặt đất: busY = terrainY + 0.5 => người đứng ở terrainY
+                const groundY = (typeof busPos.y === "number" ? busPos.y - 0.5 : 0.5);
+                const dropPos = new THREE.Vector3(busPos.x + (Math.random() - 0.5) * 4, groundY, busPos.z + (Math.random() - 0.5) * 4);
                 p.model.position.copy(dropPos);
                 p.model.scale.set(1, 1, 1);
                 setTimeout(() => { if (p.model.parent) passengerGroup.remove(p.model); }, 1000);

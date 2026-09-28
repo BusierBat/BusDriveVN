@@ -3,6 +3,7 @@ import { formatTime } from "./utils.js";
 
 let minimapCtx = null, speedoCtx = null;
 let minimapData = null;
+let minimapMap = null;
 let _lastMinimapX = Infinity, _lastMinimapZ = Infinity, _lastHeading = Infinity;
 
 export function createUI({ map = null, callbacks = {} } = {}) {
@@ -53,12 +54,19 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         if (mapInstance && typeof mapInstance.getMinimapData === 'function') {
             minimapData = mapInstance.getMinimapData();
         }
+        minimapMap = mapInstance || null;
     }
 
+    // rule 34: minimap dùng CÙNG source of truth với world, và CHỈ vẽ
+    // phần đang nhìn thấy (trước đây quét cả ~5k segment mỗi lần vẽ).
     function drawMinimap(playerX, playerZ, heading, npcZones = [], passengerZones = []) {
         if (!minimapCtx || !minimapData) return;
         const ctx = minimapCtx;
         const scale = 0.05;
+        const radius = 115 / scale;   // bán kính vẽ được trong canvas 200px
+        const view = (minimapMap && typeof minimapMap.getMinimapNear === 'function')
+            ? minimapMap.getMinimapNear(playerX, playerZ, radius)
+            : minimapData;
         ctx.clearRect(0, 0, 200, 200);
         ctx.save();
         ctx.beginPath(); ctx.arc(100, 100, 100, 0, Math.PI * 2); ctx.clip();
@@ -66,7 +74,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         
         ctx.strokeStyle = '#4a4a5a'; ctx.lineWidth = 2;
         ctx.beginPath();
-        for (const seg of minimapData.segments || []) {
+        for (const seg of view.segments || []) {
             ctx.moveTo(100 + (seg.from.x - playerX) * scale, 100 + (seg.from.z - playerZ) * scale);
             ctx.lineTo(100 + (seg.to.x - playerX) * scale, 100 + (seg.to.z - playerZ) * scale);
         }
@@ -74,18 +82,28 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         
         ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 3;
         ctx.beginPath();
-        for (let i = 0; i < (minimapData.route || []).length - 1; i++) {
-            const p1 = minimapData.route[i], p2 = minimapData.route[i + 1];
+        const rt = view.route || [];
+        for (let i = 0; i < rt.length - 1; i++) {
+            const p1 = rt[i], p2 = rt[i + 1];
             ctx.moveTo(100 + (p1.x - playerX) * scale, 100 + (p1.z - playerZ) * scale);
             ctx.lineTo(100 + (p2.x - playerX) * scale, 100 + (p2.z - playerZ) * scale);
         }
         ctx.stroke();
+
+        // POI: bến xe / trạm nghỉ / cây xăng / điểm dừng (rule 34)
+        ctx.fillStyle = '#fbbf24';
+        for (const p of view.pois || []) {
+            ctx.beginPath();
+            ctx.arc(100 + (p.x - playerX) * scale, 100 + (p.z - playerZ) * scale, 2.6, 0, Math.PI * 2);
+            ctx.fill();
+        }
 
         ctx.fillStyle = '#ff4d4d';
         for (const npc of npcZones) {
             ctx.beginPath(); ctx.arc(100 + (npc.x - playerX) * scale, 100 + (npc.z - playerZ) * scale, 2, 0, Math.PI * 2); ctx.fill();
         }
         ctx.restore();
+
         
         ctx.save();
         ctx.translate(100, 100); ctx.rotate(-heading);

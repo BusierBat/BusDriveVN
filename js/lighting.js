@@ -29,7 +29,9 @@ export class LightingSystem {
 
     _initLights() {
         this.scene.background = new THREE.Color(0x87CEEB);
-        this.scene.fog = new THREE.Fog(0x87CEEB, 200, 4000);
+        // Fog PHẢI khớp bán kính streaming chunk (LOAD_RADIUS 6 * 256 = 1536m).
+        // Fog far 4000m => nhìn thấy rõ ránh giới chunk, map bị cắt cụt.
+        this.scene.fog = new THREE.Fog(0x87CEEB, 260, 1450);
         this.lights.ambient = new THREE.AmbientLight(0xffffff, 0.5);
         this.scene.add(this.lights.ambient);
         this.lights.sun = new THREE.DirectionalLight(0xffffff, 1.0);

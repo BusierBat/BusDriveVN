@@ -63,6 +63,14 @@ const ACC_CELL = 4096;         // cell của spatial index (mirror Python)
 const ROAD_LIFT = 0.12;
 const YARD_LIFT = 0.10;
 const BUS_AXLE = 0.5;
+// P41 — BỀ DÀY THÂN ĐƯỜNG. Đường là KHỐI, không phải texture: mặt trên +
+// váy bên xuống. 0.55m = bề dày nền đường sau vỉa.
+const ROAD_THICK = 0.55;
+// Bán kính dò mặt đường quanh xe. Rộng hơn "width*0.5+2" của
+// `_nearestRoad` vì phải dò NHIỀU mặt đường (kể cả mặt thấp hơn) rồi chọn
+// theo tính liên tục — không thể chỉ nhìn "cái gần nhất".
+const SURFACE_REACH = 34.0;
+
 
 // =============================================================================
 // MATH — mirror tools/map_generator.py
@@ -126,14 +134,15 @@ class World {
         // corridor dạng [x, z, u] — u là blend chỉ số anchor (như Python)
         this.corridor = t.corridor || [];
         this.anchors = t.anchors || [];
+        // BẢNG u(z) + CÁC BIN MÂU THUẪN do generator export.
+        // Không có 2 dòng này thì JS phải TỰ DỰNG LẠI bảng u từ corridor đã
+        // làm tròn 1e-8 — tức là 2 bản độc lập của cùng 1 bảng, lệch nhau
+        // 2.26m ở u => arid/mountain/urban/uplift lệch theo => cao độ lệch
+        // 39.8m => XE BAY/CHÌM. Generator là nguồn duy nhất (luật 3).
+        this._uzExported = Array.isArray(t.uz) ? t.uz.map(p => [p[0], p[1]]) : null;
+        this._uzAmbigExported = Array.isArray(t.uzAmbig) ? new Set(t.uzAmbig) : null;
         if (typeof t.roadLift === "number") this.roadLift = t.roadLift;
         if (typeof t.yardLift === "number") this.yardLift = t.yardLift;
-        // BANG u DO GENERATOR EXPORT: [[z, u], ...] + tap bin MAU THUAN.
-        // Day la NGUON SU THAT DUY NHAT. Truoc day `world.json` khong co key
-        // nay nen JS tu dung lai tu corridor -- tuc hai bang doc lap cua cung
-        // mot bang, nen khong bao gio khop tuyet doi (do duoc lech 39.8m).
-        this._uzExported = Array.isArray(t.uz) ? t.uz : null;
-        this._uzAmbigExported = Array.isArray(t.uzAmbig) ? t.uzAmbig : null;
         this._buildAccel();
     }
 
@@ -159,20 +168,13 @@ class World {
         // Không được gán lại: `this._uz = this._buildUTable()` sẽ ghi đè bằng
         // undefined và giết bảng u => mọi điểm ngoài "bin mâu thuận" coi u = 0
         // => terrain JS lệch tới 91m so với Python => XE KHÔNG BÁM ĐƯỜNG.
-        // BẢNG u ĐÃ EXPORT từ generator (nguồn sự thật duy nhất).
-        // `world.json` trước đây KHÔNG có key `uz` => JS tự dựng lại bảng u
-        // từ corridor đã làm tròn: HAI BẢNG ĐỘC LẬP của cùng một bảng, nên
-        // không bao giờ khớp tuyệt đối. Giờ generator export thẳng `uz` +
-        // `uzAmbig` (đã làm tròn 3 chữ số thập phân ở z, 6 ở u => sai số
-        // dưới 1cm), JS chỉ việc đọc.
-        if (this._uzExported && this._uzExported.length > 1) {
+        if (this._uzExported && this._uzExported.length) {
+            // generator đã export sẵn bảng u + bin mâu thuận -> DÙNG THẲNG.
             this._uz = this._uzExported;
-            this._uzAmbig = new Set(this._uzAmbigExported || []);
+            this._uzAmbig = this._uzAmbigExported || new Set();
         } else {
-            if (this._uzExported) {
-                console.warn('[map] terrain.uz thiếu trong world.json — dựng lại ' +
-                    'từ corridor. Parity terrain chỉ đúng tới sai số làm tròn.');
-            }
+            // world.json cũ chưa có `uz` -> dựng lại từ corridor (chỉ để data
+            // cũ còn chạy; sau khi generator chạy lại là nhánh này chết).
             this._buildUTable();
         }
         this._buildWaterIndex();
@@ -244,13 +246,15 @@ class World {
         // hướng TÂY BẮC (z tăng lại) => z KHÔNG đơn điệu. Ở bin có 2 nhánh
         // corridor, bảng u(z) không quyết định được -> fallback nearest-point.
         //
-        // ⚠ PARITY: bin key phải KHỚP `int(math.floor(z / binM))` của Python.
-        // Python dùng `int(math.floor(...))`, KHÔNG phải `int()` trunc — nên
-        // phải `Math.floor` cho cả số âm. Dùng `Math.ceil` ở đây là bug đã
-        // gây lệch cao độ 52m (xem `_uAtZ`).
+        // ⚠ PARITY: bin key phải KHỚP với Python.int(math.floor(z / binM)).
+        // Python int() TRUNC về 0 cho số âm, còn Math.floor() LÀM TRÒN XUỐNG.
+        // Với z âm (khu Phan Thiet/Dau Giay) 2 cách ra key khác nhau ->
+        // 2 bảng u khác nhau -> terrain lệch tới 91m -> XE KHÔNG BÁM ĐƯỜNG.
+        // => dùng trunc về 0.
         const bins = new Map();
         for (const p of this.corridor) {
-            const k = Math.floor(p[1] / binM);
+            const q = p[1] / binM;
+            const k = q < 0 ? Math.ceil(q) : Math.floor(q);   // == int() cua Python
             let a = bins.get(k);
             if (!a) { a = []; bins.set(k, a); }
             a.push(p[2]);
@@ -319,14 +323,8 @@ class World {
     _uAtZ(z, x) {
         const uz = this._uz;
         if (!uz || uz.length === 0) return 0;
-        // ⚠ PARITY: khoa bin PHẢI là `int(math.floor(z/250))` của Python.
-        // Python dùng `int(math.floor(...))` => -945 cho z = -236242.1.
-        // Comment cũ bảo phải dùng `Math.ceil` cho số âm ("int() của Python
-        // TRUNC về 0") — SAI: đã đổi thành `int(math.floor())` nhưng JS quên
-        // theo. Hệ quả: tra bin khác => dòng này vào nhánh `_uNearest` ở bin
-        // ambigu trong khi Python nội suy => u lệch 2.7m => cao độ lệch 52m.
-        // Đo được tại (-195941, -236242): py u=24.88, js u=22.21.
-        const kb = Math.floor(z / 250);
+        const q = z / 250;
+        const kb = q < 0 ? Math.ceil(q) : Math.floor(q);   // == int() cua Python
         if (x !== undefined && this._uzAmbig && this._uzAmbig.has(kb)) {
             return this._uNearest(x, z);
         }
@@ -630,6 +628,34 @@ class MeshAccum {
         for (const p of points) this.pos.push(p[0], p[1], p[2]);
         for (let i = 1; i < points.length - 1; i++) this.idx.push(base, base + i, base + i + 1);
         this.n += points.length;
+    }
+
+    // P41 — VÁY BÊN (+ MẶT ĐÁY): biến mặt phẳng thành KHỐI có thân.
+    // `bottoms[i]` = cao độ đáy của đỉnh i: bình thường là mặt đất (váy
+    // chạm tận đất, không lơ lửng); cầu vượt thì `y - ROAD_THICK` và có
+    // mặt đáy để nhìn được từ dưới lên.
+    skirt(points, bottoms, withBottom) {
+        const n = points.length;
+        if (n < 3) return;
+        const base = this.n;
+        for (let i = 0; i < n; i++) {
+            const p = points[i];
+            this.pos.push(p[0], p[1], p[2]);        // 2i    trên
+            this.pos.push(p[0], bottoms[i], p[2]);  // 2i+1  dưới
+        }
+        for (let i = 0; i < n; i++) {
+            const a = base + i * 2;
+            const b = base + i * 2 + 1;
+            const c = base + ((i + 1) % n) * 2;
+            const d = base + ((i + 1) % n) * 2 + 1;
+            this.idx.push(a, c, d, a, d, b);
+        }
+        this.n += n * 2;
+        if (!withBottom) return;
+        const bb = this.n;
+        for (let i = 0; i < n; i++) this.pos.push(points[i][0], bottoms[i], points[i][2]);
+        for (let i = 1; i < n - 1; i++) this.idx.push(bb, bb + i + 1, bb + i);
+        this.n += n;
     }
     get empty() { return this.n === 0; }
     build(material, name) {
@@ -1109,6 +1135,81 @@ export class MapLoader {
         return best;
     }
 
+    // P41 — MẶT TRÊN CÙNG, LIÊN TỤC THEO CAO ĐỘ XE.
+    //
+    // `_nearestRoad` trả đường GẦN NHẤT về mặt bằng. Ở cầu vượt / ramp
+    // chạy song song đường khác, "gần nhất" là SAI: xe đang trên cầu bị kéo
+    // xuống đường dưới (chui xuống) hoặc từ dưới bị kéo lên cầu (bay lên).
+    // Ở đây dò MỌI mặt đường trong `SURFACE_REACH`, chọn cái nào cao độ
+    // gần `yHint` nhất — tức mặt xe đang đứng trên đó.
+    // Không có `yHint` (spawn / NPC) thì lấy mặt CAO NHẤT: không bao giờ
+    // chui xuống dưới vật cản.
+    // `maxDist`: ban kinh chap nhan (mac dinh = nua be mat duong + 2m, dung
+    // cho viec xe co that tren duong). Sân bến cần bán kính lớn hơn nhiều —
+    // xem `_surfaceAtYard`.
+    _surfaceAt(x, z, yHint = null, maxDist = 0) {
+        if (!this._roadIdx || !this.roadGraph) return null;
+        const c = this._roadCell;
+        const span = Math.ceil(Math.max(SURFACE_REACH, maxDist) / c) + 1;
+        const cx = Math.floor(x / c) + 524288, cz = Math.floor(z / c) + 524288;
+        let best = null, bestScore = Infinity;
+        const seen = new Set();
+        for (let dx = -span; dx <= span; dx++) {
+            for (let dz = -span; dz <= span; dz++) {
+                const arr = this._roadIdx.get((cx + dx) * 1048576 + (cz + dz));
+                if (!arr) continue;
+                for (let i = 0; i < arr.length; i++) {
+                    const sid = arr[i];
+                    if (seen.has(sid)) continue;
+                    seen.add(sid);
+                    const seg = this.roadGraph.getSegment(sid);
+                    if (!seg) continue;
+                    const p1 = this.roadGraph.getNode(seg.from);
+                    const p2 = this.roadGraph.getNode(seg.to);
+                    if (!p1 || !p2) continue;
+                    const ddx = p2.x - p1.x, ddz = p2.z - p1.z;
+                    const l2 = ddx * ddx + ddz * ddz;
+                    if (l2 <= 0) continue;
+                    const t = clamp(((x - p1.x) * ddx + (z - p1.z) * ddz) / l2, 0, 1);
+                    const qx = p1.x + ddx * t, qz = p1.z + ddz * t;
+                    const ex = x - qx, ez = z - qz;
+                    const d = Math.sqrt(ex * ex + ez * ez);
+                    const width = seg.width || 12;
+                    const lim = maxDist > 0 ? maxDist : width * 0.5 + 2.0;
+                    if (d > lim) continue;
+                    const y1 = typeof p1.y === "number" ? p1.y : this.world.getElevation(p1.x, p1.z);
+                    const y2 = typeof p2.y === "number" ? p2.y : this.world.getElevation(p2.x, p2.z);
+                    const rawY = lerp(y1, y2, t);
+                    const score = (yHint === null || yHint === undefined)
+                        ? -rawY
+                        : Math.abs(rawY - yHint) + d * 0.02;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        // KHÔNG `+ roadLift`: `roadLift` chỉ nâng MẶT ĐƯỜNG
+                        // (hình học) để tránh z-fighting, không phải cao độ xe.
+                        // Xe chạy ở `bus.y = road.y + BUS_AXLE` (đo được:
+                        // 2.883 = road.y 2.383 + 0.5). Cộng roadLift ở đây
+                        // làm lệch 0.12m so với `_nearestRoad` cũ.
+                        best = { y: rawY, rawY, dist: d, width, sid, seg };
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    // P46 — MẶT SÂN BẾN: tra đường nội bộ ở bán kính RỘNG.
+    //
+    // Đo được (sân Nam Tuy Hòa sau P44): mặt trên cao từ 2.983 tới 5.427 —
+    // lệch 2.44m. Nguyên nhân: `_surfaceAt` chỉ nhận điểm trong
+    // `width*0.5 + 2` của trục đường, nên phần sân ở xa đường (góc sân, lưới
+    // lát) rơi về fallback một số `s.y`. Mà sân là MỘT MẶT PHẲNG BÊ TÔNG
+    // phủ kín cả khu vực, nên điểm xa đường vẫn phải nối đúng độ cao từ
+    // đường nội bộ gần nhất.
+    _surfaceAtYard(x, z, yHint = null, reach = 160.0) {
+        return this._surfaceAt(x, z, yHint, reach);
+    }
+
     _buildRoadGroup() { /* roads render theo chunk trong _loadChunk */ }
 
     // ---------------------------------------------------------------------
@@ -1377,6 +1478,29 @@ export class MapLoader {
             });
             getAcc(this._roadBucket(seg.class)).poly(pts);
 
+            // ---- P41: THÂN ĐƯỜNG -------------------------------------------------
+            // Váy bên đi xuống tận MẶT ĐẤT, không phải một bề dày cố định
+            // lơ lửng: đường đi trên sườn phải có nền đắp — đó là cách
+            // người ta thấy đường trong thực tế, và cũng là thứ khiến xe
+            // trông như đang lơ lửng trên một dải texture.
+            // Cầu vượt thì CỐ Ý nổi: đáy = y - ROAD_THICK + mặt đáy.
+            const floating = !!seg.bridge;
+            const gSide = getAcc("__SIDE__");
+            const bottoms = new Array(pts.length);
+            let needBottom = floating;
+            for (let i = 0; i < pts.length; i++) {
+                const q = pts[i];
+                if (floating) {
+                    bottoms[i] = q[1] - ROAD_THICK;
+                } else {
+                    const g = this.world.getElevation(q[0], q[2]);
+                    bottoms[i] = Math.min(q[1] - ROAD_THICK, g - 0.05);
+                    // váy sâu > 1.2m thì nhìn thấy đáy khi xe đi cạnh
+                    if (q[1] - bottoms[i] > 1.2) needBottom = true;
+                }
+            }
+            gSide.skirt(pts, bottoms, needBottom);
+
             // median + shoulder cho cao tốc
             if (seg.class === "EXPRESSWAY") {
                 const mw = 1.6, sw = 2.6;
@@ -1581,6 +1705,7 @@ export class MapLoader {
             else if (cls === "__LINE__") mat = this._mats.laneLine;
             else if (cls === "__SIDEWALK__") mat = this._mats.sidewalk;
             else if (cls === "__STOPLINE__") mat = this._mats.laneLine;
+            else if (cls === "__SIDE__") mat = this._mats.shoulder;
             else if (cls.indexOf("__JUNCTION__") === 0) mat = this._matByClass(cls.slice(12));
             else mat = this._matByClass(cls);
             parent.add(a.build(mat, `road_${cls}`));
@@ -2306,11 +2431,69 @@ export class MapLoader {
             g.rotation.y = s.rot || 0;
             const W = s.w || 180, D = s.d || 130;
 
-            // 1) sân bến
-            const yard = new THREE.Mesh(new THREE.PlaneGeometry(W, D), M.concrete);
-            yard.rotation.x = -Math.PI / 2;
-            yard.position.y = this.world.yardLift;
-            g.add(yard);
+            // 1) SÂN BẾN — KHỐI có thân, mặt trên BÁM THEO ĐƯỜNG NỘI BỘ
+            //
+            // Bản cũ: `PlaneGeometry(W, D)` đặt ở MỘT cao độ `s.y + yardLift`.
+            // Đo được: san nghiêng 1-2m giữa hai đầu (đường nội bộ trong sân
+            // bị `_grade_roads` hạ/cắt khác nhau) nên xe ở đầu này biến mất
+            // xuống dưới sân ở đầu kia. Và sân là mặt phẳng không thân → mép
+            // lơ lửng trên nền (tb 0.84m, max 3.05m).
+            //
+            // Nay: lưới 16x12, mỗi đỉnh lấy cao độ bằng `_surfaceAt` tại đúng
+            // vị trí đó (tức mặt đường nội bộ tại chỗ), rồi đúc thành khối có
+            // váy bên chạm tận mặt đất.
+            {
+                const NX = 16, NZ = 12;
+                const sa_ = Math.sin(s.rot || 0), ca_ = Math.cos(s.rot || 0);
+                const toW = (lx, lz) => [s.x + lx * sa_ + lz * ca_,
+                                         s.z + lx * ca_ - lz * sa_];
+                const yl = this._yardLift();
+                const top = new MeshAccum();
+                const side = new MeshAccum();
+                // ĐỈNH Ở HỆ CỤC BỘ của group (group đặt tại (s.x, s.y, s.z)
+                // và xoay s.rot) — đưa toạ độ world vào sẽ bị biến đổi 2 lần.
+                // `wx/wz` chỉ dùng cho TRUY VẤN (surface + terrain), vốn làm
+                // việc ở hệ toạ độ thế giới.
+                const grid = [];
+                for (let iz = 0; iz <= NZ; iz++) {
+                    const row = [];
+                    for (let ix = 0; ix <= NX; ix++) {
+                        const lx = -W / 2 + (W * ix) / NX;
+                        const lz = -D / 2 + (D * iz) / NZ;
+                        const [wx, wz] = toW(lx, lz);
+                        const su = this._surfaceAtYard(wx, wz, s.y);
+                        // chỉ nhận mặt đường khi nằm TRONG sân
+                        const y = su ? su.y : s.y;
+                        row.push([lx, y + yl - s.y, lz]);
+                    }
+                    grid.push(row);
+                }
+                for (let iz = 0; iz < NZ; iz++) {
+                    for (let ix = 0; ix < NX; ix++) {
+                        const a = grid[iz][ix], b = grid[iz][ix + 1];
+                        const c = grid[iz + 1][ix + 1], d = grid[iz + 1][ix];
+                        top.quad(a, b, c, d);
+                        // `q` là cục bộ; `getElevation` cần world -> tra
+                        // lại qua `toW`, và cộng lại `s.y` cho trục Y.
+                        const ring = [a, b, c, d];
+                        const bots = ring.map(q => {
+                            const [wxq, wzq] = toW(q[0], q[2]);
+                            return Math.min(q[1] - ROAD_THICK,
+                                this.world.getElevation(wxq, wzq) - 0.05);
+                        });
+                        let deep = 0;
+                        for (let k = 0; k < 4; k++) {
+                            const d2 = ring[k][1] - bots[k];
+                            if (d2 > deep) deep = d2;
+                        }
+                        side.skirt(ring, bots, deep > 1.2);
+                    }
+                }
+                const yard = top.build(M.concrete, `yard_${s.id}`);
+                yard.position.set(0, 0, 0);
+                g.add(yard);
+                if (!side.empty) g.add(side.build(M.shoulder, `yardSide_${s.id}`));
+            }
 
             // 2) vạch ranh sân
             const edge = new THREE.Mesh(this._geos.unitBox, M.paintWhite);
@@ -2318,82 +2501,43 @@ export class MapLoader {
             edge.position.set(0, this.world.yardLift + 0.03, D / 2 - 2);
             g.add(edge);
 
-            // 3)+4) NHÀ GA + TIỆN ÍCH — LẤY TỪ DATA, KHÔNG HARDCODE.
-            // `stations[].structures[]` do generator ghi ra với toạ độ CỤC BỘ
-            // đúng convention của `g` (g.position = tâm, g.rotation.y = rot)
-            // nên dùng thẳng `position.set(ox, y, oz)`, không cần quy đổi.
-            // Bản cũ tự tính lại ở toạ độ khác => lệch khung, mũi làn đỗ
-            // chọc vào nhà ga (4/5 bến).
-            const STRUCTS = Array.isArray(s.structures) ? s.structures : null;
-            if (STRUCTS && STRUCTS.length) {
-                for (const st2 of STRUCTS) {
-                    const h = st2.type === "TERMINAL" ? 13.0
-                        : (st2.type === "WAREHOUSE" ? 6.0 : 4.2);
-                    const b = new THREE.Mesh(this._geos.unitBox, M.wall);
-                    b.scale.set(st2.w, h, st2.d);
-                    b.position.set(st2.ox, h / 2 + this.world.yardLift, st2.oz);
-                    g.add(b);
-                    if (st2.type === "TERMINAL") {
-                        const glassBand = new THREE.Mesh(this._geos.unitBox, M.glass);
-                        glassBand.scale.set(st2.w * 1.01, 3.4, st2.d * 1.01);
-                        glassBand.position.set(st2.ox, 8.6 + this.world.yardLift,
-                                               st2.oz);
-                        g.add(glassBand);
-                        const roof = new THREE.Mesh(this._geos.unitBox, M.roof);
-                        roof.scale.set(st2.w * 1.12, 0.7, st2.d * 1.15);
-                        roof.position.set(st2.ox, h + this.world.yardLift + 0.3,
-                                          st2.oz);
-                        g.add(roof);
-                        // mái đón khách
-                        const awn = new THREE.Mesh(this._geos.unitBox, M.metal);
-                        awn.scale.set(st2.w * 0.9, 0.3, 6);
-                        awn.position.set(st2.ox, 5.2, st2.oz + st2.d / 2 + 3);
-                        g.add(awn);
-                    } else {
-                        const r = new THREE.Mesh(this._geos.roofPyramid, M.roof);
-                        r.scale.set(st2.w * 0.9, 2.0, st2.d * 0.9);
-                        r.position.set(st2.ox, h + 1.0 + this.world.yardLift,
-                                      st2.oz);
-                        r.rotation.y = Math.PI / 4;
-                        g.add(r);
-                    }
-                }
-            } else {
-                // data cũ (không có `structures`): giữ layout dự phòng
-                const tbW = W * 0.34, tbD = D * 0.22, tbH = 13;
-                const tb = new THREE.Mesh(this._geos.unitBox, M.wall);
-                tb.scale.set(tbW, tbH, tbD);
-                tb.position.set(-W * 0.12, tbH / 2 + this.world.yardLift, -D * 0.28);
-                g.add(tb);
-                const glassBand = new THREE.Mesh(this._geos.unitBox, M.glass);
-                glassBand.scale.set(tbW * 1.01, 3.4, tbD * 1.01);
-                glassBand.position.set(-W * 0.12, 8.6 + this.world.yardLift, -D * 0.28);
-                g.add(glassBand);
-                const roof = new THREE.Mesh(this._geos.unitBox, M.roof);
-                roof.scale.set(tbW * 1.12, 0.7, tbD * 1.15);
-                roof.position.set(-W * 0.12, tbH + this.world.yardLift + 0.3, -D * 0.28);
-                g.add(roof);
-                const awn = new THREE.Mesh(this._geos.unitBox, M.metal);
-                awn.scale.set(tbW * 0.9, 0.3, 6);
-                awn.position.set(-W * 0.12, 5.2, -D * 0.28 + tbD / 2 + 3);
-                g.add(awn);
-                const utils = [
-                    { x: -W * 0.38, z: D * 0.28, w: 10, d: 8, h: 4.5 },
-                    { x: W * 0.36, z: -D * 0.22, w: 9, d: 7, h: 4.0 },
-                    { x: W * 0.36, z: D * 0.26, w: 14, d: 10, h: 6.0 },
-                    { x: -W * 0.36, z: -D * 0.05, w: 8, d: 6, h: 3.6 }
-                ];
-                for (const u of utils) {
-                    const b = new THREE.Mesh(this._geos.unitBox, M.wall);
-                    b.scale.set(u.w, u.h, u.d);
-                    b.position.set(u.x, u.h / 2 + this.world.yardLift, u.z);
-                    g.add(b);
-                    const r = new THREE.Mesh(this._geos.roofPyramid, M.roof);
-                    r.scale.set(u.w * 0.9, 2.0, u.d * 0.9);
-                    r.position.set(u.x, u.h + 1.0 + this.world.yardLift, u.z);
-                    r.rotation.y = Math.PI / 4;
-                    g.add(r);
-                }
+            // 3) nhà ga (ticket building) — toà nhà 2 tầng + mái + cửa kính
+            const tbW = W * 0.34, tbD = D * 0.22, tbH = 13;
+            const tb = new THREE.Mesh(this._geos.unitBox, M.wall);
+            tb.scale.set(tbW, tbH, tbD);
+            tb.position.set(-W * 0.12, tbH / 2 + this.world.yardLift, -D * 0.28);
+            g.add(tb);
+            const glassBand = new THREE.Mesh(this._geos.unitBox, M.glass);
+            glassBand.scale.set(tbW * 1.01, 3.4, tbD * 1.01);
+            glassBand.position.set(-W * 0.12, 8.6 + this.world.yardLift, -D * 0.28);
+            g.add(glassBand);
+            const roof = new THREE.Mesh(this._geos.unitBox, M.roof);
+            roof.scale.set(tbW * 1.12, 0.7, tbD * 1.15);
+            roof.position.set(-W * 0.12, tbH + this.world.yardLift + 0.3, -D * 0.28);
+            g.add(roof);
+            // mái đón khách
+            const awn = new THREE.Mesh(this._geos.unitBox, M.metal);
+            awn.scale.set(tbW * 0.9, 0.3, 6);
+            awn.position.set(-W * 0.12, 5.2, -D * 0.28 + tbD / 2 + 3);
+            g.add(awn);
+
+            // 4) tiện ích
+            const utils = [
+                { x: -W * 0.38, z: D * 0.28, w: 10, d: 8, h: 4.5 },
+                { x: W * 0.36, z: -D * 0.22, w: 9, d: 7, h: 4.0 },
+                { x: W * 0.36, z: D * 0.26, w: 14, d: 10, h: 6.0 },
+                { x: -W * 0.36, z: -D * 0.05, w: 8, d: 6, h: 3.6 }
+            ];
+            for (const u of utils) {
+                const b = new THREE.Mesh(this._geos.unitBox, M.wall);
+                b.scale.set(u.w, u.h, u.d);
+                b.position.set(u.x, u.h / 2 + this.world.yardLift, u.z);
+                g.add(b);
+                const r = new THREE.Mesh(this._geos.roofPyramid, M.roof);
+                r.scale.set(u.w * 0.9, 2.0, u.d * 0.9);
+                r.position.set(u.x, u.h + 1.0 + this.world.yardLift, u.z);
+                r.rotation.y = Math.PI / 4;
+                g.add(r);
             }
 
             // 5) mái che + nan đỗ (theo baySlots thật từ generator)
@@ -2401,10 +2545,9 @@ export class MapLoader {
             const usedX = new Set();
             for (let i = 0; i < slots.length; i++) {
                 const slot = slots[i];
-                // quy đổi ĐÚNG CHIỀU (xem `_toLocalX`): bản cũ hoán ox/oz và
-                // sai dấu nên nan đỗ vẽ lệch sang phía sân bịa.
-                const lxx = this._toLocalX(slot.x, slot.z, s.x, s.z, s.rot);
-                const lzz = this._toLocalZ(slot.x, slot.z, s.x, s.z, s.rot);
+                const lx = slot.x - s.x, lz = slot.z - s.z;
+                const c = Math.cos(-(s.rot || 0)), sn = Math.sin(-(s.rot || 0));
+                const lxx = lx * c - lz * sn, lzz = lx * sn + lz * c;
                 // nan nằm trên mặt sân tại độ cao thật của slot (sân có thể nghiêng)
                 const baseY = (typeof slot.y === "number" && typeof s.y === "number")
                     ? (slot.y - s.y) : this.world.yardLift;
@@ -2450,31 +2593,6 @@ export class MapLoader {
             this.stationGroup.add(g);
             track(g, s, 2600);
         }
-    }
-
-    /**
-     * World -> toạ độ CỤC BỘ của bến, đúng CHIỀU NGƯỢC của phép quy đổi
-     * generator dùng:
-     *     x = cx + ox*sa + oz*ca
-     *     z = cz + ox*ca - oz*sa
-     * Suy ra (ma trận trực giao):
-     *     ox = lx*sa + lz*ca
-     *     oz = lx*ca - lz*sa
-     *
-     * ⚠ Bản cũ dùng `lxx = lx*cos(-rot) - lz*sin(-rot)` → HOÁN ox/oz và sai
-     * dấu, làm nan đỗ / vạch sân lệch khung (đo được: 4/5 bến mũi làn đỗ
-     * nằm trong nhà ga).
-     */
-    _toLocalX(px, pz, cx, cz, rot) {
-        const sa = Math.sin(rot || 0), ca = Math.cos(rot || 0);
-        const lx = px - cx, lz = pz - cz;
-        return lx * sa + lz * ca;
-    }
-
-    _toLocalZ(px, pz, cx, cz, rot) {
-        const sa = Math.sin(rot || 0), ca = Math.cos(rot || 0);
-        const lx = px - cx, lz = pz - cz;
-        return lx * ca - lz * sa;
     }
 
     // BIỂN TÊN BẾN — texture chữ thật (CanvasTexture), 1 cái / bến = 5 cái
@@ -2795,9 +2913,18 @@ export class MapLoader {
     // ----------------------------------------------------------------- API
     // getTerrainHeight: trên đường -> node.y - BUS_AXLE (để bus.y == mặt đường),
     // ngoài đường -> terrain thật. Đây là hàm main.js gọi MỖI FRAME.
-    getTerrainHeight(x, z) {
+    // P43 — `roadLift` / `yardLift` được set trên lớp `WorldTerrain`
+    // (`this.world`), KHÔNG có trên `MapLoader`. Dùng `this.roadLift` ở đây
+    // là `undefined` ⇒ phép cộng ra NaN ⇒ xe đứng ở NaN. Đo được:
+    // `loaderRoadLift = UNDEFINED` còn `worldRoadLift = 0.12`.
+    _roadLift() { return (this.world && this.world.roadLift) || ROAD_LIFT; }
+    _yardLift() { return (this.world && this.world.yardLift) || YARD_LIFT; }
+
+    // P41 — `yHint`: cao độ xe đang ở. Truy vấn mặt trên cùng LIÊN TỤC
+    // để xe leo được ramp / chạy được cầu / không chui xuống đường dưới.
+    getTerrainHeight(x, z, yHint = null) {
         if (!this.world) return 10;
-        const road = this._nearestRoad(x, z);
+        const road = this._surfaceAt(x, z, yHint);
         if (road) return road.y - BUS_AXLE;
         return this.world.getElevation(x, z);
     }

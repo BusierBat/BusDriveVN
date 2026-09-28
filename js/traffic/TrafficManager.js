@@ -20,8 +20,11 @@ export class TrafficManager {
         this.graphics.onChange(() => this._onSettingsChanged());
         loadNpcSkinList();
         
-        this.spawnDistance = 200;
-        this.despawnDistance = 500;
+        // Xe buýt chạy đường dài: phải THẤY xe khi đang lái, không phải 1-2
+        // xe sát đuôi. Spawn trong cửa sổ 110-340m, despawn ở 720m. Số xe
+        // đồng thời vẫn bị chặn bởi maxActive (không tăng tải máy yếu).
+        this.spawnDistance = 340;
+        this.despawnDistance = 720;
         this.spawnTimer = 0;
         this.spawnInterval = 0.5;
         this.maxSpawnPerFrame = 2;
@@ -36,22 +39,42 @@ export class TrafficManager {
         this.stationSpawnTimer = 0;
     }
 
+    // Loc segment hop le de spawn (bo qua nghin doan khong dung class/lo):
+    // bo qua ham, duong noi bo ben xe, ramp cao toc, ngo cut.
+    _segOk(s) {
+        if (!s) return false;
+        if (s.type === 'tunnel' || s.type === 'bus_station_road' || s.type === 'highway_ramp') return false;
+        if (s.class === 'TUNNEL' || s.class === 'RAMP' || s.class === 'INTERNAL' ||
+            s.class === 'SERVICE' || s.class === 'STATION_ACCESS' || s.class === 'ALLEY') return false;
+        const f = this.roadGraph.getNode(s.from);
+        const t = this.roadGraph.getNode(s.to);
+        if (!f || !t) return false;
+        return Math.hypot(t.x - f.x, t.z - f.z) > 12;
+    }
+
     _spawnVehicle() {
         if (!this.isGraphMode) return null;
-        if (!this._validSegsCache) {
-            // Lọc các segment hợp lệ để spawn traffic (tránh tunnel, station road, ramp)
-            this._validSegsCache = this.roadGraph.segments.filter(s => {
-                if (!s || s.type === 'tunnel' || s.type === 'bus_station_road' || s.type === 'highway_ramp') return false;
-                const f = this.roadGraph.getNode(s.from);
-                const t = this.roadGraph.getNode(s.to);
-                return f && t; // Đảm bảo node tồn tại
-            });
+        const px = this.lastPlayerPos.x, pz = this.lastPlayerPos.z;
+
+        // CHI boc trong ban kinh quanh nguoi choi. Truoc day boc ngau nhien tren
+        // toan bo ~10k doan duong (rai khap 500km) roi moi loai xe phai nam
+        // trong 100-200m => ve co xac suat 0, thuc te game khong co xe nao.
+        const near = (typeof this.roadGraph.segmentsNear === 'function')
+            ? this.roadGraph.segmentsNear(px, pz, this.spawnDistance * 2.2, s => this._segOk(s))
+            : null;
+        let pool = near;
+        if (!pool || pool.length === 0) {
+            if (!this._validSegsCache) {
+                this._validSegsCache = this.roadGraph.segments.filter(s => this._segOk(s));
+            }
+            if (!this._validSegsCache.length) return null;
+            pool = this._validSegsCache;
         }
-        if (this._validSegsCache.length === 0) return null;
 
         let candidate = null;
-        for (let i = 0; i < 15; i++) {
-            const seg = this._validSegsCache[Math.floor(this.random() * this._validSegsCache.length)];
+        for (let i = 0; i < 20; i++) {
+            const seg = pool[Math.floor(this.random() * pool.length)];
+            if (!seg) continue;
             const dir = seg.twoWay ? Math.floor(this.random() * 2) : 0;
             const f = this.roadGraph.getNode(seg.from);
             const t = this.roadGraph.getNode(seg.to);

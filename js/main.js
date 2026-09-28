@@ -1,6 +1,6 @@
 // js/main.js
 import * as THREE from "three";
-import { MapLoader } from "./MapLoader.js";
+import { MapLoader } from "./map.js";
 import { createUI } from "./ui.js";
 import { createNPC } from "./npc.js";
 import { createBus, loadNpcSkinList } from "./bus.js";
@@ -77,7 +77,12 @@ function updateVehiclePhysics(dt) {
         if (phys.speed < 0) {
             phys.speed += phys.braking * dt;
             if (phys.speed > 0) phys.speed = 0;
-        } else if (phys.speed === 0) {
+        } else {
+            // BUG CU: `else if (phys.speed === 0)` -> chi tang toc O MOT FRAME.
+            // speed len >0 roi khong con nhanh nao khop `isAccel` nua, ga chet
+            // o 1 km/h ma cam ga. Chi can `else` la ga thuong chay duoc.
+            // Tran 30 km/h: speed la m/s, SPEED_CONVERSION = 0.2777 m/s/km/h
+            // => 30 * SPEED_CONVERSION = 8.33 m/s. (KHONG chia, se ra 388 km/h)
             phys.speed += phys.acceleration * dt;
             phys.speed = Math.min(phys.speed, 30 * SPEED_CONVERSION);
         }
@@ -133,8 +138,24 @@ function updateVehiclePhysics(dt) {
     }
     
     // ĐỊA HÌNH PHẲNG TUYỆT ĐỐI - KHÔNG RAYCAST
-    const targetY = map ? map.getTerrainHeight(bus.group.position.x, bus.group.position.z) + 0.5 : 10.5;
-    bus.group.position.y = targetY;
+    //
+    // P41/P42: truyền `yHint` = cao độ xe ĐANG ở. Không có nó thì thuật toán
+    // mặt trên cùng phải chọn theo "cao nhất" ⇒ đi ngang dưới cầu vượt là
+    // nhảy lên cầu. Có `yHint` thì nó bám đúng mặt xe đang đứng trên đó, và
+    // đi lên ramp/cầu vượt vẫn leo được vì cao độ thay đổi liên tục.
+    const yHint = bus.group.position.y;
+    const targetY = map
+        ? map.getTerrainHeight(bus.group.position.x, bus.group.position.z, yHint) + 0.5
+        : 10.5;
+
+    // Bám mặt đường MƯỢT mà vẫn không rơi khỏi mặt: giới hạn tốc độ đổi
+    // cao độ mỗi frame. Chặn trên là bám (mượt), nhưng vẫn cho xe đuổi kịp
+    // khi cầu dốc — nếu cứ khóa cứng thì xe bám trụ trên mặt cầu.
+    const maxStep = 0.9 + Math.abs(speedKmh) * 0.06;
+    let ny = targetY;
+    if (targetY > yHint + maxStep) ny = yHint + maxStep;
+    else if (targetY < yHint - maxStep) ny = yHint - maxStep;
+    bus.group.position.y = ny;
     
     // Visual Pitch/Roll
     const pitchAngle = isBrake ? -0.04 : (isAccel ? 0.02 : 0);
@@ -212,8 +233,13 @@ function handleCommand(cmd) {
 }
 
 function togglePause() {
-    if (gameState === "playing") { paused = true; }
-    else if (paused) { paused = false; clock.getDelta(); }
+    // BUG CU: `if (gameState === "playing") paused = true;` luon chay khi dang
+    // choi, nen `else if (paused)` KHONG BAO GIO duoc thuc thi -> nhan Escape
+    // lan 1 pause, lan 2 van pause, lan 3 van pause... game bi khoa pause, chunk
+    // khong load (loadedChunks = 0), xe khong di duoc.
+    if (gameState !== "playing") return;
+    paused = !paused;
+    if (!paused) clock.getDelta();   // reset delta, khong cho physics nhy lon sau pause
 }
 
 let hudTimer = 0;
@@ -326,7 +352,14 @@ function setupMenuEvents() {
     });
 }
 
+// CHỐNG BẤM NÚT NHIỀU LẦN: bấm đúp "Lái xe thôi" hoặc bấm lúc đang tải sẽ
+// chạy init 2 lần song song -> biến null (roadGraph/bus) -> crash
+// "Cannot read properties of null (reading 'pois')".
+let startingGame = false;
 async function startGameFromMenu() {
+    if (startingGame) return;
+    if (gameState === "playing") return;
+    startingGame = true;
     ui.hideMainMenu();
     ui.setLoading("Đang tải...", 0.1);
     await new Promise(r => setTimeout(r, 100));
@@ -354,6 +387,22 @@ async function startGameFromMenu() {
         bus.group.position.set(spawn.x, spawn.y, spawn.z);
         bus.group.rotation.y = (spawn.heading || 0) + Math.PI / 2;
         bus.group.name = 'player_bus';
+        // DEBUG HOOK: đo FPS / draw call / instance thật từ console
+        // (window.__busvn.renderer.info.render.calls). Không ảnh hưởng logic.
+        window.__busvn = {
+            THREE,
+            get renderer() { return renderer; },
+            get scene() { return scene; },
+            get camera() { return camera; },
+            get map() { return map; },
+            get bus() { return bus; },
+            get npc() { return npc; },
+            get traffic() { return trafficManager; },
+            // Dựng 1 khung hình thủ công (tab bị ẩn thì requestAnimationFrame
+            // bị treo -> không test được). Dùng để đo FPS/draw call thật.
+            tick: (times = 1) => { for (let i = 0; i < times; i++) loop(); },
+            state: () => ({ gameState, paused, webglLost, renderRadius: map?.renderRadius })
+        };
         if (window.collisionSystem) playerColId = window.collisionSystem.register(bus.group.position.x, bus.group.position.z, 4.0, 'player');
         cameraSystem = new CameraSystem(camera, bus.group);
         cameraSystem.setMode("driver");
@@ -363,11 +412,12 @@ async function startGameFromMenu() {
         ui.setLoading("Giao thông & Hành khách...", 0.8);
         await loadNpcSkinList();
         const roadGraph = map.getRoadGraph();
+        if (!roadGraph) throw new Error("Road graph chưa sẵn sàng — loadInitialData() lỗi?");
         npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: { x: spawn.x, z: spawn.z } });
         trafficManager = createTrafficManager({ scene, roadGraph: roadGraph, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 });
         
         // Setup station traffic from POIs
-        if (roadGraph.pois) {
+        if (roadGraph && roadGraph.pois) {
             for (const poi of roadGraph.pois) {
                 if (poi.type === 'BUS_STATION' || poi.type === 'MAJOR_BUS_TERMINAL' || poi.type === 'REST_AREA' || poi.type === 'FUEL_STATION') {
                     trafficManager.setupStationTraffic(poi);
@@ -391,6 +441,8 @@ async function startGameFromMenu() {
         console.error("❌ Lỗi chi tiết:", error);
         alert("Lỗi tải game:\n" + error.message + "\n\nStack: " + error.stack);
         ui.showMainMenu();
+    } finally {
+        startingGame = false;   // cho phép thử lại nếu lần trước lỗi
     }
 }
 
@@ -403,7 +455,7 @@ function updateWorld(delta) {
     }
     updateVehiclePhysics(delta);
     cameraSystem?.update(delta);
-    if (bus?.group && map) map.updateChunks(bus.group.position.x, bus.group.position.z);
+    if (bus?.group && map) map.updateChunks(bus.group.position.x, bus.group.position.z, delta);
     if (npc) npc.update(delta, 0);
     if (trafficManager) trafficManager.update(delta, { x: bus.group.position.x, z: bus.group.position.z });
     if (passengerSystem) passengerSystem.update(delta);

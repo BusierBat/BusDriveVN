@@ -15,7 +15,7 @@ export class BusStationManager {
         this.stationBuses = [];
         this.busGroup = new THREE.Group();
         this.scene.add(this.busGroup);
-        this.maxStaticBuses = 7;
+        this.maxStaticBuses = 12;
         this.spawnTimer = 0;
         this.spawnQueue = [];
         this.prepareStationSpawns();
@@ -33,7 +33,9 @@ export class BusStationManager {
     _spawnOneBus(slot) {
         if (!slot) return;
         const bus = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
-        bus.group.position.set(slot.position.x, 0.5, slot.position.z);
+        // Y lấy từ data (generator/MapLoader) để xe tĩnh bám mặt sân bến thật
+        const sy = (slot.position && typeof slot.position.y === "number") ? slot.position.y : 0.5;
+        bus.group.position.set(slot.position.x, sy, slot.position.z);
         bus.group.rotation.y = slot.rotation || 0;
         slot.occupied = true;
         this.busGroup.add(bus.group);
@@ -74,12 +76,12 @@ export class TrafficSpawnManager {
             let overlap = false;
             for (let i = 0; i < this.activeVehicles.length; i++) { if (Math.hypot(pos.x - this.activeVehicles[i].vehicle.group.position.x, pos.z - this.activeVehicles[i].vehicle.group.position.z) < 25) { overlap = true; break; } }
             if (overlap) continue;
-            vehicle.group.position.set(pos.x, 0.5, pos.z); vehicle.group.rotation.y = Math.atan2(path[1].x - path[0].x, path[1].z - path[0].z);
+            vehicle.group.position.set(pos.x, pos.y, pos.z); vehicle.group.rotation.y = Math.atan2(path[1].x - path[0].x, path[1].z - path[0].z);
             this.activeVehicles.push({ vehicle, edge, progress, speed: 10 + this.random() * 10 }); return true;
         }
         this.pool.push(vehicle); return false;
     }
-    _getPosOnPath(path, t) { const idx = Math.min(path.length - 2, Math.floor(t * (path.length - 1))); const localT = t * (path.length - 1) - idx; return { x: path[idx].x + (path[idx + 1].x - path[idx].x) * localT, z: path[idx].z + (path[idx + 1].z - path[idx].z) * localT }; }
+    _getPosOnPath(path, t) { const idx = Math.min(path.length - 2, Math.floor(t * (path.length - 1))); const localT = t * (path.length - 1) - idx; const a = path[idx], b = path[idx + 1]; return { x: a.x + (b.x - a.x) * localT, y: (typeof a.y === "number" ? a.y + ((b.y || a.y) - a.y) * localT : 0.5), z: a.z + (b.z - a.z) * localT }; }
     update(dt, playerPos, playerHeading) {
         const toRemove = [];
         for (let i = 0; i < this.activeVehicles.length; i++) {
@@ -107,7 +109,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
     const edges = graph.segments.map(s => {
         const f = graph.getNode(s.from);
         const t = graph.getNode(s.to);
-        return f && t ? { from: s.from, to: s.to, points: [{x:f.x,z:f.z}, {x:t.x,z:t.z}], width: 24, type: s.roadType, twoWay: s.twoWay } : null;
+        return f && t ? { from: s.from, to: s.to, points: [{x:f.x, y:f.y, z:f.z}, {x:t.x, y:t.y, z:t.z}], width: 24, type: s.roadType, twoWay: s.twoWay } : null;
     }).filter(Boolean);
     const edgePaths = edges.map((e) => { const cum = new Float32Array(e.points.length); let total = 0; for (let i = 1; i < e.points.length; i++) { total += Math.hypot(e.points[i].x - e.points[i-1].x, e.points[i].z - e.points[i-1].z); cum[i] = total; } return { cum, total: total || 1 }; });
     const spawnManager = new TrafficSpawnManager({ scene, edges, edgePaths, random, group, targetActive: 15, maxActive: 25, spawnDistance: 350, despawnDistance: 550, seed: seed + 999 });
@@ -126,8 +128,10 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
         const waypoints = graph.getRouteWaypoints();
         if (waypoints.length === 0) return;
         const stationNode = waypoints[0];
+        // Y theo terrain thật (map.getTerrainHeight) => hành khách đứng đúng mặt đất
+        const groundY = map.getTerrainHeight ? map.getTerrainHeight(stationNode.x, stationNode.z) : 0.5;
         for (let i = 0; i < 10; i++) {
-            waitingPassengers.push({ id: `pass_station_${i}`, x: stationNode.x + (random() - 0.5) * 15, z: stationNode.z + (random() - 0.5) * 15, y: 0.5, destination: waypoints[waypoints.length - 1].id });
+            waitingPassengers.push({ id: `pass_station_${i}`, x: stationNode.x + (random() - 0.5) * 15, z: stationNode.z + (random() - 0.5) * 15, y: groundY, destination: waypoints[waypoints.length - 1].id });
         }
         for (let i = 1; i < waypoints.length - 1; i++) {
             if (i > 10) break;
@@ -143,7 +147,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
             const side = random() > 0.5 ? 1 : -1;
             const x = p1.x + dx * 0.5 + rx * offset * side + (random() - 0.5) * 3;
             const z = p1.z + dz * 0.5 + rz * offset * side + (random() - 0.5) * 3;
-            waitingPassengers.push({ id: `pass_road_${i}`, x, z, y: 0.5, destination: waypoints[waypoints.length - 1].id });
+            waitingPassengers.push({ id: `pass_road_${i}`, x, z, y: map.getTerrainHeight ? map.getTerrainHeight(x, z) : 0.5, destination: waypoints[waypoints.length - 1].id });
         }
     }
     generateWaitingPassengers();
