@@ -6,6 +6,68 @@
 // Ngoài API cũ (nodes/segments/routes/pois) có thêm ĐỒ THỊ ĐỒ N HƯỚNG + A*
 // (rule 57). Routing phải hiểu node / edge / direction / junction — chọn nhánh
 // NGẪU NHIÊN ở ngã ba là cách NPC đi lung tung trong map, không phải lái xe.
+// =====================================================================
+// LANE / TRAFFIC METADATA (ADDITIVE — không đổi nodes/segments/routes)
+// roads.json đã có class/type/width/lanes/twoWay/speed. Thay vì tạo thêm
+// 1 file metadata song song (rule 25: không thêm hệ thống song song) và
+// thay vì hardcode (rule 26), ta SUY RA ở đây một lần + cache.
+// Cả TrafficAI lẫn TrafficManager đều đọc qua getLaneMeta() -> 1 nguồn.
+// tools/traffic_audit.py (Python) validate đúng công thức này offline.
+// =====================================================================
+const DEFAULT_SPEED_KMH = {
+    EXPRESSWAY: 90, NATIONAL: 70, TUNNEL: 60, ARTERIAL: 50, RAMP: 40,
+    COLLECTOR: 40, LOCAL: 30, RURAL_LOCAL: 30, ALLEY: 20,
+    SERVICE: 25, STATION_ACCESS: 25, INTERNAL: 15
+};
+// Không đổi làn / không tấp lề tại đây (rule 11: tôn trọng loại đường)
+const NO_LANE_CHANGE = new Set(["TUNNEL", "INTERNAL", "ALLEY", "SERVICE", "STATION_ACCESS"]);
+const NO_SHOULDER = new Set(["ALLEY", "INTERNAL", "STATION_ACCESS"]);
+// Mật độ giao thông theo loại đường (rule 14: không spawn đều mọi nơi)
+const DENSITY_BY_CLASS = {
+    EXPRESSWAY: 1.0, NATIONAL: 1.0, ARTERIAL: 0.9, COLLECTOR: 0.75,
+    LOCAL: 0.6, RURAL_LOCAL: 0.5, TUNNEL: 0.5, RAMP: 0.3,
+    SERVICE: 0.15, ALLEY: 0.1, STATION_ACCESS: 0.1, INTERNAL: 0.1
+};
+
+// Pure: suy metadata làn từ 1 segment (không cần graph).
+// laneCenter(t) tính từ MÉT TÂM ĐƯỜNG về phía PHẢI của hướng di chuyển.
+//   lane 0 = làn ngoài cùng bên phải (VN đi bên phải) -> t lớn nhất.
+export function deriveLaneMeta(seg) {
+    if (!seg) return null;
+    const cls = seg.class || "";
+    const twoWay = seg.twoWay !== false;
+    const lanesTotal = Math.max(1, seg.lanes || 1);
+    const lanesPerDir = twoWay ? Math.max(1, Math.floor(lanesTotal / 2)) : lanesTotal;
+    const effTotal = twoWay ? lanesPerDir * 2 : lanesTotal;
+    const width = Math.max(4, seg.width || 12);
+    const half = width * 0.5;
+    // bề rộng làn:clamp về khoảng hợp lý (đường 10m/2 làn = 5m làn -> vẫn 4.5)
+    const laneW = Math.min(4.5, Math.max(2.6, width / effTotal));
+    const lane0Center = half - laneW * 0.5;
+    const shoulderLateral = half - 1.0;
+    const speedKmh = seg.speed || DEFAULT_SPEED_KMH[cls] || 30;
+    const isStationRoad = seg.type === "bus_station_road";
+    const laneChangeAllowed = lanesPerDir >= 2 && !NO_LANE_CHANGE.has(cls) && !isStationRoad;
+    return {
+        seg, cls, type: seg.type || "", name: seg.name || "",
+        twoWay, lanesTotal, lanesPerDir, effTotal, width, half, laneW,
+        lane0Center, shoulderLateral,
+        speedKmh, speedMs: speedKmh / 3.6,
+        laneChangeAllowed,
+        overtakingAllowed: laneChangeAllowed,
+        // Chỉ tấp lề khi còn chỗ dịch ra ngoài tâm làn (>=0.5m) — không được
+        // dừng giữa làn (rule 10).
+        shoulderAllowed: !NO_SHOULDER.has(cls) && !isStationRoad &&
+            shoulderLateral >= lane0Center + 0.5,
+        density: DENSITY_BY_CLASS[cls] !== undefined ? DENSITY_BY_CLASS[cls] : 0.4,
+        // tâm làn tính theo PHẢI tâm đường: làn 0 nằm sát mép phải
+        laneCenter(l) {
+            const i = Math.min(Math.max(l | 0, 0), this.lanesPerDir - 1);
+            return this.half - (i + 0.5) * this.laneW;
+        }
+    };
+}
+
 export class RuntimeRoadGraph {
     constructor(data) {
         this.nodes = [];
@@ -16,6 +78,7 @@ export class RuntimeRoadGraph {
         this._nodeMap = new Map();
         this._segMap = new Map();
         this._adj = new Map();
+        this._laneMeta = new Map();
 
         if (data) {
             this.build(data);
@@ -23,6 +86,7 @@ export class RuntimeRoadGraph {
     }
 
     build(data) {
+        if (this._laneMeta) this._laneMeta.clear(); else this._laneMeta = new Map();
         this.nodes = data.roads.nodes || [];
         this._nodeMap = new Map(this.nodes.map(n => [n.id, n]));
 
@@ -232,6 +296,30 @@ export class RuntimeRoadGraph {
 
     getNode(id) { return this._nodeMap.get(id); }
     getSegment(id) { return this._segMap.get(id); }
+
+    // Lane metadata (additive, cache). Trả về null nếu không có dữ liệu -> caller tự suy ra.
+    getLaneMeta(segOrId) {
+        const seg = typeof segOrId === 'string' ? this.getSegment(segOrId) : segOrId;
+        if (!seg) return null;
+        const id = typeof segOrId === 'string' ? segOrId : seg.id;
+        let meta = this._laneMeta.get(id);
+        if (!meta) {
+            meta = deriveLaneMeta(seg);
+            this._laneMeta.set(id, meta);
+        }
+        return meta;
+    }
+
+    // Tâm làn (mét, tính từ TÂM ĐƯỜNG về PHẢI theo hướng di chuyển).
+    // lane 0 = làn ngoài cùng bên phải (VN đi bên phải).
+    // Trùng công thức với deriveLaneMeta().laneCenter() -> tools/traffic_audit.py
+    // validate parity offline, không có nguồn thứ 2.
+    static laneCenterOf(segOrMeta, laneIndex) {
+        const meta = segOrMeta && typeof segOrMeta.laneCenter === "function"
+            ? segOrMeta : deriveLaneMeta(segOrMeta);
+        if (!meta) return 1.75;
+        return meta.laneCenter(laneIndex);
+    }
 
     getSegmentsAtNode(nodeId) {
         const node = this.getNode(nodeId);

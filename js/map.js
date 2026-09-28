@@ -630,18 +630,35 @@ class MeshAccum {
         this.n += points.length;
     }
 
-    // P41 — VÁY BÊN (+ MẶT ĐÁY): biến mặt phẳng thành KHỐI có thân.
+    // P41/P51 — VÁY BÊN (+ MẶT ĐÁY): biến mặt phẳng thành KHỐI có thân.
     // `bottoms[i]` = cao độ đáy của đỉnh i: bình thường là mặt đất (váy
     // chạm tận đất, không lơ lửng); cầu vượt thì `y - ROAD_THICK` và có
     // mặt đáy để nhìn được từ dưới lên.
-    skirt(points, bottoms, withBottom) {
+    //
+    // P51: `bottoms` có thể kèm THỨ TƯ thứ nhất = độ lệch nghiêng ra ngoài
+    // (m). Đường thật có **đối đất** (nền đắp nghiêng), không có tường đứng
+    // 3m; váy thẳng đứng giữa hai đường song song tạo "hẻm tối" — đo được
+    // 3.3× số tam giác mặt đường là mảng tối chồng lên nhau trong ảnh.
+    skirt(points, bottoms, withBottom, outOff) {
         const n = points.length;
         if (n < 3) return;
         const base = this.n;
+        // tâm hình học để tính hướng ra ngoài
+        let mx = 0, mz = 0;
+        for (let i = 0; i < n; i++) { mx += points[i][0]; mz += points[i][2]; }
+        mx /= n; mz /= n;
         for (let i = 0; i < n; i++) {
             const p = points[i];
-            this.pos.push(p[0], p[1], p[2]);        // 2i    trên
-            this.pos.push(p[0], bottoms[i], p[2]);  // 2i+1  dưới
+            const b = bottoms[i];
+            if (outOff) {
+                const dx = p[0] - mx, dz = p[2] - mz;
+                const L = Math.hypot(dx, dz) || 1;
+                this.pos.push(p[0], p[1], p[2]);                 // 2i    trên
+                this.pos.push(p[0] + dx / L * outOff, b, p[2] + dz / L * outOff);
+            } else {
+                this.pos.push(p[0], p[1], p[2]);        // 2i    trên
+                this.pos.push(p[0], bottoms[i], p[2]);  // 2i+1  dưới
+            }
         }
         for (let i = 0; i < n; i++) {
             const a = base + i * 2;
@@ -1144,9 +1161,9 @@ export class MapLoader {
     // gần `yHint` nhất — tức mặt xe đang đứng trên đó.
     // Không có `yHint` (spawn / NPC) thì lấy mặt CAO NHẤT: không bao giờ
     // chui xuống dưới vật cản.
-    // `maxDist`: ban kinh chap nhan (mac dinh = nua be mat duong + 2m, dung
-    // cho viec xe co that tren duong). Sân bến cần bán kính lớn hơn nhiều —
-    // xem `_surfaceAtYard`.
+    // `maxDist`: bán kính chấp nhận (mặc định = nửa bề mặt đường + 2m, đúng
+    // cho việc xe có thật trên đường). Không dùng bán kính rộng ở đây: bán
+    // kính rộng nuốt cả đường ở mức khác (cầu vượt, sân) ⇒ nhảy mặt.
     _surfaceAt(x, z, yHint = null, maxDist = 0) {
         if (!this._roadIdx || !this.roadGraph) return null;
         const c = this._roadCell;
@@ -1196,18 +1213,6 @@ export class MapLoader {
             }
         }
         return best;
-    }
-
-    // P46 — MẶT SÂN BẾN: tra đường nội bộ ở bán kính RỘNG.
-    //
-    // Đo được (sân Nam Tuy Hòa sau P44): mặt trên cao từ 2.983 tới 5.427 —
-    // lệch 2.44m. Nguyên nhân: `_surfaceAt` chỉ nhận điểm trong
-    // `width*0.5 + 2` của trục đường, nên phần sân ở xa đường (góc sân, lưới
-    // lát) rơi về fallback một số `s.y`. Mà sân là MỘT MẶT PHẲNG BÊ TÔNG
-    // phủ kín cả khu vực, nên điểm xa đường vẫn phải nối đúng độ cao từ
-    // đường nội bộ gần nhất.
-    _surfaceAtYard(x, z, yHint = null, reach = 160.0) {
-        return this._surfaceAt(x, z, yHint, reach);
     }
 
     _buildRoadGroup() { /* roads render theo chunk trong _loadChunk */ }
@@ -1485,9 +1490,8 @@ export class MapLoader {
             // trông như đang lơ lửng trên một dải texture.
             // Cầu vượt thì CỐ Ý nổi: đáy = y - ROAD_THICK + mặt đáy.
             const floating = !!seg.bridge;
-            const gSide = getAcc("__SIDE__");
             const bottoms = new Array(pts.length);
-            let needBottom = floating;
+            let deep = 0, shallow = 0;
             for (let i = 0; i < pts.length; i++) {
                 const q = pts[i];
                 if (floating) {
@@ -1495,11 +1499,26 @@ export class MapLoader {
                 } else {
                     const g = this.world.getElevation(q[0], q[2]);
                     bottoms[i] = Math.min(q[1] - ROAD_THICK, g - 0.05);
-                    // váy sâu > 1.2m thì nhìn thấy đáy khi xe đi cạnh
-                    if (q[1] - bottoms[i] > 1.2) needBottom = true;
+                    const d2 = q[1] - bottoms[i];
+                    if (d2 > deep) deep = d2;
+                    if (d2 < 0.25) shallow++;
                 }
             }
-            gSide.skirt(pts, bottoms, needBottom);
+            // P51: đoạn nào mặt đường sát đất (không đủ một đỉnh sâu >0.25m)
+            // thì KHÔNG vẽ váy — mặt đường đó phải nằm phẳng với đất, vẽ váy
+            // chỉ là thêm mảng tối vô nghĩa.
+            if (!floating && shallow >= pts.length) {
+                // duong sat dat: khong ve gi
+            } else {
+                // P54: DOI DAT 45 DO (`outOff = deep`) + CUNG VAT LIEU voi mat
+                // duong. Ban P51 dung `min(deep, hw*0.9)` nen doan duong chi
+                // lech 0.3m van co doi dat rong 5.4m — ve nhu co ban le. Va
+                // vat lieu `shoulder` (nau xam) khac mat duong nen doi dat
+                // nhu "tam ben khac" leo vao. Do duoc trong anh aerial.
+                const gSide = getAcc(this._roadBucket(seg.class) + "__BODY__");
+                gSide.skirt(pts, bottoms, floating || deep > 1.2,
+                            floating ? 0 : deep);
+            }
 
             // median + shoulder cho cao tốc
             if (seg.class === "EXPRESSWAY") {
@@ -1705,7 +1724,8 @@ export class MapLoader {
             else if (cls === "__LINE__") mat = this._mats.laneLine;
             else if (cls === "__SIDEWALK__") mat = this._mats.sidewalk;
             else if (cls === "__STOPLINE__") mat = this._mats.laneLine;
-            else if (cls === "__SIDE__") mat = this._mats.shoulder;
+            else if (cls.slice(-8) === "__BODY__")
+                mat = this._matByClass(cls.slice(0, -8));
             else if (cls.indexOf("__JUNCTION__") === 0) mat = this._matByClass(cls.slice(12));
             else mat = this._matByClass(cls);
             parent.add(a.build(mat, `road_${cls}`));
@@ -2431,68 +2451,41 @@ export class MapLoader {
             g.rotation.y = s.rot || 0;
             const W = s.w || 180, D = s.d || 130;
 
-            // 1) SÂN BẾN — KHỐI có thân, mặt trên BÁM THEO ĐƯỜNG NỘI BỘ
+            // 1) SÂN BẾN — MỘT MẶT PHẲNG CÓ THÂN (P50)
             //
-            // Bản cũ: `PlaneGeometry(W, D)` đặt ở MỘT cao độ `s.y + yardLift`.
-            // Đo được: san nghiêng 1-2m giữa hai đầu (đường nội bộ trong sân
-            // bị `_grade_roads` hạ/cắt khác nhau) nên xe ở đầu này biến mất
-            // xuống dưới sân ở đầu kia. Và sân là mặt phẳng không thân → mép
-            // lơ lửng trên nền (tb 0.84m, max 3.05m).
+            // Bản cũ (trước P44) là `PlaneGeometry` phẳng lẻ, lơ lửng trên nền.
+            // Bản P44/P46 dựng lưới 16×12 bám `_surfaceAt` bán kính 160m — SAI:
+            // ở mép sân, bán kính 160m nuốt cả đường NGOÀI sân ở cao độ khác,
+            // các đỉnh lưới nhảy nhót ⇒ sân vỡ thành tấm vá (đã thấy trong ảnh).
             //
-            // Nay: lưới 16x12, mỗi đỉnh lấy cao độ bằng `_surfaceAt` tại đúng
-            // vị trí đó (tức mặt đường nội bộ tại chỗ), rồi đúc thành khối có
-            // váy bên chạm tận mặt đất.
+            // Sân là MẶT PHẲNG BÊ TÔNG: nó chỉ cần ĐÚNG CAO ĐỘ (P40 đã bảo đảm
+            // `st.y` khớp đường trong sân: cả 5 bến lệch ≤ 0.011m) và CÓ THÂN.
+            // Không có node hình học nào trên sân nên không thể vỡ mảnh.
             {
-                const NX = 16, NZ = 12;
-                const sa_ = Math.sin(s.rot || 0), ca_ = Math.cos(s.rot || 0);
-                const toW = (lx, lz) => [s.x + lx * sa_ + lz * ca_,
-                                         s.z + lx * ca_ - lz * sa_];
                 const yl = this._yardLift();
                 const top = new MeshAccum();
-                const side = new MeshAccum();
-                // ĐỈNH Ở HỆ CỤC BỘ của group (group đặt tại (s.x, s.y, s.z)
-                // và xoay s.rot) — đưa toạ độ world vào sẽ bị biến đổi 2 lần.
-                // `wx/wz` chỉ dùng cho TRUY VẤN (surface + terrain), vốn làm
-                // việc ở hệ toạ độ thế giới.
-                const grid = [];
-                for (let iz = 0; iz <= NZ; iz++) {
-                    const row = [];
-                    for (let ix = 0; ix <= NX; ix++) {
-                        const lx = -W / 2 + (W * ix) / NX;
-                        const lz = -D / 2 + (D * iz) / NZ;
-                        const [wx, wz] = toW(lx, lz);
-                        const su = this._surfaceAtYard(wx, wz, s.y);
-                        // chỉ nhận mặt đường khi nằm TRONG sân
-                        const y = su ? su.y : s.y;
-                        row.push([lx, y + yl - s.y, lz]);
-                    }
-                    grid.push(row);
+                const sideA = new MeshAccum();
+                const ring = [
+                    [-W / 2, 0, -D / 2], [W / 2, 0, -D / 2],
+                    [W / 2, 0, D / 2], [-W / 2, 0, D / 2]
+                ].map(q => [q[0], yl, q[2]]);
+                top.quad(ring[0], ring[1], ring[2], ring[3]);
+                const sa_ = Math.sin(s.rot || 0), ca_ = Math.cos(s.rot || 0);
+                const bots = ring.map(q => {
+                    const wx = s.x + q[0] * sa_ + q[2] * ca_;
+                    const wz = s.z + q[0] * ca_ - q[2] * sa_;
+                    return Math.min(q[1] - ROAD_THICK,
+                        this.world.getElevation(wx, wz) - 0.05);
+                });
+                let deep = 0;
+                for (let k = 0; k < 4; k++) {
+                    const d2 = ring[k][1] - bots[k];
+                    if (d2 > deep) deep = d2;
                 }
-                for (let iz = 0; iz < NZ; iz++) {
-                    for (let ix = 0; ix < NX; ix++) {
-                        const a = grid[iz][ix], b = grid[iz][ix + 1];
-                        const c = grid[iz + 1][ix + 1], d = grid[iz + 1][ix];
-                        top.quad(a, b, c, d);
-                        // `q` là cục bộ; `getElevation` cần world -> tra
-                        // lại qua `toW`, và cộng lại `s.y` cho trục Y.
-                        const ring = [a, b, c, d];
-                        const bots = ring.map(q => {
-                            const [wxq, wzq] = toW(q[0], q[2]);
-                            return Math.min(q[1] - ROAD_THICK,
-                                this.world.getElevation(wxq, wzq) - 0.05);
-                        });
-                        let deep = 0;
-                        for (let k = 0; k < 4; k++) {
-                            const d2 = ring[k][1] - bots[k];
-                            if (d2 > deep) deep = d2;
-                        }
-                        side.skirt(ring, bots, deep > 1.2);
-                    }
-                }
+                sideA.skirt(ring, bots, deep > 1.2);
                 const yard = top.build(M.concrete, `yard_${s.id}`);
-                yard.position.set(0, 0, 0);
                 g.add(yard);
-                if (!side.empty) g.add(side.build(M.shoulder, `yardSide_${s.id}`));
+                if (!sideA.empty) g.add(sideA.build(M.shoulder, `yardBody_${s.id}`));
             }
 
             // 2) vạch ranh sân

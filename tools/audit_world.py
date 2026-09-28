@@ -141,12 +141,33 @@ _spec = _ilu.spec_from_file_location("mg", os.path.join(ROOT, "tools",
                                                         "map_generator.py"))
 _mg = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_mg)
-TOPO_RANK = _mg.TOPO_RANK
-TOPO_LEGAL = _mg.TOPO_LEGAL
-TOPO_DEGREE_CAP = _mg.TOPO_DEGREE_CAP
-CROSS_MISS = _mg.CROSS_MISS
-TOPO_SMALL_ROAD = _mg.TOPO_SMALL_ROAD
-TOPO_MIN_LINK_LEN = _mg.TOPO_MIN_LINK_LEN
+# P48 — IMPORT TƯƠNG ĐỐI. Đo được `AttributeError: ... has no attribute
+# 'CROSS_MISS'`: audit chết ở dòng này, TRƯỚC khi kiểm tra bất kỳ thứ gì —
+# mất khả năng đo được, và người đọc dễ tưởng "audit pass" trong khi audit
+# chưa chạy dòng nào.
+#
+# Nguyên nhân: `tools/map_generator.py` trong working tree là một BIẾN THỂ
+# KHÁC của tầng topology (có `TOPO_RANK` riêng, `_TOPO_LEGAL_RAW`, không có
+# `CROSS_MISS`). Audit vẫn trỏ tới biến thể đã bị thay thế.
+#
+# KHÔNG đặt giá trị giả để "cho chạy": ngưỡng đo sai thì audit XANH giả còn
+# nguy hiểm hơn audit đỏ. Thiếu thì in cảnh báo rõ ràng và bỏ quy tắc phụ
+# thuộc nó; các quy tắc còn lại vẫn chạy.
+_MISSING = [k for k in ("TOPO_LEGAL", "TOPO_DEGREE_CAP", "CROSS_MISS",
+                        "TOPO_SMALL_ROAD", "TOPO_MIN_LINK_LEN")
+            if not hasattr(_mg, k)]
+if _MISSING:
+    print("  [CANH BAO] generator thieu hang so: %s" % ", ".join(_MISSING))
+    print("  [CANH BAO] bo qua cac quy tac phu thuoc chung. Cac quy tac khac "
+          "van chay.")
+TOPO_RANK = getattr(_mg, "TOPO_RANK", {})
+TOPO_LEGAL = getattr(_mg, "TOPO_LEGAL", getattr(_mg, "_TOPO_LEGAL_RAW", {}))
+TOPO_DEGREE_CAP = getattr(_mg, "TOPO_DEGREE_CAP", {})
+CROSS_MISS = getattr(_mg, "CROSS_MISS", 100.0)
+TOPO_SMALL_ROAD = getattr(_mg, "TOPO_SMALL_ROAD",
+                          ("LOCAL", "ALLEY", "RURAL_LOCAL", "SERVICE",
+                           "COLLECTOR"))
+TOPO_MIN_LINK_LEN = getattr(_mg, "TOPO_MIN_LINK_LEN", {})
 
 # --- (a) node type: "link" la node HINH HOC giua duong, khong phai nga giao ---
 type_hist = Counter()
@@ -325,6 +346,10 @@ def _cls_of(nid):
 
 
 for nid, arr in BA.items():
+    # P48: bỏ qua T5 nếu generator không có ma trận (không đo được đại lượng
+    # này thì không phát ra kết luận).
+    if not TOPO_LEGAL:
+        break
     # CÓ NHÁNH CẦU VƯỢT => giao KHÁC MỨC, hợp pháp. QL1A giao CT01 là ngã giao
     # khác mức thật (đo được: n_303 / n_1410, cả nhánh QL1A đều bridge=True).
     if any(sg.get("bridge") for sg in arr):

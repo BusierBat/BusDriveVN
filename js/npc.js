@@ -112,7 +112,14 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
         return f && t ? { from: s.from, to: s.to, points: [{x:f.x, y:f.y, z:f.z}, {x:t.x, y:t.y, z:t.z}], width: 24, type: s.roadType, twoWay: s.twoWay } : null;
     }).filter(Boolean);
     const edgePaths = edges.map((e) => { const cum = new Float32Array(e.points.length); let total = 0; for (let i = 1; i < e.points.length; i++) { total += Math.hypot(e.points[i].x - e.points[i-1].x, e.points[i].z - e.points[i-1].z); cum[i] = total; } return { cum, total: total || 1 }; });
-    const spawnManager = new TrafficSpawnManager({ scene, edges, edgePaths, random, group, targetActive: 15, maxActive: 25, spawnDistance: 350, despawnDistance: 550, seed: seed + 999 });
+    // GỘP HỆ THỐNG SONG SONG: TrafficSpawnManager từng tự spawn 15 xe chạy
+    // nhưng KHÔNG CÓ AI (bản sao của TrafficManager -> 2 nguồn xe cùng lúc).
+    // Giờ TrafficManager là NGUỒN DUY NHẤT của xe đang chạy; manager này
+    // giữ nguyên API/vehicle pool nhưng targetActive = 0 -> không sinh trùng.
+    // getMovingVehicleCount ủy quyền sang TrafficManager qua setTrafficManager()
+    // (main.js gọi sau khi tạo trafficManager).
+    const spawnManager = new TrafficSpawnManager({ scene, edges, edgePaths, random, group, targetActive: 0, maxActive: 0, spawnDistance: 350, despawnDistance: 550, seed: seed + 999 });
+    let trafficManagerRef = null;
     
     let stationManager = null;
     const parkingSlots = (map.getParkingSlots && map.getParkingSlots()) || [];
@@ -164,6 +171,8 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
     return {
         group, update, dispose, getWaitingPassengers: () => waitingPassengers,
         pickUpPassenger: (id) => { const idx = waitingPassengers.findIndex(p => p.id === id); if (idx !== -1) { waitingPassengers.splice(idx, 1); return true; } return false; },
-        getMovingVehicleCount: () => spawnManager.getActiveCount(), setPlayerBus(b) { playerRef = b; }
+        getMovingVehicleCount: () => (trafficManagerRef ? trafficManagerRef.getMovingCount() : spawnManager.getActiveCount()),
+        setTrafficManager(tm) { trafficManagerRef = tm || null; },
+        setPlayerBus(b) { playerRef = b; }
     };
 }

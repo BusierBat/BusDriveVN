@@ -9,10 +9,11 @@ import { CameraSystem } from "./camera.js";
 import { LightingSystem } from "./lighting.js";
 import { createPassengerSystem } from "./passenger.js";
 import { createTrafficManager } from "./traffic/TrafficManager.js";
+import { TrafficDebug } from "./traffic/TrafficDebug.js";
 import { initEndermanEasterEgg, updateEnderman } from "./enderman.js";
 import { CollisionSystem } from "./collisionSystem.js";
 
-let renderer, scene, camera, canvas, map, lighting, npc, bus, interior, passengerSystem, trafficManager, ui, cameraSystem;
+let renderer, scene, camera, canvas, map, lighting, npc, bus, interior, passengerSystem, trafficManager, trafficDebug, ui, cameraSystem;
 const clock = new THREE.Clock();
 let gameState = "menu", paused = false;
 let doorProgress = 0, doorTarget = 0;
@@ -48,7 +49,163 @@ const vehiclePhysics = {
 };
 
 let steerAngle = 0, steerTarget = 0;
-const keysPressed = new Set();
+
+// ===== INPUT: sống được với UniKey / IME tiếng Việt =====
+//
+// VẤN ĐỀ CŨ: game đọc KeyboardEvent.code thẳng. Nhưng khi bộ gõ tiếng Việt
+// (UniKey / IME Windows) ở chế độ VI, nó can thiệp vào stream phím:
+//   - có khi nuốt luôn event (code === "" ),
+//   - có khi bơm ký tự đã gõ thay cho phím vật lý: W -> "ư", D -> "đ", A -> "á"...
+// Ket qua: keysPressed.add("") -> WASD khong con ten -> phai chuyen EN moi lai duoc.
+//
+// CACH FIX: resolve event ve ma phim VẬT LÝ theo 3 lớp, lớp nào chắc nhất dùng lớp đó:
+//   1) e.code      -> chuẩn nhất (KeyW/KeyA/KeyS/KeyD), ko phụ thuộc gõ gì.
+//   2) e.key       -> ký tự/tên phím, map ngược lại mã vật lý (kể cả chữ tiếng Việt).
+//   3) e.which/kc  -> UniKey hay bơm sự kiện theo VK (W=87, A=65...).
+// Không resolve được -> bỏ qua, KHÔNG bịa phím ảo.
+//
+// Quy tắc an toàn: keyup dùng CÙNG bộ resolve (nếu không thì phím kẹt vĩnh viễn),
+// và không bao giờ đụng tới khi đang gõ trong ô input (text/UI vẫn gõ bình thường).
+
+const KEY_BY_NAME = new Map();
+const LEGACY_BY_KEYCODE = new Map();
+const keysPressed = new Map();   // code -> timestamp keydown gần nhất (chống phím kẹt)
+
+const KEY_HOLD_TIMEOUT_MS = 2000;
+// Chống phím kẹt khi IME nuốt keyup. 2000ms an toàn cho cả Windows repeat chậm nhất
+// (delay <= 1s + interval <= 0.5s) nên phím đang giữ thật không bị nhả nhầm.
+
+function buildInputKeyMaps() {
+    // a..z / A..Z -> KeyA..KeyZ
+    for (let i = 0; i < 26; i++) {
+        const up = String.fromCharCode(65 + i);
+        KEY_BY_NAME.set(up, "Key" + up);
+        KEY_BY_NAME.set(up.toLowerCase(), "Key" + up);
+    }
+    // 0..9 hàng trên -> Digit0..Digit9
+    for (let i = 0; i < 10; i++) KEY_BY_NAME.set(String(i), "Digit" + i);
+
+    // Chữ tiếng Việt: UniKey VI có thể xuất ký tự này thay cho phím gốc.
+    // Map ve BACK tieu chuon (a/ă/â -> A, d/đ -> D...).
+    const VI_FAMILIES = [
+        ["KeyA", "aàáảãạăằắẳẵặâầấẩẫậ"],
+        ["KeyD", "dđ"],
+        ["KeyE", "eèéẻẽẹêềếểễệ"],
+        ["KeyI", "iìíỉĩị"],
+        ["KeyO", "oòóỏõọôồốổỗộơờớởỡợ"],
+        ["KeyU", "uùúủũụ"],
+        ["KeyY", "yỳýỷỹỵ"],
+        // Ư (cả họ ừứửữự) = phím W trong cả Telex lẫn VNI.
+        // KHÔNG được map về KeyU: bấm W mà UniKey xuất "ư" thì xe phải VẪN ga được.
+        ["KeyW", "ưừứửữự"],
+    ];
+    for (const [code, chars] of VI_FAMILIES) {
+        for (const ch of chars) KEY_BY_NAME.set(ch, code);
+    }
+
+    // Ten phim chuan (e.key) -> ma vat ly
+    const named = {
+        " ": "Space", "Spacebar": "Space",
+        "Enter": "Enter", "NumpadEnter": "Enter",
+        "Escape": "Escape", "Esc": "Escape",
+        "Tab": "Tab", "Backspace": "Backspace", "Delete": "Delete", "Insert": "Insert",
+        "ArrowUp": "ArrowUp", "ArrowDown": "ArrowDown", "ArrowLeft": "ArrowLeft", "ArrowRight": "ArrowRight",
+        "Up": "ArrowUp", "Down": "ArrowDown", "Left": "ArrowLeft", "Right": "ArrowRight",
+        "PageUp": "PageUp", "PageDown": "PageDown", "Home": "Home", "End": "End",
+        "CapsLock": "CapsLock", "NumLock": "NumLock", "ScrollLock": "ScrollLock",
+        "/": "Slash", "?": "Slash",
+        ".": "Period", ",": "Comma", ";": "Semicolon", "'": "Quote", "`": "Backquote",
+        "[": "BracketLeft", "]": "BracketRight", "\\": "Backslash", "-": "Minus", "=": "Equal",
+    };
+    for (const [k, v] of Object.entries(named)) KEY_BY_NAME.set(k, v);
+
+    // e.keyCode / e.which legacy (event bơm theo VK). 229 = "IME dang xu ly" -> bo qua.
+    LEGACY_BY_KEYCODE.set(8, "Backspace");
+    LEGACY_BY_KEYCODE.set(9, "Tab");
+    LEGACY_BY_KEYCODE.set(13, "Enter");
+    LEGACY_BY_KEYCODE.set(16, "Shift");
+    LEGACY_BY_KEYCODE.set(17, "Control");
+    LEGACY_BY_KEYCODE.set(18, "Alt");
+    LEGACY_BY_KEYCODE.set(20, "CapsLock");
+    LEGACY_BY_KEYCODE.set(27, "Escape");
+    LEGACY_BY_KEYCODE.set(32, "Space");
+    LEGACY_BY_KEYCODE.set(33, "PageUp");
+    LEGACY_BY_KEYCODE.set(34, "PageDown");
+    LEGACY_BY_KEYCODE.set(35, "End");
+    LEGACY_BY_KEYCODE.set(36, "Home");
+    LEGACY_BY_KEYCODE.set(37, "ArrowLeft");
+    LEGACY_BY_KEYCODE.set(38, "ArrowUp");
+    LEGACY_BY_KEYCODE.set(39, "ArrowRight");
+    LEGACY_BY_KEYCODE.set(40, "ArrowDown");
+    LEGACY_BY_KEYCODE.set(45, "Insert");
+    LEGACY_BY_KEYCODE.set(46, "Delete");
+    LEGACY_BY_KEYCODE.set(186, "Semicolon");
+    LEGACY_BY_KEYCODE.set(187, "Equal");
+    LEGACY_BY_KEYCODE.set(188, "Comma");
+    LEGACY_BY_KEYCODE.set(189, "Minus");
+    LEGACY_BY_KEYCODE.set(190, "Period");
+    LEGACY_BY_KEYCODE.set(191, "Slash");
+    LEGACY_BY_KEYCODE.set(192, "Backquote");
+    LEGACY_BY_KEYCODE.set(219, "BracketLeft");
+    LEGACY_BY_KEYCODE.set(220, "Backslash");
+    LEGACY_BY_KEYCODE.set(221, "BracketRight");
+    LEGACY_BY_KEYCODE.set(222, "Quote");
+    for (let i = 0; i < 12; i++) LEGACY_BY_KEYCODE.set(112 + i, "F" + (i + 1));
+}
+buildInputKeyMaps();
+
+function legacyKeyCodeToCode(e) {
+    const kc = e.which || e.keyCode || 0;
+    if (!kc || kc === 229) return null;          // 229 = IME đang nuốt phím, không có thông tin
+    if (kc >= 65 && kc <= 90) return "Key" + String.fromCharCode(kc);   // A-Z
+    if (kc >= 48 && kc <= 57) return "Digit" + (kc - 48);               // 0-9 hàng trên
+    if (kc >= 96 && kc <= 105) return "Numpad" + (kc - 96);             // NumPad 0-9
+    const hit = LEGACY_BY_KEYCODE.get(kc);
+    if (!hit) return null;
+    if (hit === "Shift" || hit === "Control" || hit === "Alt") {
+        return hit + (e.location === 2 ? "Right" : "Left");
+    }
+    return hit;
+}
+
+function resolveEventCode(e) {
+    // 1) Code vat ly: nguon chac nhat, khong quan tam UniKey dang VI hay EN.
+    const code = e.code;
+    if (typeof code === "string" && code.length > 0 && code !== "Unidentified") return code;
+
+    // 2) e.key: khi IME nuot code.
+    const key = typeof e.key === "string" ? e.key : "";
+    if (key && key !== "Process" && key !== "Unidentified" && key !== "Dead") {
+        if (key === "Shift" || key === "Control" || key === "Alt" || key === "Meta") {
+            return key + (e.location === 2 ? "Right" : "Left");
+        }
+        const direct = KEY_BY_NAME.get(key);
+        if (direct) return direct;
+        const lower = KEY_BY_NAME.get(key.toLowerCase());
+        if (lower) return lower;
+    }
+
+    // 3) keyCode/which legacy (event bơm theo VK).
+    return legacyKeyCodeToCode(e);
+}
+
+function isEditableTarget(target) {
+    if (!target) return false;
+    const tag = target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (target.isContentEditable) return true;
+    return typeof target.closest === "function" && !!target.closest("[contenteditable]");
+}
+
+function pruneStaleKeys(now) {
+    if (!keysPressed.size) return;
+    for (const [code, last] of keysPressed) {
+        if (now - last > KEY_HOLD_TIMEOUT_MS) keysPressed.delete(code);
+    }
+}
+
+function clearPressedKeys() { keysPressed.clear(); }
+
 let lKeyTimer = 0, lastFPressTime = 0, lastCameraPressTime = 0, lastHornPressTime = 0;
 
 // === 3D PHYSICS RAYCAST VARS ===
@@ -64,6 +221,7 @@ let _lastValidGroundY = 10.0;
 
 function updateVehiclePhysics(dt) {
     if (!bus?.group) return;
+    pruneStaleKeys(performance.now());
     const phys = vehiclePhysics;
     const isAccel = keysPressed.has("KeyW") || mobileInput.accel > 0;
     const isBrake = keysPressed.has("KeyS") || mobileInput.brake > 0;
@@ -167,34 +325,66 @@ function updateVehiclePhysics(dt) {
     bus.group.updateMatrixWorld(true);
 }
 
+let inputHooked = false;
 function initInput() {
+    // Neu retry sau loi load, initInput chay lai -> listener kep -> phim bam 2 lan.
+    if (inputHooked) return;
+    inputHooked = true;
+
     window.addEventListener("keydown", (e) => {
-        if (e.key === "/" && !isConsoleOpen) { e.preventDefault(); isConsoleOpen = true; keysPressed.clear(); ui.showConsole(); return; }
+        const code = resolveEventCode(e);
+        // Dang gop chu (IME) van cho phep nhan phim dieu khien, nhung khong
+        // preventDefault de khong lam nghen giao dien gop chu cua IME.
+        const composing = e.isComposing === true || e.keyCode === 229;
+
         if (isConsoleOpen) {
-            if (e.code === "Enter") { const cmd = ui.els.consoleInput.value.trim(); handleCommand(cmd); }
-            else if (e.code === "Escape") { isConsoleOpen = false; ui.hideConsole(); }
+            // Dang mo console: chi Enter/Escape, con lai de nguyen cho o gõ text.
+            if (code === "Enter" || code === "NumpadEnter") {
+                const cmd = ui.els.consoleInput.value.trim();
+                handleCommand(cmd);
+            } else if (code === "Escape") {
+                isConsoleOpen = false;
+                ui.hideConsole();
+            }
             return;
         }
-        if (e.code === "Escape") { togglePause(); return; }
+        // Dang focus vao o input/textarea/contenteditable (settings, UV skin...)
+        // -> nhuong het cho UI, khong dua phim vao keysPressed.
+        if (isEditableTarget(e.target)) return;
+
+        if (code === "Slash" && !composing && !e.shiftKey) {
+            e.preventDefault();
+            isConsoleOpen = true;
+            clearPressedKeys();
+            ui.showConsole();
+            return;
+        }
+        if (code === "Escape") { togglePause(); return; }
+        // F3: bat/tat panel debug giao thong (khong anh huong gameplay)
+        if (code === "F3") { e.preventDefault(); if (trafficDebug) trafficDebug.toggle(); return; }
         if (gameState !== "playing" || paused) return;
-        keysPressed.add(e.code);
-        if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
-        if (e.code === "KeyF" && performance.now() - lastFPressTime > 150 && bus) {
+        if (!code) return;   // khong resolve duoc -> bo qua, khong bia phim ao
+
+        keysPressed.set(code, performance.now());
+        if (!composing && ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(code)) e.preventDefault();
+        if (e.repeat) return;   // phim tac vu chi xu ly khi VUA bam, khong khi nhan giu
+
+        if (code === "KeyF" && performance.now() - lastFPressTime > 150 && bus) {
             lastFPressTime = performance.now();
             bus.areLightsOn = !bus.areLightsOn;
             bus.setHeadlights?.(bus.areLightsOn);
             bus.setTaillights?.(bus.areLightsOn);
             ui?.toast(`💡 Đèn ${bus.areLightsOn ? 'BẬT' : 'TẮT'}`);
         }
-        if (e.code === "KeyK" && bus) {
+        if (code === "KeyK" && bus) {
             doorTarget = doorTarget === 0 ? 1 : 0;
             bus.doorOpen = doorTarget === 1;
             ui?.toast(`🚪 Cửa ${bus.doorOpen ? 'MỞ' : 'ĐÓNG'}`);
             if (bus.doorOpen && passengerSystem) passengerSystem.pickUpPassengers();
         }
-        if (e.code === "KeyL") { lKeyTimer = performance.now(); }
-        if (e.code.startsWith("Digit") && performance.now() - lKeyTimer < 1000) {
-            const group = parseInt(e.code.replace("Digit", ""));
+        if (code === "KeyL") { lKeyTimer = performance.now(); }
+        if (code.startsWith("Digit") && performance.now() - lKeyTimer < 1000) {
+            const group = parseInt(code.replace("Digit", ""));
             if (group >= 1 && group <= 4 && interior) {
                 interior.userData.ledGroups = interior.userData.ledGroups || {};
                 interior.userData.ledGroups[group] = !interior.userData.ledGroups[group];
@@ -203,17 +393,26 @@ function initInput() {
                 lKeyTimer = 0;
             }
         }
-        if (e.code === "KeyH" && performance.now() - lastHornPressTime > 300) {
+        if (code === "KeyH" && performance.now() - lastHornPressTime > 300) {
             lastHornPressTime = performance.now();
             ui?.toast("📯 Bim bim!");
         }
-        if (e.code === "KeyC" && performance.now() - lastCameraPressTime > 200 && cameraSystem) {
+        if (code === "KeyC" && performance.now() - lastCameraPressTime > 200 && cameraSystem) {
             lastCameraPressTime = performance.now();
             cameraSystem.cycleNext();
         }
     });
-    window.addEventListener("keyup", (e) => keysPressed.delete(e.code));
-    window.addEventListener("blur", () => keysPressed.clear());
+
+    // keyup dung CUNG bo resolve: keydown ra code "KeyW" ma keyup bi IME bien
+    // thanh key "ư" (code rong) thi van phai xoa duoc, khong thi xe lai ve moi.
+    window.addEventListener("keyup", (e) => {
+        const code = resolveEventCode(e);
+        if (code) keysPressed.delete(code);
+        // khong resolve duoc -> pruneStaleKeys se don sau toi da 2s
+    });
+
+    window.addEventListener("blur", clearPressedKeys);
+    document.addEventListener("visibilitychange", () => { if (document.hidden) clearPressedKeys(); });
 }
 
 function handleCommand(cmd) {
@@ -227,6 +426,35 @@ function handleCommand(cmd) {
                 ui.toast(`✓ Đã đặt thời gian thành ${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`);
             } else { ui.toast("✕ Thời gian không hợp lệ!", true); }
         } else { ui.toast("✕ Cú pháp: time HH/MM", true); }
+    } else if (parts[0] === "traffic") {
+        // Lệnh debug giao thông: traffic | traffic check | traffic spawn <n> | traffic info
+        const sub = (parts[1] || "").toLowerCase();
+        if (!trafficManager) {
+            ui.toast("✕ Chưa vào game / chưa có traffic manager!", true);
+        } else if (sub === "check") {
+            if (!trafficDebug) { ui.toast("✕ Thiếu TrafficDebug!", true); }
+            else {
+                const r = trafficDebug.runSelfCheck();
+                if (!trafficDebug.enabled) trafficDebug.toggle(true);
+                ui.toast(r.pass
+                    ? `✓ SELF-CHECK PASS: ${r.checked} xe đều đi bên phải, đúng chiều`
+                    : `✕ SELF-CHECK FAIL: sai lề ${r.wrongSide}, sai hướng ${r.wrongHeading}, lều mép ${r.offRoad}`, !r.pass);
+            }
+        } else if (sub === "spawn") {
+            const n = parseInt(parts[2]);
+            if (isNaN(n) || n < 0 || n > 60) { ui.toast("✕ Cú pháp: traffic spawn <0-60>", true); }
+            else {
+                trafficManager.maxVehicles = n;
+                gameSettings.npcDensity = n;
+                ui.toast(`✓ Mật độ NPC = ${n} (preset cho phép ${trafficManager.graphics.settings.maxActiveTraffic})`);
+            }
+        } else if (sub === "info") {
+            const i = trafficManager.getDebugInfo();
+            ui.toast(`NPC ${i.active}/${i.max} · đang chạy ${i.moving} · pool ${i.pooled} · spawn ${i.spawnDistance}m · despawn ${i.despawnDistance}m`);
+        } else {
+            const on = trafficDebug ? trafficDebug.toggle() : false;
+            ui.toast(on ? "✓ Traffic debug: ON (nhấn F3 để tắt)" : "Traffic debug: OFF");
+        }
     } else { ui.toast("✕ Lệnh không xác định!", true); }
     isConsoleOpen = false;
     ui.hideConsole();
@@ -398,9 +626,13 @@ async function startGameFromMenu() {
             get bus() { return bus; },
             get npc() { return npc; },
             get traffic() { return trafficManager; },
+            get trafficDebug() { return trafficDebug; },
             // Dựng 1 khung hình thủ công (tab bị ẩn thì requestAnimationFrame
             // bị treo -> không test được). Dùng để đo FPS/draw call thật.
             tick: (times = 1) => { for (let i = 0; i < times; i++) loop(); },
+            // DEBUG: cac phim dieu khien dang duoc nhan (dung de test IME/UniKey)
+            pressedKeys: () => [...keysPressed.keys()],
+            resolveKey: (ev) => resolveEventCode(ev),
             state: () => ({ gameState, paused, webglLost, renderRadius: map?.renderRadius })
         };
         if (window.collisionSystem) playerColId = window.collisionSystem.register(bus.group.position.x, bus.group.position.z, 4.0, 'player');
@@ -415,6 +647,14 @@ async function startGameFromMenu() {
         if (!roadGraph) throw new Error("Road graph chưa sẵn sàng — loadInitialData() lỗi?");
         npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: { x: spawn.x, z: spawn.z } });
         trafficManager = createTrafficManager({ scene, roadGraph: roadGraph, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 });
+        // GỘP HAI HỆ THỐNG: npc.js trước đây tự spawn 15 xe không AI (bản song
+        // song). Giờ TrafficManager là NGUỒN DUY NHẤT của xe đang chạy; npc.js
+        // giữ nguyên API nhưng ủy quyền số liệu về đây.
+        npc.setTrafficManager?.(trafficManager);
+        trafficDebug = new TrafficDebug({
+            scene, camera, traffic: trafficManager, roadGraph,
+            getPlayerPos: () => (bus && bus.group ? bus.group.position : null)
+        });
         
         // Setup station traffic from POIs
         if (roadGraph && roadGraph.pois) {
@@ -509,6 +749,7 @@ function loop() {
             }
             if (steps >= 2) accumulator = 0;
         }
+        if (trafficDebug && trafficDebug.enabled) trafficDebug.update(rawDelta);
         if (renderer && scene && camera) renderer.render(scene, camera);
         if (gameState === "playing") updateHUD(rawDelta);
     } catch (e) {

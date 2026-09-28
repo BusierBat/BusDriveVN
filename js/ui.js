@@ -168,7 +168,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         showMainMenu() { if (els.mainMenu) els.mainMenu.style.display = 'flex'; },
         hideMainMenu() { if (els.mainMenu) els.mainMenu.style.display = 'none'; },
         showConsole() { if (els.console) { els.console.style.display = 'flex'; els.consoleInput.focus(); } },
-        hideConsole() { if (els.console) els.console.style.display = 'none'; els.consoleInput.value = ''; },
+        hideConsole() { if (els.console) els.console.style.display = 'none'; els.consoleInput.value = ''; els.consoleInput.blur?.(); },
         showSettings() { if (els.settingsPanel) els.settingsPanel.style.display = 'block'; },
         hideSettings() { if (els.settingsPanel) els.settingsPanel.style.display = 'none'; },
         setLoading(t, p) { if(els.loadingScreen) { els.loadingScreen.style.display = p < 1 ? 'flex' : 'none'; const bar = document.getElementById('loading-progress-bar'); if(bar) bar.style.width = `${p*100}%`; const tip = document.getElementById('loading-tip'); if(tip) tip.textContent = t; } },
