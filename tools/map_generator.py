@@ -2778,7 +2778,22 @@ class MapGenerator:
         biên [terrain-max_cut, terrain+max_fill] để đường không treo quá xa mặt
         đất (đường đi trên sườn/đắp nền như thật).
         """
-        raw = {nid: n["y"] for nid, n in self.nodes.items()}
+        # P67: MỐC GIỚI HẠN PHẢI LÀ TERRAIN THẬT, KHÔNG PHẢI CAO ĐỘ ĐÃ GRADE.
+        # Bản trước: `raw = {nid: n["y"] ...}` — tức mỗi lần gọi cửa sổ
+        # `raw ± max_cut` TRƯỢT thêm 8m. Đếm số lần gọi: 6 (4 trực tiếp +
+        # 2 qua `_fix_final_slopes`) => trôi tới 48m. Đo được 44.87m ở
+        # `n_2865` (đường 62.27, terrain 107.14). Khớp phép nhân.
+        #
+        # `add_node` đã lưu sẵn `elev = get_elevation(x, z)` lúc tạo node ⇒
+        # dùng làm mốc, KHÔNG tính lại (`get_elevation` không cache, 2.6ms;
+        # 6642 node x 6 lần gọi = 100s). Node thiếu `elev` mới tính.
+        raw = {}
+        for nid, nd in self.nodes.items():
+            e = nd.get("elev")
+            if isinstance(e, (int, float)):
+                raw[nid] = float(e)
+            else:
+                raw[nid] = self.get_elevation(nd["x"], nd["z"])
         for _ in range(passes):
             new_y = {}
             for nid, n in self.nodes.items():
@@ -4826,6 +4841,68 @@ class MapGenerator:
             print("      cat doan dai >%dm: %d lan" % (int(max_len), made))
         return made
 
+    def _unbury_roads(self, tol=0.30):
+        """NÂNG ĐƯỜNG BỊ CHÔI DƯỚI ĐẤT lên mặt đất (trừ hầm/cầu).
+
+        Đo trong game: 4/2214 node đường nằm dưới terrain 2-10m
+        (`IC_TL720` -6.4 -> -10.3m, `IC_QL56` -0.6 -> -1.3m, QL1A -2.0m) ⇒
+        xe chạy xuyên đất. 99.5% node còn lại đúng +0.62m (chiều dày thân).
+
+        Nguyên nhân: `_grade_roads` cho phép đào tới `max_cut = 8.0m` (ý là
+        hào đường), nhưng `get_elevation` KHÔNG BAO GIỜ đào hào — không có mã
+        nào cắt terrain theo đường. Hào ảo ⇒ đường bị chôn. Thêm nữa
+        `road_lift = mountain*62*(...)` trong `get_elevation` nâng đất ven
+        đường tới 62m ở vùng núi, biến hào 8m thành chôn 10m — vì vậy lỗi tập
+        trung ở interchange trong núi.
+
+        Đối xứng với `_fix_bridge_heights` (nâng cầu lên mặt nước): thiếu hẳn
+        phần nâng đường bị chôn.
+
+        Xét CẢ GIỮA ĐOẠN (t = 0.25/0.5/0.75) rồi nâng cả hai đầu lên mức
+        cao nhất cần: hai đầu trên mặt đất không bảo đảm đoạn không chôn ở
+        giữa khi terrain phồi lên. Nội suy thẳng giữa hai đầu thì không thể
+        chui xuống dưới mặt đất ở giữa.
+
+        Bỏ qua `TUNNEL` (hầm xuyên đất là đúng) và `bridge` (cầu vượt nằm
+        trên đất là đúng, đã có `_fix_bridge_heights` lo).
+        """
+        need = {}
+
+        def _need(nid, y):
+            cur = need.get(nid)
+            if cur is None or y > cur:
+                need[nid] = y
+
+        for sg in self.segments.values():
+            if sg.get("bridge") or sg["class"] == "TUNNEL":
+                continue
+            a, b = self.nodes.get(sg["from"]), self.nodes.get(sg["to"])
+            if a is None or b is None:
+                continue
+            for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+                x = a["x"] + (b["x"] - a["x"]) * t
+                z = a["z"] + (b["z"] - a["z"]) * t
+                th = self.get_elevation(x, z)          # mặt đất thật (water=True)
+                road_y = a["y"] + (b["y"] - a["y"]) * t
+                if road_y < th - tol:
+                    _need(sg["from"], th - tol)
+                    _need(sg["to"], th - tol)
+        lifted = 0
+        worst = 0.0
+        for nid, y in need.items():
+            nd = self.nodes.get(nid)
+            if nd is None or nd["y"] >= y:
+                continue
+            worst = max(worst, y - nd["y"])
+            nd["y"] = y
+            # KHÔNG ghi `nd["elev"]`: P67 dùng `elev` làm MỐC GIỚI HẠN BẤT
+            # BIẾN. Ghi đè nó bằng cao độ đường là phá mốc, và lần
+            # `_grade_roads` sau sẽ lại trượt cửa sổ từ đó.
+            lifted += 1
+        print("      duong choi duoi dat: nang %d len mat dat (toan bo %d node, "
+              "sau toi da %0.1fm)" % (lifted, len(need), worst))
+        return lifted
+
     def _fix_final_slopes(self, max_grade=0.16):
         """ÉP LẠI ĐỘ DỐC SAU CÙNG (rule 20/36: xe khách không leo dốc >16%).
 
@@ -4838,6 +4915,10 @@ class MapGenerator:
         """
         self._limit_slopes(max_grade=0.12, passes=30, max_cut=11.0, max_fill=9.0)
         self._grade_roads()
+        # P65: hai hàm trên vừa tạo lại chỗ đường bị chôn, và chúng cũng vừa
+        # nới `max_cut` lên 11m — nên phải nâng lại TRƯỚC khi đo dốc, để node
+        # vừa nâng còn được đánh giá: dốc >16% thì thành cầu vượt (đúng luật).
+        self._unbury_roads()
         marked = 0
         worst = 0.0
         for sid, s in self.segments.items():

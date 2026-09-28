@@ -549,6 +549,82 @@ if direct:
     bad("11", "%d nhanh LOCAL/ALLEY/COLLECTOR noi thang vao nut cao toc "
               "(phai qua ramp hoac cau vuot)" % direct)
 
+# P66: `get_elevation` la METHOD, can instance that (khoi tao 0.015s,
+# do duoc). KHONG dung ham module va KHONG dat gia tri gia.
+_elev_ref = _mg.MapGenerator().get_elevation
+
+# ---------------------------------------------------------------- rule 21 (P66)
+# DUONG BI CHON DUOI DAT — xe chay xuyen dat
+# Do duoc trong game: 4/2214 node duong nam duoi terrain 2-10m
+# (IC_TL720 -6.4 -> -10.3m, IC_QL56 -0.6 -> -1.3m, QL1A -2.0m).
+# Da co `_fix_bridge_heights` (nang cau len) nhung THIEU phan nang duong choi (P65).
+#
+# `get_elevation` la METHOD cua MapGenerator, khong phai ham module. Tao
+# instance (khoi tao do duoc 0.015s). KHONG dat gia tri gia de cho audit chay:
+# p66 v1 goi no nhu ham module => `NameError` => audit CHET truoc khi kiem
+# het cac rule sau, tuc la audit im lang mat kha nang do (P48).
+#
+# CHI PHI: khong cache, 2.6ms/lan. 5 diem x 8287 doan = 108s qua nang cho
+# audit. Do thay bang: MOI node (1 mau) + giua cac doan DAI >150m. Doan ngan
+# gan nhu khong choi o giua (hai dau ke nhau, terrain doi cham); choi nghiem
+# trong do deu nam o ramp dai.
+_BURY_TOL = 0.30
+_elev_cache = {}
+
+
+def _terrain_at(x_, z_):
+    k_ = (int(x_ * 4.0), int(z_ * 4.0))
+    v_ = _elev_cache.get(k_)
+    if v_ is None:
+        v_ = _elev_ref(x_, z_)            # mat dat that (water=True)
+        _elev_cache[k_] = v_
+    return v_
+
+
+_buried = []
+_worst_bury = 0.0
+_nod_has_hw = set()
+for s_ in segs:
+    if s_.get("bridge") or s_.get("class") == "TUNNEL":
+        _nod_has_hw.add(s_["from"])
+        _nod_has_hw.add(s_["to"])
+
+for nid_, n_ in nodes.items():
+    if nid_ in _nod_has_hw:
+        continue
+    th_ = _terrain_at(n_["x"], n_["z"])
+    gap_ = n_.get("y", 0.0) - th_
+    if gap_ < -_BURY_TOL:
+        _worst_bury = min(_worst_bury, gap_)
+        _buried.append((nid_, "node", n_.get("n_type") or "-",
+                        round(gap_, 1), round(n_["x"]), round(n_["z"])))
+
+# giua doan: hai dau tren mat dat CHUA dam bao giua khong choi
+for s_ in segs:
+    if s_.get("bridge") or s_.get("class") == "TUNNEL":
+        continue
+    a_, b_ = nodes[s_["from"]], nodes[s_["to"]]
+    if math.hypot(b_["x"] - a_["x"], b_["z"] - a_["z"]) <= 150.0:
+        continue
+    for t_ in (0.25, 0.5, 0.75):
+        x_ = a_["x"] + (b_["x"] - a_["x"]) * t_
+        z_ = a_["z"] + (b_["z"] - a_["z"]) * t_
+        gap_ = (a_.get("y", 0.0) + (b_.get("y", 0.0) - a_.get("y", 0.0)) * t_) \
+            - _terrain_at(x_, z_)
+        if gap_ < -_BURY_TOL:
+            _worst_bury = min(_worst_bury, gap_)
+            _buried.append((s_["id"], s_.get("class"), s_.get("name") or "-",
+                            round(gap_, 1), round(x_), round(z_)))
+
+print("  duong choi duoi dat >%.2fm: %d diem (sau nhat %.1fm, %d mau cao do)"
+      % (_BURY_TOL, len(_buried), _worst_bury, len(_elev_cache)))
+if _buried:
+    for b_ in _buried[:8]:
+        print("      %-9s %-10s %-22s chim %sm tai (%d,%d)"
+              % (b_[0], b_[1], b_[2][:22], b_[3], b_[4], b_[5]))
+    bad("21", "%d diem duong bi choi duoi mat dat >%.2fm (xe chay xuyen dat; "
+              "sau nhat %.1fm)" % (len(_buried), _BURY_TOL, -_worst_bury))
+
 # ---------------------------------------------------------------- rule 20/36
 # do lech node.y vs terrain khong do duoc o day (can JS) — kiem slope
 max_slope = 0.0
