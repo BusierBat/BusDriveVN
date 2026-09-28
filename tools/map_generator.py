@@ -4477,6 +4477,24 @@ class MapGenerator:
             a_id, b_id = b_id, a_id
         L = self.nodes[a_id]
         K = self.nodes[b_id]
+        # P63: KIỂM TRƯỚC, THOÁT CẢ LẦN GỘP nếu có đoạn sẽ cắt ngang cao tốc
+        # sau khi dời. Gộp node = dời đầu đoạn tới vị trí hoàn toàn khác, nên
+        # đoạn 12m có thể thành đoạn 300m và cắt qua cao tốc. `add_segment`
+        # không cứu được vì weld không đi qua đó.
+        for sid in list(L["connections"]):
+            s_ = self.segments.get(sid)
+            if not s_:
+                continue
+            o_ = s_["to"] if s_["from"] == a_id else s_["from"]
+            if o_ == b_id:
+                continue
+            m_ = self.nodes.get(o_)
+            if m_ is None:
+                continue
+            if self._crosses_major(K["x"], K["z"], m_["x"], m_["z"]):
+                self._topo_reject["weld se cat nguang cao toc"] = \
+                    self._topo_reject.get("weld se cat nguang cao toc", 0) + 1
+                return 0
         drop = []
         for sid in list(L["connections"]):
             s = self.segments.get(sid)
@@ -4942,12 +4960,24 @@ class MapGenerator:
                 if L < 6.0:
                     continue
                 # ---- DIEU KIEN (theo danh cap) ----
-                if level < 2:
-                    if self._crosses_major(n["x"], n["z"], m["x"], m["z"]):
-                        continue
-                    if level < 1 and not self._seg_clear(
-                            (n["x"] + m["x"]) * 0.5, (n["z"] + m["z"]) * 0.5, 2.0, 1.0):
-                        continue
+                # P64: KHÔNG CẮT NGANG CAO TỐC — LUÔN CHẠY, không theo
+                # dàn cấp. Bản trước bọc trong `if level < 2` nên ở level >= 2
+                # luật bị bỏ qua hoàn toàn; đo được `s_8801 LOCAL noi_manh`
+                # cắt Vành đai 3 tại (-269597,-237561) ⇒ `validate()` chặn
+                # export. Và lớp escape ấy chẳng bổ ích: log cùng lần chạy in
+                # `khong noi duoc 2 node roi` — nới luật không nối được, chỉ
+                # làm hỏng validation.
+                #
+                # Phân biệt rõ: cắt ngang cao tốc là SAI TOPOLOGY (không có
+                # mức nào cho phép — đường nhỏ không được đi giao cấp mặt với
+                # cao tốc), còn `_seg_clear` (nước/dốc) là CHẤT LƯỢNG nên
+                # nới theo dàn cấp được. Trước đây hai thứ bị gộp chung một
+                # điều kiện.
+                if self._crosses_major(n["x"], n["z"], m["x"], m["z"]):
+                    continue
+                if level < 2 and not self._seg_clear(
+                        (n["x"] + m["x"]) * 0.5, (n["z"] + m["z"]) * 0.5, 2.0, 1.0):
+                    continue
                 # LIÊN THÔNG là ưu tiên 1, nhưng KHÔNG được liên thông bằng
                 # cách đâm LOCAL vào MẶT CAO TỐC (rule 11/60). Đo được 11
                 # `noi_manh` chạm thẳng nút cao tốc.
@@ -5481,11 +5511,13 @@ class MapGenerator:
             # đây `sp["step"]` và `0.36` CỐ ĐỊNH theo cỡ ⇒ 28 thị trấn chỉ có
             # 4 khuôn. `rng` đã seed theo `self.seed` nên vẫn TẤT ĐỊNH.
             R = sp["radius"]
-            st_step = sp["step"] * rng.uniform(0.78, 1.26)
-            sc = st_step * rng.uniform(0.18, 0.62)
+            st_step = sp["step"] * rng.uniform(0.85, 1.18)
+            sc = st_step * rng.uniform(0.22, 0.52)
             # TỈ LỆ KÉO DÀI: thị trấn ven đường dọc, thành phố vuông, thị
             # trấn trải rộng ngang. Đây là đổi HÌNH DẠNG, không phải rung lệch.
-            aspect = rng.uniform(0.50, 1.50)
+            # P62: hẹp lại từ U(0.50,1.50) của P61. Bản rộng làm mất 887 node
+            # và sinh "đường cắt ngang cao tốc không qua nút giao" (đo được).
+            aspect = rng.uniform(0.80, 1.25)
             # nhưng phải trên đất liền, không dưới nước / quá sát biển
             if self.water_factor(cx, cz) > 0.05 or self.dist_to_coast(cx, cz) < 25.0:
                 moved = False
@@ -5568,23 +5600,12 @@ class MapGenerator:
                     return False
                 return self._seg_clear(x, z, 9.0, 3.0)
 
-            # P61: SUPERBLOCK — bỏ 1-2 hàng và 1-2 cột NGUYÊN của lưới ⇒
-            # thị trấn có block lớn như thật, không phải lưới ô vuông đều tăm
-            # tắp (đo được `ty ngang:doc = 1.00` trong audit là dấu hiệu).
-            drop_u = set()
-            drop_v = set()
-            if len(us) >= 7 and len(vs) >= 7:
-                for _b in range(rng.randint(1, 2)):
-                    drop_u.add(rng.randrange(1, len(us) - 1))
-                    drop_v.add(rng.randrange(1, len(vs) - 1))
-
+            # P62: BỎ superblock của P61. Xoá cả hàng/cột làm mất 887 node
+            # và đứt mạng. Superblock vốn ĐÃ CÓ: đoạn dưới đây đã bỏ ~8%
+            # cạnh để sinh siêu block + ngõ cụt.
             nid_of = {}
             for iu, uu in enumerate(us):
-                if iu in drop_u:
-                    continue
                 for iv, vv in enumerate(vs):
-                    if iv in drop_v:
-                        continue
                     x = cx + px_ * uu + ax_ * vv
                     z = cz + pz_ * uu + az_ * vv
                     wa, wb = _warp(x, z)
