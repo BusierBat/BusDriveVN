@@ -1267,10 +1267,16 @@ export class MapLoader {
             if (s.type !== "BUS_STATION" && s.type !== "MAJOR_BUS_TERMINAL") continue;
             const r = s.rot || 0;
             const dx = x - s.x, dz = z - s.z;
+            // `(lx,lz)` ở đây = `Rᵀ(rot)·(dx,dz)` = Hệ cục bộ của group bến:
+            //   lx = oz (dọc theo đường chính),  lz = ox (vuông góc, vào bến).
+            // Do đó ô ĐÚNG là  lx ∈ ±d/2 (chiều dọc đường),  lz ∈ ±w/2.
+            // Bản cũ gán  lx ∈ ±w/2, lz ∈ ±d/2  = ĐẢO W/D ⇒ rect bị xoay 90°
+            // so với sân thực tế. Đo được: 20/20 góc đường nội bộ rớt ra ngoài
+            // (|lz| = hw−12 = 83 > d/2 = 70) ⇒ 3 đoạn INTERNAL chém ngang sân.
             const lx = dx * Math.cos(r) - dz * Math.sin(r);
             const lz = dx * Math.sin(r) + dz * Math.cos(r);
-            if (Math.abs(lx) <= (s.w || 180) * 0.5 &&
-                Math.abs(lz) <= (s.d || 130) * 0.5) return true;
+            if (Math.abs(lx) <= (s.d || 130) * 0.5 &&
+                Math.abs(lz) <= (s.w || 180) * 0.5) return true;
         }
         return false;
     }
@@ -2537,9 +2543,13 @@ export class MapLoader {
                 const yl = this._yardLift();
                 const top = new MeshAccum();
                 const sideA = new MeshAccum();
+                // P58: HỆ CỤC BỘ CỦA GROUP = (oz, ox), KHÔNG phải (ox, oz).
+                //   w = 190 là chiều DỌC trục ox (vuông góc đường) -> ô lz (z cục bộ)
+                //   d = 140 là chiều NGANG trục oz (dọc đường)     -> ô lx (x cục bộ)
+                // Bản cũ đặt W lên x, D lên z = xoay sân 90° so với đường nội bộ.
                 const ring = [
-                    [-W / 2, 0, -D / 2], [W / 2, 0, -D / 2],
-                    [W / 2, 0, D / 2], [-W / 2, 0, D / 2]
+                    [-D / 2, 0, -W / 2], [D / 2, 0, -W / 2],
+                    [D / 2, 0, W / 2], [-D / 2, 0, W / 2]
                 ].map(q => [q[0], yl, q[2]]);
                 // P57: chiều kim phải để pháp tuyến hướng LÊN (+Y).
                 // `quad(a,b,c,d)` sinh (a,b,c)+(b,d,c); với ring theo chiều
@@ -2549,9 +2559,13 @@ export class MapLoader {
                 // đen. Đảo chiều ở đây.
                 top.quad(ring[1], ring[0], ring[3], ring[2]);
                 const sa_ = Math.sin(s.rot || 0), ca_ = Math.cos(s.rot || 0);
+                // P58: local -> world PHẢI theo ma trận của `g.rotation.y`:
+                //   x' = lx·cos(r) + lz·sin(r) ;  z' = −lx·sin(r) + lz·cos(r)
+                // Bản cũ dùng w2() của generator (phản xạ, det = −1) ⇒ mẫu
+                // terrain lệch hàng chục mét ⇒ váy sân bám nhầm chỗ.
                 const bots = ring.map(q => {
-                    const wx = s.x + q[0] * sa_ + q[2] * ca_;
-                    const wz = s.z + q[0] * ca_ - q[2] * sa_;
+                    const wx = s.x + q[0] * ca_ + q[2] * sa_;
+                    const wz = s.z - q[0] * sa_ + q[2] * ca_;
                     return Math.min(q[1] - ROAD_THICK,
                         this.world.getElevation(wx, wz) - 0.05);
                 });
@@ -2568,37 +2582,48 @@ export class MapLoader {
 
             // 2) vạch ranh sân
             const edge = new THREE.Mesh(this._geos.unitBox, M.paintWhite);
-            edge.scale.set(W, 0.05, 0.35);
-            edge.position.set(0, this.world.yardLift + 0.03, D / 2 - 2);
+            // P58: dọc đường = trục x cục bộ (chiều D), hướng vào bến = trục z (chiều W)
+            edge.scale.set(D, 0.05, 0.35);
+            edge.position.set(0, this.world.yardLift + 0.03, W / 2 - 2);
             g.add(edge);
 
-            // 3) nhà ga (ticket building) — toà nhà 2 tầng + mái + cửa kính
-            const tbW = W * 0.34, tbD = D * 0.22, tbH = 13;
+            // 3) nhà ga (ticket building) — LẤY TỪ `structures` CỦA GENERATOR.
+            //    stations.json ghi rõ "JS vẽ sân + nha ga + cong trinh tu data
+            //    nay. Truoc day JS tu tinh lai toa do World => lech khung" — nhưng
+            //    bản cũ vẫn hard-code toạ độ CỤC BỘ theo hệ (ox, oz) trong khi
+            //    group bến dùng hệ (oz, ox) ⇒ toàn bộ nhà ga/utility lệch 90°.
+            //    gen.w nằm trên trục ox (vào bến) -> bề DÀI cục bộ = trục z
+            //    gen.d nằm trên trục oz (dọc đường) -> bề NGANG cục bộ = trục x
+            const term = (s.structures || []).find(k => k.type === "TERMINAL");
+            const tbOut = term ? term.d : D * 0.22;   // bề ngang cục bộ (dọc đường)
+            const tbLen = term ? term.w : W * 0.34;   // bề dài cục bộ (vuông góc đường)
+            const tbX = term ? term.oz : -D * 0.12;   // = oz
+            const tbZ = term ? term.ox : -W * 0.28;   // = ox
+            const tbH = 13;
             const tb = new THREE.Mesh(this._geos.unitBox, M.wall);
-            tb.scale.set(tbW, tbH, tbD);
-            tb.position.set(-W * 0.12, tbH / 2 + this.world.yardLift, -D * 0.28);
+            tb.scale.set(tbOut, tbH, tbLen);
+            tb.position.set(tbX, tbH / 2 + this.world.yardLift, tbZ);
             g.add(tb);
             const glassBand = new THREE.Mesh(this._geos.unitBox, M.glass);
-            glassBand.scale.set(tbW * 1.01, 3.4, tbD * 1.01);
-            glassBand.position.set(-W * 0.12, 8.6 + this.world.yardLift, -D * 0.28);
+            glassBand.scale.set(tbOut * 1.01, 3.4, tbLen * 1.01);
+            glassBand.position.set(tbX, 8.6 + this.world.yardLift, tbZ);
             g.add(glassBand);
             const roof = new THREE.Mesh(this._geos.unitBox, M.roof);
-            roof.scale.set(tbW * 1.12, 0.7, tbD * 1.15);
-            roof.position.set(-W * 0.12, tbH + this.world.yardLift + 0.3, -D * 0.28);
+            roof.scale.set(tbOut * 1.12, 0.7, tbLen * 1.15);
+            roof.position.set(tbX, tbH + this.world.yardLift + 0.3, tbZ);
             g.add(roof);
-            // mái đón khách
+            // mái đón khách — nhô về phía CỔNG (+z cục bộ = +ox = hướng đường chính)
             const awn = new THREE.Mesh(this._geos.unitBox, M.metal);
-            awn.scale.set(tbW * 0.9, 0.3, 6);
-            awn.position.set(-W * 0.12, 5.2, -D * 0.28 + tbD / 2 + 3);
+            awn.scale.set(tbOut * 0.9, 0.3, 6);
+            awn.position.set(tbX, 5.2, tbZ + tbLen / 2 + 3);
             g.add(awn);
 
-            // 4) tiện ích
-            const utils = [
-                { x: -W * 0.38, z: D * 0.28, w: 10, d: 8, h: 4.5 },
-                { x: W * 0.36, z: -D * 0.22, w: 9, d: 7, h: 4.0 },
-                { x: W * 0.36, z: D * 0.26, w: 14, d: 10, h: 6.0 },
-                { x: -W * 0.36, z: -D * 0.05, w: 8, d: 6, h: 3.6 }
-            ];
+            // 4) tiện ích (kho/nhà vệ sinh/quầy) — cũng từ `structures`
+            const utils = [];
+            for (const k of (s.structures || [])) {
+                if (k.type === "TERMINAL") continue;
+                utils.push({ x: k.oz, z: k.ox, w: k.d, d: k.w, h: k.type === "WAREHOUSE" ? 6.0 : 4.5 });
+            }
             for (const u of utils) {
                 const b = new THREE.Mesh(this._geos.unitBox, M.wall);
                 b.scale.set(u.w, u.h, u.d);
@@ -2617,16 +2642,23 @@ export class MapLoader {
             for (let i = 0; i < slots.length; i++) {
                 const slot = slots[i];
                 const lx = slot.x - s.x, lz = slot.z - s.z;
-                const c = Math.cos(-(s.rot || 0)), sn = Math.sin(-(s.rot || 0));
+                // P58: world -> cục bộ phải dùng Rᵀ(rot) = ĐẢO ma trận của
+                // `g.rotation.y`, tức cos(+rot)/sin(+rot). Bản cũ lấy cos(−rot)
+                // = áp DUNG ma trận chuyển tiếp ⇒ xoay HAI LẦN (đo: lệch
+                // 110.8 / 115.7 / 130.2 / 130.2 m ⇒ "cột, mái lung tung").
+                const c = Math.cos(s.rot || 0), sn = Math.sin(s.rot || 0);
                 const lxx = lx * c - lz * sn, lzz = lx * sn + lz * c;
                 // nan nằm trên mặt sân tại độ cao thật của slot (sân có thể nghiêng)
                 const baseY = (typeof slot.y === "number" && typeof s.y === "number")
                     ? (slot.y - s.y) : this.world.yardLift;
 
                 const canopy = new THREE.Mesh(this._geos.unitBox, M.metal);
+                // P58: mái che/nan bám TRỤC CỦA GROUP (lxx = dọc đường,
+                // lzz = trục đỗ xe) — không cần xoay thêm. Bản cũ đặt
+                // `rotation.y = −rot` ⇒ tổng quay = 0 (cố định theo WORLD)
+                // ⇒ mái che quay lệch so với hàng bãi.
                 canopy.scale.set(5.0, 0.35, 13);
                 canopy.position.set(lxx, baseY + 6.0, lzz);
-                canopy.rotation.y = -(s.rot || 0);
                 g.add(canopy);
 
                 for (const dz of [-5.5, 5.5]) {
@@ -2640,7 +2672,6 @@ export class MapLoader {
                 const mark = new THREE.Mesh(this._geos.unitBox, M.paintWhite);
                 mark.scale.set(0.3, 0.06, 12);
                 mark.position.set(lxx - 3.2, baseY + 0.06, lzz);
-                mark.rotation.y = -(s.rot || 0);
                 g.add(mark);
 
                 const key = Math.round(lxx / 18);
@@ -2692,17 +2723,18 @@ export class MapLoader {
         this._signMats = this._signMats || [];
         this._signMats.push(mat);
 
-        const sw = Math.min(46, W * 0.42);
+        // P58: trục x cục bộ = DỌC ĐƯỜNG (chiều D), trục z cục bộ = HƯỚNG ĐƯỜNG (W)
+        const sw = Math.min(46, D * 0.42);
         const board = new THREE.Mesh(this._geos.unitBox, mat);
         board.scale.set(sw, sw * 0.25, 0.5);
-        // cổng bến ở phía -Z cục bộ (nhà ga), đặt biển ở nửa sân hướng về
-        // đường chính để không chắn lối xe
-        board.position.set(0, 9.5, D * 0.42);
+        // CỔNG bến nằm ở phía +Z cục bộ (= +ox = hướng đường chính), đặt biển
+        // ở nửa sân hướng ra đường để khách nhìn thấy khi tới.
+        board.position.set(0, 9.5, W * 0.42);
         g.add(board);
         for (const sx of [-sw * 0.45, sw * 0.45]) {
             const post = new THREE.Mesh(this._geos.pole, M.metal);
             post.scale.set(1.0, 9.5, 1.0);
-            post.position.set(sx, 4.75, D * 0.42);
+            post.position.set(sx, 4.75, W * 0.42);
             g.add(post);
         }
     }
@@ -2713,11 +2745,11 @@ export class MapLoader {
         const y = this.world.yardLift;
         const polePos = [], lampPos = [], lampRot = [];
         const treePos = [], treeRot = [];
-        // đèn dọc 2 lề dài của sân
+        // đèn dọc 2 lề dài của sân — P58: x cục bộ = dọc đường (D), z = hướng đường (W)
         for (let i = -2; i <= 2; i++) {
             const t = i / 2.5;
             for (const sx of [-1, 1]) {
-                const px = t * W * 0.42, pz = sx * (D * 0.5 - 4);
+                const px = t * D * 0.42, pz = sx * (W * 0.5 - 4);
                 polePos.push([px, y, pz]);
                 lampPos.push([px, y + 8.6, pz]);
                 lampRot.push(sx > 0 ? Math.PI : 0);
@@ -2725,9 +2757,9 @@ export class MapLoader {
         }
         // cây bóng mát dọc rìa sân (không chắn nan đỗ ở giữa)
         for (let i = -3; i <= 3; i++) {
-            const px = i * (W * 0.13);
-            if (Math.abs(px) < W * 0.16) continue;
-            treePos.push([px, y, -D * 0.5 + 6]);
+            const px = i * (D * 0.13);
+            if (Math.abs(px) < D * 0.16) continue;
+            treePos.push([px, y, -W * 0.5 + 6]);
             treeRot.push((i % 2) * 0.7);
         }
         const m4 = new THREE.Matrix4(), q = new THREE.Quaternion();
