@@ -21,6 +21,38 @@ def bad(rule, msg):
     issues.append((rule, msg))
 
 
+def _obb_overlap(a, b):
+    """Hai hộp xoay (cx, cz, hw, hd, rot, id) có cắt nhau không? — SAT 4 trục.
+
+    Dùng để phát hiện POI/bến chồng lấn. Khoảng hở `slack` (m) cho phép lề
+    an toàn: 2 hộp chạm sát nhau vẫn tính là KHÔNG chồng.
+    """
+    slack = 6.0
+
+    def axes(box):
+        cx, cz, hw, hd, rot, _id = box
+        c, s = math.cos(rot), math.sin(rot)
+        return [((c, s), (s, -c)), ((c, -s), (s, c))]
+
+    def corners(box):
+        cx, cz, hw, hd, rot, _id = box
+        c, s = math.cos(rot), math.sin(rot)
+        return [(cx + ox * c - oz * s, cz + ox * s + oz * c)
+                for (ox, oz) in ((-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd))]
+
+    ca, cb = corners(a), corners(b)
+    for (nx, ny), _ in axes(a) + axes(b):
+        pa = [x * nx + z * ny for (x, z) in ca]
+        pb = [x * nx + z * ny for (x, z) in cb]
+        gap = min(pa) - max(pb)
+        if gap > slack:
+            return False
+        gap = min(pb) - max(pa)
+        if gap > slack:
+            return False
+    return True
+
+
 def load(name):
     with open(os.path.join(MAPS, name), encoding="utf-8") as f:
         return json.load(f)
@@ -86,23 +118,27 @@ for s in segs:
 deg = {nid: len(set(adj[nid])) for nid in nodes}
 seen = set()
 best_cc = 0
+main_component = set()      # tập node của thành phần lớn nhất (dùng ở rule P7-st)
 start_list = sorted(nodes.keys(), key=lambda i: -deg.get(i, 0))
 for st in start_list:
     if st in seen:
         continue
     q = deque([st])
     seen.add(st)
-    cnt = 0
+    comp = set([st])
     while q:
         u = q.popleft()
-        cnt += 1
         for v in adj[u]:
             if v not in seen:
                 seen.add(v)
+                comp.add(v)
                 q.append(v)
-    best_cc = max(best_cc, cnt)
+    if len(comp) > best_cc:
+        best_cc = len(comp)
+        main_component = comp
 print("  connected component lon nhat: %d/%d node (%.2f%%)" %
       (best_cc, len(nodes), 100.0 * best_cc / max(1, len(nodes))))
+print("  node NGOAI thanh phan chinh: %d" % (len(nodes) - best_cc))
 if best_cc < len(nodes) * 0.99:
     bad("53", "do thi khong lien tinh: chi %.1f%% node nam trong component lon nhat"
         % (100.0 * best_cc / max(1, len(nodes))))
@@ -116,7 +152,7 @@ BA = defaultdict(list)
 for sg in segs:
     BA[sg["from"]].append(sg)
     BA[sg["to"]].append(sg)
-DEAD_CLS = ("COLLECTOR", "LOCAL", "ARTERIAL", "RURAL_LOCAL", "NATIONAL")
+DEAD_CLS = ("COLLECTOR", "PROVINCIAL_ROAD", "LOCAL", "ARTERIAL", "RURAL_LOCAL", "NATIONAL")
 leaves = [nid for nid in nodes if deg.get(nid, 0) == 1]
 leaf_road = []
 for nid in leaves:
@@ -141,15 +177,13 @@ _spec = _ilu.spec_from_file_location("mg", os.path.join(ROOT, "tools",
                                                         "map_generator.py"))
 _mg = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_mg)
-# P48 — IMPORT TƯƠNG ĐỐI. Đo được `AttributeError: ... has no attribute
+# IMPORT TƯƠNG ĐỐI. Đo được `AttributeError: ... has no attribute
 # 'CROSS_MISS'`: audit chết ở dòng này, TRƯỚC khi kiểm tra bất kỳ thứ gì —
 # mất khả năng đo được, và người đọc dễ tưởng "audit pass" trong khi audit
 # chưa chạy dòng nào.
-#
 # Nguyên nhân: `tools/map_generator.py` trong working tree là một BIẾN THỂ
 # KHÁC của tầng topology (có `TOPO_RANK` riêng, `_TOPO_LEGAL_RAW`, không có
 # `CROSS_MISS`). Audit vẫn trỏ tới biến thể đã bị thay thế.
-#
 # KHÔNG đặt giá trị giả để "cho chạy": ngưỡng đo sai thì audit XANH giả còn
 # nguy hiểm hơn audit đỏ. Thiếu thì in cảnh báo rõ ràng và bỏ quy tắc phụ
 # thuộc nó; các quy tắc còn lại vẫn chạy.
@@ -183,7 +217,15 @@ if linkish == 0 and junc > 200:
               "dang bi dem la nga giao" % junc)
 
 # --- (b) T1: hai nga giao lien tiep < 45m tren cung duong -----------------
-JUNC_T = ("junction", "local", "highway", "crossing", "ramp", "tunnel")
+JUNC_T = ("junction", "local", "highway", "crossing", "ramp", "tunnel",
+          # --- node type của 5 road type mới (`ROAD_TYPE_OF_CLASS`) ---
+          # Thiếu 5 key này thì T1 BỎ QUA đúng những cặp ngã tư sát nhau nằm
+          # trong lớp phố vừa sinh ra: `residential`/`commercial` là `local` về
+          # nghĩa, bỏ chúng là đo trừng phạt đúng chỗ vừa sửa. Danh sách đã
+          # sẵn thiếu `collector`/`arterial`/`alley` từ trước — ghi ra để lần
+          # sau ai cũng thấy, đừng tưởng là đủ.
+          "inter_village", "industrial_access", "residential", "commercial",
+          "agricultural")
 ACC_CLS = ("STATION_ACCESS", "INTERNAL", "SERVICE")
 adj_j = 0
 close_by_cls = Counter()
@@ -199,7 +241,7 @@ for nid, arr in BA.items():
         dd = math.hypot(nodes[o]["x"] - nodes[nid]["x"],
                         nodes[o]["z"] - nodes[nid]["z"])
         # nguong theo BAC cua CHINH doan nay (P28, cung hang so voi
-        # `topo_link_ok`): ngo 30m giua hai khoi la binh thuong, con QL1A
+        # `topo_link_ok`): ngo 30m giua hai khoi la binh thuong, con QL1
         # 11m / Vanh dai 3 8.4m moi la loi that (xe vao 11m la ra khoi duong).
         lim = TOPO_MIN_LINK_LEN.get(TOPO_RANK.get(sg.get("class"), 3), 0.0)
         if lim > 0.0 and dd < lim and o > nid:     # moi cap dem 1 lan
@@ -330,7 +372,7 @@ if cross_n > 8:
         % (cross_n, int(CROSS_MISS), cross_pairs[:4]))
 
 # --- (e) T5: cấp nối theo MA TRAN cua generator -------------------------
-# KHÔNG hiểu "lệch > 1 bậc": node giao cao tốc (bậc 0) + QL1A (bậc 2) là
+# KHÔNG hiểu "lệch > 1 bậc": node giao cao tốc (bậc 0) + QL1 (bậc 2) là
 # nút giao HỢP LỆ, heuristic đó báo 660 lỗi sai. Dùng chính TOPO_LEGAL.
 hier_bad = 0
 hier_ex = []
@@ -346,12 +388,12 @@ def _cls_of(nid):
 
 
 for nid, arr in BA.items():
-    # P48: bỏ qua T5 nếu generator không có ma trận (không đo được đại lượng
+    # bỏ qua T5 nếu generator không có ma trận (không đo được đại lượng
     # này thì không phát ra kết luận).
     if not TOPO_LEGAL:
         break
-    # CÓ NHÁNH CẦU VƯỢT => giao KHÁC MỨC, hợp pháp. QL1A giao CT01 là ngã giao
-    # khác mức thật (đo được: n_303 / n_1410, cả nhánh QL1A đều bridge=True).
+    # CÓ NHÁNH CẦU VƯỢT => giao KHÁC MỨC, hợp pháp. QL1 giao CT01 là ngã giao
+    # khác mức thật .
     if any(sg.get("bridge") for sg in arr):
         continue
     present = set(sg.get("class") for sg in arr)
@@ -489,7 +531,7 @@ print("  cap nhanh trung goc <%.0f do (duong chong nhau): %d o %d node"
       % (NEAR_DEG, coincident, len(coincident_nodes)))
 if coincident > 0:
     # Ghi rõ ràng buộc phải chọn: 78/80 lần chuyển nhánh bị CHẶN vì sẽ cắt
-    # mạng (đo được: 1 thành phần -> 61 thành phần). Ưu tiên road network
+    # mạng . Ưu tiên road network
     # liên thông (rule 53) hơn hạ cap hình học cục bộ (rule 6). Renderer đã có
     # junction patch thật nên đường chồng nhẹ không gây z-fighting.
     bad("6/12", "%d cap nhanh cung goc duoi %.0f do o %d node — chap nhan de doi "
@@ -549,26 +591,28 @@ if direct:
     bad("11", "%d nhanh LOCAL/ALLEY/COLLECTOR noi thang vao nut cao toc "
               "(phai qua ramp hoac cau vuot)" % direct)
 
-# P66: `get_elevation` la METHOD, can instance that (khoi tao 0.015s,
+# `get_elevation` la METHOD, can instance that (khoi tao 0.015s,
 # do duoc). KHONG dung ham module va KHONG dat gia tri gia.
 _elev_ref = _mg.MapGenerator().get_elevation
 
 # ---------------------------------------------------------------- rule 21 (P66)
 # DUONG BI CHON DUOI DAT — xe chay xuyen dat
 # Do duoc trong game: 4/2214 node duong nam duoi terrain 2-10m
-# (IC_TL720 -6.4 -> -10.3m, IC_QL56 -0.6 -> -1.3m, QL1A -2.0m).
+# (IC_TL720 -6.4 -> -10.3m, IC_QL56 -0.6 -> -1.3m, QL1 -2.0m).
 # Da co `_fix_bridge_heights` (nang cau len) nhung THIEU phan nang duong choi (P65).
-#
 # `get_elevation` la METHOD cua MapGenerator, khong phai ham module. Tao
 # instance (khoi tao do duoc 0.015s). KHONG dat gia tri gia de cho audit chay:
-# p66 v1 goi no nhu ham module => `NameError` => audit CHET truoc khi kiem
+# v1 goi no nhu ham module => `NameError` => audit CHET truoc khi kiem
 # het cac rule sau, tuc la audit im lang mat kha nang do (P48).
-#
 # CHI PHI: khong cache, 2.6ms/lan. 5 diem x 8287 doan = 108s qua nang cho
 # audit. Do thay bang: MOI node (1 mau) + giua cac doan DAI >150m. Doan ngan
 # gan nhu khong choi o giua (hai dau ke nhau, terrain doi cham); choi nghiem
 # trong do deu nam o ramp dai.
+# đo CẢ HAI chiều. Chỉ kiểm chôn là bỏ trót chiều lơ lửng — đo được
+# `n_100 roadY 10.54 | terrain -14.65 | +25.19m`. Ngưỡng lơ lửng CAO HƠN
+# (3m) vì đường trên cầu vượt/đắp nền hợp lệ cao hơn chút; 25m là lỗi chắc.
 _BURY_TOL = 0.30
+_FLOAT_TOL = 3.0
 _elev_cache = {}
 
 
@@ -582,7 +626,9 @@ def _terrain_at(x_, z_):
 
 
 _buried = []
+_floated = []
 _worst_bury = 0.0
+_worst_float = 0.0
 _nod_has_hw = set()
 for s_ in segs:
     if s_.get("bridge") or s_.get("class") == "TUNNEL":
@@ -598,6 +644,10 @@ for nid_, n_ in nodes.items():
         _worst_bury = min(_worst_bury, gap_)
         _buried.append((nid_, "node", n_.get("n_type") or "-",
                         round(gap_, 1), round(n_["x"]), round(n_["z"])))
+    elif gap_ > _FLOAT_TOL:
+        _worst_float = max(_worst_float, gap_)
+        _floated.append((nid_, "node", n_.get("n_type") or "-",
+                         round(gap_, 1), round(n_["x"]), round(n_["z"])))
 
 # giua doan: hai dau tren mat dat CHUA dam bao giua khong choi
 for s_ in segs:
@@ -615,15 +665,28 @@ for s_ in segs:
             _worst_bury = min(_worst_bury, gap_)
             _buried.append((s_["id"], s_.get("class"), s_.get("name") or "-",
                             round(gap_, 1), round(x_), round(z_)))
+        elif gap_ > _FLOAT_TOL:
+            _worst_float = max(_worst_float, gap_)
+            _floated.append((s_["id"], s_.get("class"), s_.get("name") or "-",
+                             round(gap_, 1), round(x_), round(z_)))
 
-print("  duong choi duoi dat >%.2fm: %d diem (sau nhat %.1fm, %d mau cao do)"
-      % (_BURY_TOL, len(_buried), _worst_bury, len(_elev_cache)))
+print("  duong choi duoi dat >%.2fm: %d diem (sau nhat %.1fm) | duong lo "
+      "lung >%.1fm: %d diem (toi nhat %.1fm) | %d mau cao do"
+      % (_BURY_TOL, len(_buried), _worst_bury, _FLOAT_TOL, len(_floated),
+         _worst_float, len(_elev_cache)))
 if _buried:
-    for b_ in _buried[:8]:
-        print("      %-9s %-10s %-22s chim %sm tai (%d,%d)"
-              % (b_[0], b_[1], b_[2][:22], b_[3], b_[4], b_[5]))
+    for b_ in _buried[:6]:
+        print("      CHON  %-9s %-10s %-20s %sm tai (%d,%d)"
+              % (b_[0], b_[1], b_[2][:20], b_[3], b_[4], b_[5]))
     bad("21", "%d diem duong bi choi duoi mat dat >%.2fm (xe chay xuyen dat; "
               "sau nhat %.1fm)" % (len(_buried), _BURY_TOL, -_worst_bury))
+if _floated:
+    for b_ in _floated[:6]:
+        print("      LUNG   %-9s %-10s %-20s +%sm tai (%d,%d)"
+              % (b_[0], b_[1], b_[2][:20], b_[3], b_[4], b_[5]))
+    bad("22", "%d diem duong lo lung tren mat dat >%.1fm (duong treo trong "
+              "khong; toi nhat %.1fm)" % (len(_floated), _FLOAT_TOL,
+                                          _worst_float))
 
 # ---------------------------------------------------------------- rule 20/36
 # do lech node.y vs terrain khong do duoc o day (can JS) — kiem slope
@@ -761,6 +824,7 @@ print("=== 3. DIEM DUNG ===")
 stops = [s for s in stations if s.get("type") == "BUS_STOP"]
 # kiem tra khoang cach tren truc route
 rt = routes[0] if routes else None
+total = 0.0            # do dai tuyen do AUDIT tu do (khong lay tu `eta`)
 if rt and len(rt.get("nodes", [])) > 2:
     pts = [nodes[i] for i in rt["nodes"] if i in nodes]
     chain = [0.0]
@@ -788,6 +852,74 @@ if rt and len(rt.get("nodes", [])) > 2:
         if close:
             bad("17", "%d khoang cach diem dung < 600m tren truc (nham diem dung)" % len(close))
 
+# ------------------------------------------------------------- rule 12/80-84
+# ETA TUYEN + LOP HANH CHINH. P71: `travelTime` cu la hang so 9*3600 chep tay.
+# O day audit TU DO lai (khong tin generator) roi so voi `routes[0].eta`.
+print("=== 3b. ETA + HANH CHINH ===")
+eta = (rt or {}).get("eta")
+if not isinstance(eta, dict) or not eta.get("totalSeconds"):
+    bad("12/80", "routes[0].eta thieu hoac totalSeconds = 0 "
+                 "(ETA phai TINH RA, khong hard-code)")
+else:
+    parts = (eta.get("driveSeconds", 0.0) + eta.get("junctionSeconds", 0.0)
+             + eta.get("stationSeconds", 0.0) + eta.get("busStopSeconds", 0.0))
+    if abs(parts - eta["totalSeconds"]) > 1.0:
+        bad("12/80", "ETA tong (%.1fs) != tong thanh phan (%.1fs)"
+            % (eta["totalSeconds"], parts))
+    if abs(eta["totalSeconds"] - 9 * 3600) < 1.0:
+        bad("12/80", "ETA = 32400s DUNG BANG HANG SO 9 GIO CU - van la hard-code")
+    if not eta.get("model", {}).get("note"):
+        bad("12/80", "ETA thong bao he so la tham so mo hinh (model.note)")
+    if total > 0:
+        rel = abs(eta.get("distanceM", 0.0) - total) / total
+        if rel > 0.03:
+            bad("12/81", "ETA distanceM=%.0fm lech tuyen do audit do %.0fm (%.2f%%)"
+                % (eta.get("distanceM", 0.0), total, rel * 100))
+    v = eta.get("avgSpeedKmh", 0.0)
+    if not (30.0 <= v <= 75.0):
+        bad("12/82", "ETA toc do trung binh %.1f km/h ngoai khoang 30-75 "
+                     "(khong hop le voi xe khach QL1)" % v)
+    # P71 REGRESSION GUARD: nhanh dwell ben truoc day LUON = 0 vi dung hop tam
+    # ben thay vi `anchor_node` -> nhanh la code chet. Phai co ben tren tuyen.
+    bus_st = [s for s in stations
+              if s.get("type") in ("BUS_STATION", "MAJOR_BUS_TERMINAL")]
+    if bus_st and eta.get("stationsOnRoute", 0) <= 0:
+        bad("12/83", "co %d ben xe nhung ETA bao stationsOnRoute=0 - nhanh "
+                     "dwell ben dang chet (P71)" % len(bus_st))
+    if bus_st and eta.get("stationSeconds", 0.0) <= 0:
+        bad("12/83", "ETA stationSeconds=0 trong khi co ben xe tren tuyen")
+    print("  ETA %.2f h | %.1f km | tb %.1f km/h | %d nut giao (%.0fs) | "
+          "%d ben (%.0fs) | %d diem dung (%.0fs)"
+          % (eta.get("totalHours", eta["totalSeconds"] / 3600.0),
+             eta.get("distanceM", 0) / 1000.0, v, eta.get("junctions", 0),
+             eta.get("junctionSeconds", 0.0), eta.get("stationsOnRoute", 0),
+             eta.get("stationSeconds", 0.0), eta.get("busStopsOnRoute", 0),
+             eta.get("busStopSeconds", 0.0)))
+
+adm = world.get("admin")
+if not isinstance(adm, dict) or not adm.get("units"):
+    bad("12/84", "world.json thieu khoi 'admin' (don vi hanh chinh sau sap nhap "
+                 "12/6/2025) - js/map.js getAdminUnit() se tra null o moi noi")
+else:
+    if not adm.get("axis"):
+        bad("12/84", "world.admin.thieu 'axis' - js/map.js phai lay truc do tu "
+                     "day, KHONG tu suy lai (README 3g/P19)")
+    _seen, _dupu = set(), 0
+    for u in adm["units"]:
+        k = (u.get("province"), u.get("name"))
+        if k in _seen:
+            _dupu += 1
+        _seen.add(k)
+        if u.get("onCorridor") is False and not u.get("kmApprox"):
+            bad("12/84", "don vi %s/%s khong nam tren tuyen nhung khong co "
+                         "co do kmApprox" % (u.get("province"), u.get("name")))
+    if _dupu:
+        bad("12/84", "%d don vi hanh chinh trung ten+tinh" % _dupu)
+    print("  admin: %d don vi / %d tinh | %d don vi gan tuyen | axis %d diem"
+          % (len(adm["units"]), len({u.get("province") for u in adm["units"]}),
+             sum(1 for u in adm["units"] if u.get("onCorridor")),
+             len(adm.get("axis") or [])))
+
 # ---------------------------------------------------------------- rule 15/22
 print("=== 4. NHA / BUILDING ===")
 sec_dir = os.path.join(MAPS, "sectors")
@@ -795,6 +927,7 @@ files = sorted(os.listdir(sec_dir))
 total_b = 0
 on_road = []
 btypes = Counter()
+bsigs = Counter()
 for fn in files:
     with open(os.path.join(sec_dir, fn), encoding="utf-8") as f:
         sec = json.load(f)
@@ -802,6 +935,10 @@ for fn in files:
         for b in (ch.get("buildings") or []):
             total_b += 1
             btypes[b.get("type", "?")] += 1
+            # CHU KY HINH HOC: KHONG KE MAU. Hai nha chung ky = cung hinh.
+            bsigs[(b.get("type"), b.get("nf"), b.get("w"), b.get("d"),
+                   b.get("roof_type"), b.get("wing", 0), b.get("fl", 0),
+                   b.get("mir", 0))] += 1
             p = road_probe(b["x"], b["z"], 60)
             if p is None:
                 continue
@@ -812,7 +949,19 @@ for fn in files:
                     on_road.append((b, seg.get("class"), d))
             elif d < w * 0.75:
                 on_road.append((b, seg.get("class"), d))
-print("  tong nha: %d | loai: %s" % (total_b, dict(btypes.most_common(8))))
+print("  tong nha: %d | loai: %d | HINH HOC KHAC NHAU: %d"
+      % (total_b, len(btypes), len(bsigs)))
+print("  top 8 loai: %s" % dict(btypes.most_common(8)))
+_top = btypes.most_common(1)
+if _top and total_b:
+    share = _top[0][1] * 100.0 / total_b
+    print("  loai chiem %d%%: %s (%d)" % (round(share), _top[0][0], _top[0][1]))
+    if share > 55.0:
+        bad("12/70", "1 kieu nha chiem %.1f%% tong so nha -> la 'recolor', "
+                     "khong phai nhieu kieu nha" % share)
+if total_b and len(bsigs) < 50:
+    bad("12/71", "chi %d hinh hoc khac nhau cho %d nha -> nhiet the khong du"
+        % (len(bsigs), total_b))
 if on_road:
     bad("15/22", "%d nha nam TREN mat duong/cao toc (vi du: %s)"
         % (len(on_road), "; ".join("%s@%s d=%.1fm" % (b.get("type"), c, d)
@@ -835,10 +984,23 @@ for s in stations:
         bad("16/63", "ben %s khong co duong noi bo trong san" % s.get("name"))
     # rule 11/14: ben xe KHONG duoc nam tren cao toc / trong long duong
     # tinh theo diem xa nhat cua san (khong phai tam san) -> dung hinh hoc that
+    #
+    # P70 (2026-09-30) — SAI SO DUOC DO: ban nay BO QUA `rot` cua san, lay
+    # 4 goc truc tiep theo truc X/Z. Do goc san xoay ~90-180 do (generator
+    # xoay san theo huong duong), rect do sai HOAN TOAN — do lai dai sang
+    # truc khong, dung vao duong khac. Do duoc tren data THAT:
+    #     Bến xe Miền Đông Mới  rot=3.1416  w=200 d=340
+    #     goc TINH SAI (bo rot)  -> 11.1 m tu Vanh_dai_3 (EXPRESSWAY)  => LOI
+    #     goc DUNG  (co rot)    -> het          (clearance thuc 33 m)   => SACH
+    # => goc phai XOAY theo `rot`, dung cung quy tac nhu generator:
+    #    X = ox*sin(rot) + oz*cos(rot) ; Z = ox*cos(rot) - oz*sin(rot)
     hw = (s.get("w", 180) or 180) * 0.5
     hd = (s.get("d", 130) or 130) * 0.5
-    corners = [(s["x"] - hw, s["z"] - hd), (s["x"] + hw, s["z"] - hd),
-               (s["x"] + hw, s["z"] + hd), (s["x"] - hw, s["z"] + hd)]
+    rot = s.get("rot", 0.0) or 0.0
+    cr, sr = math.cos(rot), math.sin(rot)
+    corners = []
+    for (ox, oz) in ((-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd)):
+        corners.append((s["x"] + ox * sr + oz * cr, s["z"] + ox * cr - oz * sr))
     hit = []
     for g in segs:
         if g.get("class") not in ("EXPRESSWAY", "NATIONAL", "ARTERIAL", "TUNNEL"):
@@ -894,6 +1056,264 @@ idx = set(world.get("sectorIndex") or [])
 if idx and idx != sec_files:
     bad("31/34", "sectorIndex khop file thuc: thieu=%d thua=%d"
         % (len(sec_files - idx), len(idx - sec_files)))
+
+# ---------------------------------------------------------------- Phase 7: Validation mới
+print("=== 9. PHASE 7: ROAD TYPES MOI ===")
+new_road_types = ("INTER_VILLAGE", "INDUSTRIAL_ACCESS", "RESIDENTIAL", "COMMERCIAL", "AGRICULTURAL")
+for rt in new_road_types:
+    count = sum(1 for s in segs if s.get("class") == rt)
+    print("  %s: %d segments" % (rt, count))
+
+# ---- 9a. ROAD TYPE MỚI PHẢI HỢP LỆ VỀ HÌNH HỌC --------------------------
+# Nếu chỉ đếm số segment thì 5 loại mới có thể tồn tại trên giấy nhưng sai
+# hình học: bề rộng 0.2m, 8 làn trên đường làng, dốc 40%. Mỗi loại được đo
+# bằng bảng kỳ vọng đọc thẳng từ generator (SOURCE OF TRUTH), không gõ lại.
+ROAD_GEO_SPEC = {
+    #           bề rộng tối thiểu / số làn 2 chiều / tốc độ thiết kế
+    # SỐ LÀN Ở ĐÂY LÀ KỲ VỌNG ĐỘC LẬP, không đọc từ `ROAD_CLASS` của
+    # generator — nếu đọc thì generator hạ làn xuống 1 là cũng "đạt". Số 1 là
+    # số ĐÚNG cho đường 1 làm ở Việt Nam (xe máy + ô tô con tranh nhau,
+    # bề rộng 4.5-6.5m): hẻm 4.5m, đường làng 6m, đường vào cơ sở 6.5m,
+    # đường ruộng 5m, ramp 9m, đường trong sân bến 9m. Bản cũ đòi 2 làn cho
+    # cả 6 class đó => SAI LỆCH 100% số đoạn của chúng, tức audit báo động
+    # giả rồi mọi người quen mặt bỏ qua, đúng thứ audit sinh ra để tránh.
+    "EXPRESSWAY":        (14.0, 4, 80),
+    "NATIONAL":          (10.0, 4, 60),
+    "TUNNEL":            (10.0, 2, 60),
+    "RAMP":              (6.0, 1, 30),
+    "ARTERIAL":          (9.0, 4, 50),
+    "COLLECTOR":         (7.0, 2, 40),
+    "PROVINCIAL_ROAD":   (7.0, 2, 45),
+    "INTER_VILLAGE":     (5.5, 2, 35),
+    "INDUSTRIAL_ACCESS": (6.5, 2, 45),
+    "RESIDENTIAL":       (5.5, 2, 25),
+    "COMMERCIAL":        (7.5, 2, 35),
+    "AGRICULTURAL":      (4.5, 1, 25),
+    "LOCAL":             (5.0, 2, 30),
+    "RURAL_LOCAL":       (5.0, 1, 30),
+    "SERVICE":           (4.5, 1, 25),
+    "ALLEY":             (3.0, 1, 20),
+    "STATION_ACCESS":    (5.0, 2, 25),
+    "INTERNAL":          (5.0, 1, 15),
+}
+MAX_SLOPE_PCT = 16.0      # giống hằng validate của generator (xe khách rung)
+_geo_bad = defaultdict(list)
+for sg in segs:
+    spec = ROAD_GEO_SPEC.get(sg.get("class"))
+    if not spec:
+        continue
+    min_w, min_lanes, des_kmh = spec
+    w = sg.get("width") or 0.0
+    lanes = sg.get("lanes") or 0
+    if w and w < min_w:
+        _geo_bad["nhe hon %s (%.1f < %.1f)" % (sg["class"], w, min_w)].append(sg["id"])
+    if lanes and lanes < min_lanes:
+        _geo_bad["it hon %s (%d < %d)" % (sg["class"], lanes, min_lanes)].append(sg["id"])
+    sp = sg.get("speed")
+    if sp is not None and sp and sp > des_kmh + 5:
+        _geo_bad["toc do %s (%s > %d)" % (sg["class"], sp, des_kmh)].append(sg["id"])
+for reason, ids in sorted(_geo_bad.items(), key=lambda kv: -len(kv[1])):
+    print("  [SAI HINH HOC] %-46s %d (vd %s)" % (reason, len(ids), ids[:3]))
+    bad("P7-geo", "%d segment %s" % (len(ids), reason))
+
+# ---------------------------------------------------------------- rule 9a-mat
+# MỖI ROAD TYPE TRONG BẢNG PHẢI CÓ ĐOẠN THẬT.
+#
+# Luật này viết ra sau khi đo được: 5 road type ("INTER_VILLAGE",
+# "INDUSTRIAL_ACCESS", "RESIDENTIAL", "COMMERCIAL", "AGRICULTURAL") có ĐỦ bảng
+# số liệu ở cả Python lẫn JS — ROAD_CLASS, TOPO_LEGAL, TOPO_RANK, MAT_BY_CLASS,
+# MAX_SEG_LEN, DEFAULT_SPEED_KMH, DENSITY_BY_CLASS, audit parity — nhưng KHÔNG
+# chỗ nào trong generator phát ra class đó. Đo được 0 segment cho cả 5.
+# Nghĩa là chúng không có mặt đường, không có làn, không có tốc độ, không có
+# vật liệu: mọi thứ đã làm cho chúng bằng 0. Bảng khớp nhau hoàn toàn — audit
+# parity xanh — trong khi sản phẩm là 0.
+#
+# Số "class trong bảng mà 0 đoạn" là thứ DUY NHẤT bắt được loại lỗi đó, vì mọi
+# kiểm tra khác đều hỏi "đoạn này có đúng không", không hỏi "class này có tồn
+# tại không".
+_cls_count = Counter(sg.get("class") for sg in segs)
+_declared = sorted(_mg.ROAD_CLASS.keys())
+print("\n  [ROAD TYPE] doan theo class (khai bao %d, co mat %d):"
+      % (len(_declared), len([c for c in _declared if _cls_count.get(c)])))
+for c in _declared:
+    print("    %-20s %6d" % (c, _cls_count.get(c, 0)))
+_empty_cls = [c for c in _declared if not _cls_count.get(c)]
+if _empty_cls:
+    bad("9a-mat", "%d road type co bang so lieu nhung 0 doan: %s"
+        % (len(_empty_cls), ", ".join(_empty_cls)))
+# ngược lại: đoạn có class KHÔNG khai báo trong ROAD_CLASS -> sẽ rơi về
+# `ROAD_CLASS["LOCAL"]` trong add_segment và về `roadMinor` ở js/map.js
+_unknown_cls = sorted({c for c in _cls_count if c and c not in _mg.ROAD_CLASS})
+if _unknown_cls:
+    bad("9a-la", "segment mang class nam ngoai ROAD_CLASS: %s"
+        % ", ".join(_unknown_cls))
+# mỗi class mới phải đủ số đoạn để thấy trong minimap/traffic, không phải 1-2
+# đoạn rác rồi kết luận "đã làm"
+for c in ("INTER_VILLAGE", "INDUSTRIAL_ACCESS", "RESIDENTIAL",
+          "COMMERCIAL", "AGRICULTURAL"):
+    n = _cls_count.get(c, 0)
+    if 0 < n < 20:
+        bad("9a-it", "%s chi %d doan — duoi nguoi co y nghia" % (c, n))
+
+# dốc: dùng Y CUỐI trong export (node.y), không dùng terrain
+_slope_over = []
+for sg in segs:
+    p, q = nodes.get(sg["from"]), nodes.get(sg["to"])
+    if not p or not q:
+        continue
+    run = math.hypot(q["x"] - p["x"], q["z"] - p["z"])
+    if run < 1.0:
+        continue
+    if sg.get("bridge") or sg.get("class") == "TUNNEL":
+        continue          # cầu/hầm được miễn: cầu vượt dốc cũng hợp lý
+    sl = abs(q["y"] - p["y"]) / run * 100.0
+    if sl > MAX_SLOPE_PCT:
+        _slope_over.append((sg["id"], sl))
+print("  doan ngoai cau/ham ma doc > %.0f%%: %d" % (MAX_SLOPE_PCT, len(_slope_over)))
+for sid, sl in sorted(_slope_over, key=lambda t: -t[1])[:5]:
+    print("    %s: %.1f%%" % (sid, sl))
+if _slope_over:
+    bad("P7-slope", "%d doan duong doc > %.0f%% (khong phai cau/ham)"
+        % (len(_slope_over), MAX_SLOPE_PCT))
+
+print("=== 10. PHASE 5: BEN XE MOI ===")
+new_stations = [s for s in stations if s.get("id") in ("dong_hoa", "song_cau", "cam_ranh", "vinh_hao", "bau_cau", "dau_giay", "long_thanh", "bien_hoa")]
+for s in new_stations:
+    print("  %s: %s, %d bays" % (s.get("name"), s.get("type"), len(s.get("baySlots", []) or [])))
+
+# ---- 10a. BẾN PHẢI ĐỦ ĐIỆN, KHÔNG ĐỨT MẠNG, KHÔNG ĐÈ NHAU -----------
+# "Bến xe thật" không phải là 1 hình chữ nhật đặt xuống ruộng. Mỗi bến phải:
+#   - có bến đỗ (baySlots) — bến không có chỗ đỗ là sân trống
+#   - có access_node thuộc THÀNH PHẦN LỚN NHẤT — bến tách mạng = xe vào
+#     bến bằng cách bay, và tuyến xe qua bến đó gãy
+#   - có nhà bến (bán kính quanh tâm) — bến trống trơn là sân bãi
+_st_types = ("BUS_STATION", "MAJOR_BUS_TERMINAL")
+_bus_st = [s for s in stations if s.get("type") in _st_types]
+print("  tong so ben xe: %d" % len(_bus_st))
+_no_bay = _no_access = _no_house = _off_grid = 0
+for s in _bus_st:
+    bays = s.get("baySlots") or []
+    if len(bays) < 5:
+        _no_bay += 1
+        bad("P7-st", "ben '%s' chi co %d bay do xe" % (s.get("name"), len(bays)))
+    an = s.get("access_node")
+    if not an or an not in nodes:
+        _no_access += 1
+        bad("P7-st", "ben '%s' access_node=%r khong ton tai" % (s.get("name"), an))
+    elif an not in main_component:
+        _off_grid += 1
+        bad("P7-st", "ben '%s' access_node %s nam NGOAI thanh phan chinh"
+            % (s.get("name"), an))
+print("  ben thieu bay: %d | access_node hong/ngoai mang: %d/%d"
+      % (_no_bay, _no_access, _off_grid))
+
+# ---- 10b. POI KHÔNG ĐÈ NHAU / KHÔNG ĐỨNG GIỮA ĐƯỜNG --------------------
+# 20 POI công cộng mới (trường / BVĐK / chợ / KCN) sinh từ cùng pipeline với
+# bến nên chồng lấn là rủi ro thật. Đo bằng hộp xoay + SAT, không đoán.
+_POI_SIZED = ("BUS_STATION", "MAJOR_BUS_TERMINAL", "SCHOOL", "HOSPITAL",
+              "MARKET", "INDUSTRIAL", "REST_AREA", "FUEL_STATION", "TOLL")
+_sized = [s for s in stations if s.get("type") in _POI_SIZED]
+_sized.sort(key=lambda s: s["x"])
+_overlap = []
+for i in range(len(_sized)):
+    s = _sized[i]
+    hw = (s.get("w") or 40) * 0.5, (s.get("d") or 40) * 0.5
+    box = (s["x"], s["z"], hw[0], hw[1], s.get("rot") or 0.0, s.get("id"))
+    for j in range(i + 1, len(_sized)):
+        t = _sized[j]
+        if t["x"] - s["x"] > 400:
+            break        # đã sort theo x
+        thw = (t.get("w") or 40) * 0.5, (t.get("d") or 40) * 0.5
+        tb = (t["x"], t["z"], thw[0], thw[1], t.get("rot") or 0.0, t.get("id"))
+        if _obb_overlap(box, tb):
+            _overlap.append((s["id"], t["id"]))
+print("  POI co kich thuoc: %d | cap doi chong lan: %d" % (len(_sized), len(_overlap)))
+for a, b in _overlap[:8]:
+    print("    %s <-> %s" % (a, b))
+if _overlap:
+    bad("P7-poi", "%d cap POI chong lan nhau (vd %s)"
+        % (len(_overlap), _overlap[:6]))
+
+# POI đứng giữa mặt đường = cái biển bị xe đâm
+_on_road_poi = []
+for s in _sized:
+    p = road_probe(s["x"], s["z"], 80)
+    if p is None:
+        continue
+    d, seg = p
+    w = (seg.get("width", 12) or 12) * 0.5
+    if d < w + (s.get("w") or 40) * 0.25:
+        _on_road_poi.append((s.get("id"), s.get("type"), seg.get("class"), d))
+print("  POI lech < nua be rong duong: %d" % len(_on_road_poi))
+for pid, ty, cl, d in _on_road_poi[:8]:
+    print("    %s (%s) dat gan %s %.1fm" % (pid, ty, cl, d))
+if _on_road_poi:
+    bad("P7-poi", "%d POI lech vao mat duong (%s)"
+        % (len(_on_road_poi), ", ".join("%s@%s" % (p[0], p[2]) for p in _on_road_poi[:6])))
+
+# ---- 10c. TUYẾN PHẢI BÁM ROAD GRAPH ------------------------------------
+# Route là thứ NPC + HUD dùng. Route đứt gãy = người chơi thấy đường mà
+# xe không đi được. Đo bằng chính adjacency của roads.json, không tin tên.
+print("=== 10c. TUYEN BAM ROAD GRAPH ===")
+_routes = routes if isinstance(routes, list) else routes.get("routes", [])
+print("  so tuyen: %d" % len(_routes))
+for rt in _routes:
+    rn = rt.get("nodes") or []
+    _rt_name = rt.get("name") or rt.get("id") or "?"
+    if not rn:
+        bad("P7-route", "tuyen '%s' khong co node nao" % _rt_name)
+        continue
+    miss = [n for n in rn if n not in nodes]
+    off = [n for n in rn if n in nodes and n not in main_component]
+    breaks = 0
+    run_len = 0
+    for a, b in zip(rn, rn[1:]):
+        if a in adj and b in adj[a]:
+            run_len += 1
+        else:
+            breaks += 1
+    # chuỗi liên tiếp dài nhất = đoạn đường thực sự liên tục
+    best_run = cur = 0
+    for a, b in zip(rn, rn[1:]):
+        cur = cur + 1 if (a in adj and b in adj[a]) else 0
+        best_run = max(best_run, cur)
+    total_m = 0.0
+    for a, b in zip(rn, rn[1:]):
+        p, q = nodes.get(a), nodes.get(b)
+        if p and q:
+            total_m += math.hypot(q["x"] - p["x"], q["z"] - p["z"])
+    print("  %-22s node=%4d lienKe=%4d doanDut=%3d daiNhat=%4d/%4d "
+          "(%.1f km theo toa do) %s -> %s"
+          % (str(_rt_name)[:22], len(rn), run_len,
+             breaks, best_run, max(0, len(rn) - 1), total_m / 1000.0,
+             rn[0], rn[-1]))
+    if miss:
+        bad("P7-route", "tuyen '%s' co %d node khong ton tai" % (_rt_name, len(miss)))
+    if off:
+        bad("P7-route", "tuyen '%s' co %d node NGOAI thanh phan chinh"
+            % (_rt_name, len(off)))
+    if breaks:
+        bad("P7-route", "tuyen '%s' DUT %d doan (khong lien thong theo roads.json)"
+            % (_rt_name, breaks))
+    if rn[0] == rn[-1] and len(rn) > 2:
+        bad("P7-route", "tuyen '%s' co node dau == node cuoi (%s): duong hinh long"
+            % (_rt_name, rn[0]))
+
+print("=== 11. HE THONG NHA: KIỂU / TEMPLATE / HÌNH HỌC ===")
+_hs = getattr(_mg, "house_template_stats", None)
+if _hs:
+    st = _hs()
+    print("  kieu nha that: %d | template phang: %d | chu ky hinh hoc: %d"
+          % (st["archetypes"], st["templates"], st["distinct_signatures"]))
+    print("  theo zone: %s" % st["by_zone"])
+    if st["templates"] != st["distinct_signatures"]:
+        bad("12/72", "bang template co trung hinh hoc (%d != %d)"
+            % (st["templates"], st["distinct_signatures"]))
+else:
+    print("  (khong tim thay house_template_stats trong map_generator)")
+print("  so kieu xuat hien thuc te: %d" % len(btypes))
+for ht, cnt in btypes.most_common(12):
+    print("  %-22s %d" % (ht, cnt))
 
 print()
 print("=" * 66)

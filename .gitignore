@@ -1,0 +1,18 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temp / bench / logs
+_tmpbench/
+_genlog.txt
+_generr.txt
+*.log
+*.tmp
+*.bak
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/settings.json

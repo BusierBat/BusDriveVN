@@ -1,7 +1,6 @@
 // js/traffic/TrafficManager.js
 // =====================================================================
 // Quản lý vòng đời giao thông NPC: spawn / despawn / LOD / pool / index.
-//
 // - SPAWN: bám vào road network (segment -> chi? -> làn), CHỈ trong cửa sổ
 //   quanh người chơi, có FOV gate (không nhổ xe trước mũi), spacing theo
 //   làn + Euclidean, trọng số theo MẬT ĐỘ của loại đường (getLaneMeta.density).
@@ -12,7 +11,6 @@
 // - POOL: tái sử dụng mesh NPC (createNpcBus rất nặng -> không tạo mới liên tục).
 // - INDEX: bySeg Map (O(1) tra xe cùng đoạn) cho spawn check + debug.
 // - Người chơi được đưa vào danh sách "participant" để NPC nhường/đi theo.
-//
 // API GIỮ NGUYÊN: createTrafficManager, setupStationTraffic,
 // processStationQueue, update, getActiveVehicles, aiVehicles, maxVehicles.
 // =====================================================================
@@ -96,9 +94,11 @@ export class TrafficManager {
     // ---------------------------------------------------------------- helpers
     _segOk(s) {
         if (!s) return false;
+        // Chỉ spawn NPC trên đường lớn, không spawn trên ramp/hầm/đường nội bộ/sân bến/hẻm
+        const blocked = new Set(['TUNNEL', 'RAMP', 'INTERNAL', 'SERVICE', 'STATION_ACCESS', 'ALLEY',
+            'AGRICULTURAL', 'RESIDENTIAL']); // tránh spawn trong hẻm/đường nông nghiệp/đường dân cư
+        if (blocked.has(s.class)) return false;
         if (s.type === 'tunnel' || s.type === 'bus_station_road' || s.type === 'highway_ramp') return false;
-        if (s.class === 'TUNNEL' || s.class === 'RAMP' || s.class === 'INTERNAL' ||
-            s.class === 'SERVICE' || s.class === 'STATION_ACCESS' || s.class === 'ALLEY') return false;
         const f = this.roadGraph.getNode(s.from);
         const t = this.roadGraph.getNode(s.to);
         if (!f || !t) return false;
@@ -407,7 +407,6 @@ export class TrafficManager {
 
     // Va chạm còn sót (do spawn sai / xe tĩnh): CHỈ giảm tốc + xích lệch làn
     // trong giới hạn đường. Vị trí luôn suy ra từ làn -> không có "đẩy toạ độ".
-    //
     // QUAN TRỌNG: collider hệ thống là HÌNH TRÒN bán kính 3m (mạng lưới 50m),
     // nên 2 xe song song cách 3.5m cũng "chạm". Phải kiểm lại bằng HỘP ĐỊNH
     // HƯỚNG (dọc theo trục xe) — nếu không NPC sẽ phanh ảo khi có xe ở làn kế,

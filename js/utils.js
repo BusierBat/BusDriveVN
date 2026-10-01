@@ -36,6 +36,14 @@ export function remap(value, inMin, inMax, outMin, outMax) {
   return lerp(outMin, outMax, t);
 }
 
+// smoothstep(e0, e1, x): 0 khi x<=e0, 1 khi x>=e1, interpolated mượt giữa.
+// Dùng bởi atmosphere.js + time_system.js (import từ đây).
+export function smoothstep(e0, e1, x) {
+  if (e0 === e1) return x < e0 ? 0 : 1;
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
 export function moveTowards(current, target, maxDelta) {
   if (Math.abs(target - current) <= maxDelta) return target;
   return current + Math.sign(target - current) * maxDelta;

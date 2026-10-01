@@ -2,7 +2,6 @@
 // =============================================================================
 // Vai trò: load + stream + render world 3D (terrain thật, road network, bến xe,
 //          building, vật thể dọc đường) và cung cấp API contract cho game.
-//
 // API CONTRACT (KHÔNG ĐƯỢC ĐỔI — main.js / npc.js / ui.js / traffic/* dùng):
 //   new MapLoader(scene)            -> loadInitialData()
 //   getTerrainHeight(x, z)          -> number   (main.js mỗi frame)
@@ -12,28 +11,24 @@
 //   getMinimapData()                -> {segments, route, pois}
 //   getParkingSlots()               -> [{position:{x,y,z}, rotation}]
 //   getRouteWaypoints() / getPOIs()
+//   getAdminUnit(x, z)               -> đơn vị hành chính sau sáp nhập 12/6/2025
 //   updateChunks(x, z, dt?, camDir?) | setPlayerPosition(x, z, dt?, camDir?)
 //   dispose()
-//
 // NGUỒN SỰ THẬT: tools/map_generator.py (SOURCE OF TRUTH)
 //   world.json.terrain = { coast, corridor:[x,z,u], anchors, roadLift, yardLift }
 //   -> getElevation() ở đây COPY NGUYÊN VĂN công thức Python, nên
 //      terrain (JS) == node.y (Python) == mặt đường => XE KHÔNG BAY, KHÔNG CHÌM.
-//
 // LỚP Y (rule 38):
 //   terrainY  = getElevation(x,z)
 //   road top  = node.y + ROAD_LIFT      (nổi nhẹ -> không z-fighting)
 //   yard      = node.y + YARD_LIFT
 //   bus       = getTerrainHeight(x,z) + 0.5   (main.js)
-//
 // RULE 44: mọi fetch chunk có try/catch/finally, in-flight luôn được giải phóng.
 // RULE 50: merge geometry + InstancedMesh + pooling, KHÔNG tạo mesh/segment.
-//
 // DỮ LIỆU CHUNK (v2): generator gom 4x4 chunk (1024m) vào 1 file "sectors/x_z.json"
 //   thay vì 1 file/chunk (14k file -> ~1.9k file). world.json có
 //   sectorSize + sectorIndex (tên file có sẵn) để skip 404.
 //   => _fetchSector() + cache LRU 6 sector. Vẫn giữ đường chunk cũ (fallback).
-//
 // HỖ TRỢ ĐỊA HÌNH (mirror Python):
 //   sông/hồ  : world.water -> waterFactor() khắc lòng sông + vẽ mặt nước
 //   cầu      : seg.bridge -> mặt cầu + lan can + trụ
@@ -63,7 +58,7 @@ const ACC_CELL = 4096;         // cell của spatial index (mirror Python)
 const ROAD_LIFT = 0.12;
 const YARD_LIFT = 0.10;
 const BUS_AXLE = 0.5;
-// P41 — BỀ DÀY THÂN ĐƯỜNG. Đường là KHỐI, không phải texture: mặt trên +
+// BỀ DÀY THÂN ĐƯỜNG. Đường là KHỐI, không phải texture: mặt trên +
 // váy bên xuống. 0.55m = bề dày nền đường sau vỉa.
 const ROAD_THICK = 0.55;
 // Bán kính dò mặt đường quanh xe. Rộng hơn "width*0.5+2" của
@@ -245,16 +240,12 @@ class World {
         // Cần phần "mâu thuận" vì QL.1 thật đi từ Phan Thiết sang Dầu Giây theo
         // hướng TÂY BẮC (z tăng lại) => z KHÔNG đơn điệu. Ở bin có 2 nhánh
         // corridor, bảng u(z) không quyết định được -> fallback nearest-point.
-        //
-        // ⚠ PARITY: bin key phải KHỚP với Python.int(math.floor(z / binM)).
-        // Python int() TRUNC về 0 cho số âm, còn Math.floor() LÀM TRÒN XUỐNG.
-        // Với z âm (khu Phan Thiet/Dau Giay) 2 cách ra key khác nhau ->
-        // 2 bảng u khác nhau -> terrain lệch tới 91m -> XE KHÔNG BÁM ĐƯỜNG.
-        // => dùng trunc về 0.
+        // PARITY: bin key PHẢI là Math.floor(z / binM) để KHỚP Python
+        // int(math.floor(z / binM)). Dùng trunc (ceil cho số âm) sẽ lệch 1 bin
+        // ở vùng z âm (Phan Thiết/Dầu Giây) => terrain lệch tới ~46m.
         const bins = new Map();
         for (const p of this.corridor) {
-            const q = p[1] / binM;
-            const k = q < 0 ? Math.ceil(q) : Math.floor(q);   // == int() cua Python
+            const k = Math.floor(p[1] / binM);
             let a = bins.get(k);
             if (!a) { a = []; bins.set(k, a); }
             a.push(p[2]);
@@ -323,8 +314,7 @@ class World {
     _uAtZ(z, x) {
         const uz = this._uz;
         if (!uz || uz.length === 0) return 0;
-        const q = z / 250;
-        const kb = q < 0 ? Math.ceil(q) : Math.floor(q);   // == int() cua Python
+        const kb = Math.floor(z / 250);   // KHỚP Python int(math.floor(z/250))
         if (x !== undefined && this._uzAmbig && this._uzAmbig.has(kb)) {
             return this._uNearest(x, z);
         }
@@ -413,7 +403,7 @@ class World {
         return cross >= 0 ? d : -d;
     }
 
-    // -> [u (blend chỉ số anchor), d (khoảng cách tới trục QL1A)]
+    // -> [u (blend chỉ số anchor), d (khoảng cách tới trục QL1)]
     // u từ bảng monotonic theo z (liên tục), d từ nearest-point — mirror Python
     corridorUDist(x, z) {
         const poly = this.corridor;
@@ -536,7 +526,7 @@ function makeMaterials() {
         median: new THREE.MeshLambertMaterial({ color: 0x9a9a8a, side: roadSide }),
         shoulder: new THREE.MeshLambertMaterial({ color: 0x6b6558, side: roadSide }),
         laneLine: new THREE.MeshLambertMaterial({ color: 0xf0ead0, side: roadSide }),
-        // P58: sân bến nằm trên sườn nên có cả mặt dưới; `FrontSide` làm mất
+        // sân bến nằm trên sườn nên có cả mặt dưới; `FrontSide` làm mất
     // mặt khi nhìn từ dưới (và làm lộ tam giac nguoc chieu, P58).
     concrete: new THREE.MeshLambertMaterial({ color: 0x8a8a86, side: THREE.DoubleSide }),
         dirt: new THREE.MeshLambertMaterial({ color: 0x6b5540 }),
@@ -560,6 +550,10 @@ function makeMaterials() {
         windowBand: new THREE.MeshLambertMaterial({ color: 0x2b3a4a }),
         fence: new THREE.MeshLambertMaterial({ color: 0xbfb9ab }),
         balcony: new THREE.MeshLambertMaterial({ color: 0xd8d2c4 }),
+        // gộp mọi chi tiết nhà vào MỘT InstancedMesh (cửa sổ / cửa cuốn /
+        // kính trượt / cửa sổ cầu thang / rào / ban công / hiên gỗ / nhà phụ)
+        // => 1 draw call thay vì 7, màu phân biệt qua instanceColor.
+        bldTrim: new THREE.MeshLambertMaterial({ color: 0xffffff }),
         waterDepth: new THREE.MeshStandardMaterial({
             vertexColors: true, roughness: 0.18, metalness: 0.12,
             transparent: true, opacity: 0.88, side: THREE.DoubleSide
@@ -587,6 +581,16 @@ function makeMaterials() {
     };
 }
 
+// ---------------------------------------------------------------------------
+// BIT CHI TIẾT NHÀ — PHẢI GIỐNG HỆT `HOUSE_DETAIL` trong tools/map_generator.py.
+// Đổi thứ tự ở một bên là đổi toàn bộ hình nhà ở bên kia.
+const H_WING = 1, H_ROLLER = 2, H_SLIDING = 4, H_GATE = 8, H_BALCONY = 16,
+    H_AWNING = 32, H_PORCH = 64, H_OVERHANG = 128, H_STILT = 256,
+    H_SETBACK2 = 512, H_STAIRWIN = 1024, H_PARAPET = 2048, H_SHEDJOIN = 4096;
+const H_STILT_LIFT = 0.95;   // khoảng không dưới nhà sàn (m)
+const H_FLOOR_H = 3.15;      // chiều cao 1 tầng (m) — phải khớp FLOOR_H
+const H_SHED_SLOPE = 0.30;   // rad, mái đơn (mái tôn)
+
 function makeGeometries() {
     return {
         unitBox: new THREE.BoxGeometry(1, 1, 1),
@@ -611,7 +615,7 @@ function makeGeometries() {
 // =============================================================================
 class MeshAccum {
     constructor() { this.pos = []; this.idx = []; this.n = 0; }
-    // P58: tam giac thu hai PHAI LA (a, c, d), khong phai (b, d, c).
+    // tam giac thu hai PHAI LA (a, c, d), khong phai (b, d, c).
     // (b,d,c) nguoc chieu voi (a,b,c) ⇒ mot tam giac huong len mot tam giac
     // huong xuong ⇒ normal trung binh ~0 (do duoc: 4 dinh san be, 1 len,
     // 1 xuong, trung binh 0) va mat tam giac bi CULL tren vat lieu
@@ -623,7 +627,7 @@ class MeshAccum {
         this.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
         this.n += 4;
     }
-    // P58: cung loi chieu kim nhu `quad` — tam giac (a,b,d) va (b,c,d).
+    // cung loi chieu kim nhu `quad` — tam giac (a,b,d) va (b,c,d).
     strip(a, b, c, d) {
         const base = this.n;
         this.pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2]);
@@ -631,15 +635,13 @@ class MeshAccum {
         this.n += 4;
     }
     // Triangle fan cho polygon đã clip (3..8 đỉnh).
-    //
-    // P59 — CHUẨN HOÁ CHIỀU KIM. Fan `(p0, pi, pi+1)` lấy chiều kim từ input,
+    // CHUẨN HOÁ CHIỀU KIM. Fan `(p0, pi, pi+1)` lấy chiều kim từ input,
     // nên polygon đi vào sai chiều là mặt nằm SẮP. Đo được trong game:
     //     MINOR 1 | MAJOR 1 | __LINE__ 1        (đúng)
     //     __JUNCTION__MINOR -0.99 | __JUNCTION__MAJOR -0.98
     //     __SIDEWALK__ -1 | __STOPLINE__ -0.2   (sai)
     // Mặt giao lỡ (convex hull) vừa là mảng to nhất vừa nằm giữa đường ⇒ đó
     // là thứ nhìn thấy "mảng tối" trong ảnh.
-    //
     // Dấu hiệu: ap dụng trên mặt đường ĐÃ đúng — 4 đỉnh (0,hw) (L,hw)
     // (L,-hw) (0,-hw) cho normal Y = +1 và shoelace = -4·L·hw (ÂM).
     // ⇒ âm là hướng lên; ≥ 0 thì đảo danh sách.
@@ -664,12 +666,11 @@ class MeshAccum {
         this.n += n;
     }
 
-    // P41/P51 — VÁY BÊN (+ MẶT ĐÁY): biến mặt phẳng thành KHỐI có thân.
+    // /P51 — VÁY BÊN (+ MẶT ĐÁY): biến mặt phẳng thành KHỐI có thân.
     // `bottoms[i]` = cao độ đáy của đỉnh i: bình thường là mặt đất (váy
     // chạm tận đất, không lơ lửng); cầu vượt thì `y - ROAD_THICK` và có
     // mặt đáy để nhìn được từ dưới lên.
-    //
-    // P51: `bottoms` có thể kèm THỨ TƯ thứ nhất = độ lệch nghiêng ra ngoài
+    // `bottoms` có thể kèm THỨ TƯ thứ nhất = độ lệch nghiêng ra ngoài
     // (m). Đường thật có **đối đất** (nền đắp nghiêng), không có tường đứng
     // 3m; váy thẳng đứng giữa hai đường song song tạo "hẻm tối" — đo được
     // 3.3× số tam giác mặt đường là mảng tối chồng lên nhau trong ảnh.
@@ -724,11 +725,9 @@ class MeshAccum {
 
 // ---------------------------------------------------------------------------
 // GIAO LỠ — HÌNH HỌC THẬT (rule 12/13/6)
-//
 // VẤN ĐỀ: nếu chỉ vẽ quad từng đoạn, tại ngã giao 2 mặt đường CHỒNG LÊN NHAU
 // cùng một cao độ => z-fighting lung tung, mép đường cắt ngang, vạch sơn của
 // đường này nằm trên mặt đường kia. Đó chính là rule 13 cấm.
-//
 // CÁCH SỬA (giống hệt cách dựng giao lộ trong engine đường thật):
 //   1. Mỗi node >= 3 nhánh = 1 GIAO LỠ có polygon riêng.
 //   2. Polygon = CONVEX HULL của 4 miệng đường (2 đỉnh mỗi nhánh).
@@ -736,7 +735,6 @@ class MeshAccum {
 //      (polygon giao lỡ + đoạn trước + đoạn sau) lát kín, KHÔNG chồng.
 //   4. Vạch giữa đường/vỉa hè/median/lan can cũng cắt đúng theo trim đó.
 //   5. Vạch dừng (stop line) cho nhánh nhỏ hơn đường ưu tiên.
-//
 // DÙNG HÀM này cho mọi ngã giao, kể cả bán kính 100m — không có ngoại lệ.
 // ---------------------------------------------------------------------------
 
@@ -790,12 +788,10 @@ function rayExitDist(poly, ox, oz, dx, dz) {
 // Cắt bỏ CÁNH HULL thừa rồi dùng chính 4 đỉnh miệng đường làm đa giác
 // giao lỡ. Nhờ vậy 3 mảnh (polygon giao lỡ + đoạn trước + đoạn sau) lát kín
 // chính xác tới từng đỉnh — không có khe hở, không có vết chồng.
-//
 // ⚠ ĐỈNH NODE PHẢI ĐƯỢC GIỮ. Khi cả 3+ nhánh nằm trong một nón < 180°,
 // convex hull của các miệng đường KHÔNG chứa node => đa giác lệch hẳn sang
 // một bên, node rơi ra ngoài, sàn giao lỡ hụt lỗ (đo được 17.9% lỗ ở các
 // giao lỡ dạng nón). Vì vậy node được coi như một "miệng" thứ 0 và luôn giữ.
-//
 // Ký hiệu: hull là vòng đa giác; giữ cạnh nếu HAI đầu đều là miệng (kể cả
 // node) -> các cạnh thừa bị gộp lại thành đường thẳng nối 2 miệng kề nhau,
 // đúng hình dạng sàn giao lỡ thật.
@@ -939,6 +935,11 @@ export class MapLoader {
         this._sectorIndex = null;
         this._minimapCache = null;
         this._poiGroups = [];
+        // LỚP HÀNH CHÍNH (sáp nhập 12/6/2025). Index dựng 1 lần lúc load.
+        this._adminBands = null;
+        this._adminSeats = null;
+        this._adminAxis = null;
+        this._adminKm = null;
 
         this._mats = makeMaterials();
         this._geos = makeGeometries();
@@ -1012,6 +1013,7 @@ export class MapLoader {
             this._buildJunctionIndex();
             this._buildRoadGroup();
             this._buildStations();
+            this._buildAdminIndex();
             return true;
         } catch (error) {
             console.error("[map] loadInitialData failed:", error);
@@ -1073,16 +1075,23 @@ export class MapLoader {
             case "NATIONAL":
             case "ARTERIAL":
             case "STATION_ACCESS":
-            case "INTERNAL": return "MAJOR";
+            case "INTERNAL":
+            case "INDUSTRIAL_ACCESS": return "MAJOR";
+            case "COLLECTOR":
+            case "PROVINCIAL_ROAD":
+            case "COMMERCIAL":
+            case "INTER_VILLAGE": return "MINOR";
             case "RURAL_LOCAL":
-            case "SERVICE": return "DIRT";
+            case "SERVICE":
+            case "AGRICULTURAL": return "DIRT";
+            case "RESIDENTIAL": return "MINOR";
             default: return "MINOR";
         }
     }
 
     _matByClass(c) {
-        // GOM 4 BUCKET thay vì 12 material => it chunk chi 4-7 draw call đường.
-        // Vẫn phân biệt được cao tốc / đường lớn / đường nhỏ / đường đất.
+        // GOM 5 BUCKET thay vì 12 material => ít chunk chỉ 4-7 draw call đường.
+        // Vẫn phân biệt được cao tốc / đường lớn / đường nhỏ / đường đất / đường dân cư.
         switch (c) {
             case "EXPRESSWAY": return this._mats.roadHighway;
             case "RAMP": return this._mats.roadHighway;
@@ -1091,9 +1100,15 @@ export class MapLoader {
             case "ARTERIAL": return this._mats.roadMajor;
             case "STATION_ACCESS": return this._mats.roadMajor;
             case "INTERNAL": return this._mats.roadMajor;
+            case "INDUSTRIAL_ACCESS": return this._mats.roadMajor;
+            case "COLLECTOR": return this._mats.roadMinor;
+            case "PROVINCIAL_ROAD": return this._mats.roadMinor;
+            case "COMMERCIAL": return this._mats.roadMinor;
+            case "INTER_VILLAGE": return this._mats.roadMinor;
+            case "RESIDENTIAL": return this._mats.roadLocal;
             case "RURAL_LOCAL": return this._mats.roadLocal;
             case "SERVICE": return this._mats.roadLocal;
-            case "COLLECTOR": return this._mats.roadMinor;
+            case "AGRICULTURAL": return this._mats.roadLocal;
             default: return this._mats.roadMinor;
         }
     }
@@ -1186,8 +1201,7 @@ export class MapLoader {
         return best;
     }
 
-    // P41 — MẶT TRÊN CÙNG, LIÊN TỤC THEO CAO ĐỘ XE.
-    //
+    // MẶT TRÊN CÙNG, LIÊN TỤC THEO CAO ĐỘ XE.
     // `_nearestRoad` trả đường GẦN NHẤT về mặt bằng. Ở cầu vượt / ramp
     // chạy song song đường khác, "gần nhất" là SAI: xe đang trên cầu bị kéo
     // xuống đường dưới (chui xuống) hoặc từ dưới bị kéo lên cầu (bay lên).
@@ -1249,13 +1263,11 @@ export class MapLoader {
         return best;
     }
 
-    // P56: điểm có nằm trong sân bến nào không (quyết định có vẽ mặt
+    // điểm có nằm trong sân bến nào không (quyết định có vẽ mặt
     // đường `INTERNAL` trong sân hay không).
-    //
     // Lấy từ `stationsData` — JS KHÔNG có `stationZones` (đó là biến của
     // generator; P56 v1 tự bịa nó ⇒ hàm luôn False ⇒ vẽ đường ngoài sân, bỏ
     // hết đường trong sân — đúng ngược).
-    //
     // Kiểm trong HỆ CỤC BỘ của sân (có `rot`): sân xoay khác 0, AABB không
     // xoay sẽ hoặc bỏ sót (vẽ đường trong sân) hoặc bắt nhầm (bỏ đường
     // ngoài sân).
@@ -1285,7 +1297,6 @@ export class MapLoader {
 
     // ---------------------------------------------------------------------
     // GIAO LỠ — index tinh, dựng 1 LẦN khi load (rule 12/13)
-    //
     // Cho mỗi node >= 3 nhánh:
     //   poly      : đa giác mặt giao lỡ (convex hull, đã mang theo cao độ)
     //   trimBySeg : segId -> khoảng cắt lùi TÍNH TỪ NODE NÀY (met)
@@ -1301,8 +1312,11 @@ export class MapLoader {
 
         const HIER = {
             EXPRESSWAY: 1, RAMP: 2, TUNNEL: 2, NATIONAL: 2, ARTERIAL: 3,
-            COLLECTOR: 4, LOCAL: 4, RURAL_LOCAL: 4, ALLEY: 5, SERVICE: 5,
-            STATION_ACCESS: 5, INTERNAL: 5
+            COLLECTOR: 4, PROVINCIAL_ROAD: 4, LOCAL: 4, RURAL_LOCAL: 4, ALLEY: 5, SERVICE: 5,
+            STATION_ACCESS: 5, INTERNAL: 5,
+            // --- Road types mới (Phase 3) ---
+            INTER_VILLAGE: 4, INDUSTRIAL_ACCESS: 3, RESIDENTIAL: 5,
+            COMMERCIAL: 4, AGRICULTURAL: 5
         };
         const nodeY = (n) => (typeof n.y === "number" ? n.y : this.world.getElevation(n.x, n.z));
 
@@ -1383,7 +1397,8 @@ export class MapLoader {
                 if (b.hier < bestHier) { bestHier = b.hier; bucket = this._roadBucket(b.cls); }
             }
             const urban = branches.some(b => b.cls === "NATIONAL" || b.cls === "ARTERIAL" ||
-                                            b.cls === "COLLECTOR" || b.cls === "INTERNAL");
+                                            b.cls === "COLLECTOR" || b.cls === "PROVINCIAL_ROAD" ||
+                                            b.cls === "INTERNAL");
 
             const J = {
                 id: nid, x: n.x, z: n.z, y: ny,
@@ -1513,7 +1528,7 @@ export class MapLoader {
             const p1 = this.roadGraph.getNode(seg.from);
             const p2 = this.roadGraph.getNode(seg.to);
             if (!p1 || !p2) continue;
-            // P56: SÂN BẾN = 1 BẢNG BÊ TÔNG LIỀN. Đoạn `INTERNAL` nằm TRONG
+            // SÂN BẾN = 1 BẢNG BÊ TÔNG LIỀN. Đoạn `INTERNAL` nằm TRONG
             // sân không vẽ mặt đường — nếu vẽ, sân bị cắt thành dải xám chồng
             // nhau (đã thấy trong ảnh). Đường nội bộ chỉ là đườNG ĐỂ LÁI XE
             // TRÊN NGỮ CẢNH, nên bỏ VẼ chứ KHÔNG bỏ graph: `_surfaceAt` vẫn
@@ -1582,13 +1597,13 @@ export class MapLoader {
                     if (d2 < 0.25) shallow++;
                 }
             }
-            // P51: đoạn nào mặt đường sát đất (không đủ một đỉnh sâu >0.25m)
+            // đoạn nào mặt đường sát đất (không đủ một đỉnh sâu >0.25m)
             // thì KHÔNG vẽ váy — mặt đường đó phải nằm phẳng với đất, vẽ váy
             // chỉ là thêm mảng tối vô nghĩa.
             if (!floating && shallow >= pts.length) {
                 // duong sat dat: khong ve gi
             } else {
-                // P54: DOI DAT 45 DO (`outOff = deep`) + CUNG VAT LIEU voi mat
+                // DOI DAT 45 DO (`outOff = deep`) + CUNG VAT LIEU voi mat
                 // duong. Ban P51 dung `min(deep, hw*0.9)` nen doan duong chi
                 // lech 0.3m van co doi dat rong 5.4m — ve nhu co ban le. Va
                 // vat lieu `shoulder` (nau xam) khac mat duong nen doi dat
@@ -1598,9 +1613,11 @@ export class MapLoader {
                             floating ? 0 : deep);
             }
 
-            // median + shoulder cho cao tốc
-            if (seg.class === "EXPRESSWAY") {
-                const mw = 1.6, sw = 2.6;
+            // median + shoulder cho cao tốc + ramp
+            const isHighway = seg.class === "EXPRESSWAY" || seg.class === "RAMP";
+            if (isHighway) {
+                const mw = seg.class === "EXPRESSWAY" ? 1.6 : 0.8;
+                const sw = seg.class === "EXPRESSWAY" ? 2.6 : 1.5;
                 const strip = (off, halfW, yOff) => {
                     const c = [
                         [p1x + nx * (off + halfW), p1z + nz * (off + halfW)],
@@ -1624,9 +1641,11 @@ export class MapLoader {
                 }
             }
 
-            // VỈA HÈ ở vùng đô thị (node có region URBAN) — chi tiết phố VN
-            const urban = (p1.region === "URBAN") || (p2.region === "URBAN");
-            if (urban && w >= 9) {
+            // VỈA HÈ ở vùng đô thị + khu dân cư + khu công nghiệp — chi tiết phố VN
+            const hasSidewalk = (p1.region === "URBAN" || p2.region === "URBAN" ||
+                                 seg.class === "COMMERCIAL" || seg.class === "RESIDENTIAL" ||
+                                 seg.class === "INDUSTRIAL_ACCESS");
+            if (hasSidewalk && w >= 7) {
                 const sw = 3.0;
                 for (const s of [-1, 1]) {
                     const off = s * (hw + sw * 0.5);
@@ -1647,10 +1666,14 @@ export class MapLoader {
                 }
             }
 
-            // VẠCH LÀN GIỮA (rule 13): chạy dọc phần đường NGOÀI giao lỡ.
-            // Không vẽ vạch nào bên trong polygon giao lỡ — đó là lý do phải có
-            // junction patch thật thay vì chồng quad.
-            if (w >= 12) {
+            // VẠCH LÀN GIỮA (rule 13): chỉ đường có làn đánh dấu (cao tốc, QL, đường lớn).
+            // Không vẽ vạch cho đường dân cư, nông nghiệp, hẻm, đường ruộng.
+            const hasLaneMarking = seg.class === "EXPRESSWAY" || seg.class === "RAMP" ||
+                                   seg.class === "NATIONAL" || seg.class === "ARTERIAL" ||
+                                   seg.class === "COLLECTOR" || seg.class === "PROVINCIAL_ROAD" ||
+                                   seg.class === "INDUSTRIAL_ACCESS" || seg.class === "COMMERCIAL" ||
+                                   seg.class === "INTER_VILLAGE";
+            if (hasLaneMarking && w >= 9) {
                 const lw = 0.22;
                 const c = [
                     [p1x + nx * lw, p1z + nz * lw], [p2x + nx * lw, p2z + nz * lw],
@@ -1811,7 +1834,6 @@ export class MapLoader {
     }
 
     // -------------------------------------------------------------- terrain
-    //
     // BENCH ĐƯỜNG — vá lỗi đường bị chôn/bị treo.
     // Mặt đường vẽ ở node.y, terrain vẽ ở getElevation(x,z). Hai nguồn đó lệch
     // nhau tới ±8m (_grade_roads cắt/đắp node.y) nên đo được 22.9% km đường
@@ -2030,10 +2052,14 @@ export class MapLoader {
     }
 
     // ------------------------------------------------------------ buildings
-    // TOI UU: gop MOI nha trong chunk thanh 1 body + 2 roof InstancedMesh
-    // (instanceColor cho mau tung nha) => 3 draw call/chunk thay vi ~10-20.
-    // KHONG bo chi tiet: van 200 variation, van mau mai/facade rieng.
-    _addChunkBuildings(buildings, parent) {
+    // MỖI KIỂU NHÀ LÀ MỘT HÌNH KHÁC NHAU (xem `HOUSE_ARCHETYPES` trong
+    // tools/map_generator.py): thân nhà + cánh chữ L + tầng 2 lùi + nhà sàn
+    // + mái nghi / mái tôn đơn / mái bằng có lan can. KHÔNG dùng lại 1 hộp
+    // + 1 mái cho tất cả rồi đổi màu — đó là "100 bản recolor", không phải
+    // 100 kiểu nhà.
+    // Draw call/chunk: 2 thân (bodies/trim) + 2 mái = 4 (trước: 3 thân +
+    // 3 chi tiết = 6). Màu mỗi instance đi qua instanceColor.
+    _addChunkBuildings(buildings, parent, far = false) {
         if (!buildings || buildings.length === 0) return;
         // BỎ nhà trạm thu phí: generator xuất TOLL/TOLL_LANE vào chunk, nhưng
         // _addTollPlaza(POI) đã dựng trọn trạm (mái + 3 làn + gạt + nhà).
@@ -2041,59 +2067,140 @@ export class MapLoader {
         const list = buildings.filter(b => b.type !== "TOLL" && b.type !== "TOLL_LANE");
         if (list.length === 0) return;
         const nP = list.length;
-        const bodies = new THREE.InstancedMesh(this._geos.unitBox, this._mats.bldBody, nP);
-        const flatIdx = [], pitchIdx = [];
+
+        // --- đếm khối cần vẽ: thân + cánh L + tầng trên lùi
+        let nBox = nP;
         for (let i = 0; i < nP; i++) {
-            (list[i].roof_type === "pitched" ? pitchIdx : flatIdx).push(i);
+            const fl = list[i].fl | 0;
+            if (fl & H_WING) nBox += 1;
+            if ((fl & H_SETBACK2) && (list[i].nf | 0) >= 2) nBox += 1;
         }
-        const flatMesh = flatIdx.length
-            ? new THREE.InstancedMesh(this._geos.unitBox, this._mats.bldRoof, flatIdx.length) : null;
+        const bodies = new THREE.InstancedMesh(this._geos.unitBox, this._mats.bldBody, nBox);
+        const pitchIdx = [], slabIdx = [];
+        for (let i = 0; i < nP; i++) {
+            (list[i].roof_type === "pitched" ? pitchIdx : slabIdx).push(i);
+        }
+        // mái nghi (pyramid) vs mái bằng/mái tôn đơn (slab) — CÙNG geometry
+        // unitBox, chỉ khác ma trận nên gộp chung 1 mesh.
+        const slabMesh = slabIdx.length
+            ? new THREE.InstancedMesh(this._geos.unitBox, this._mats.bldRoof, slabIdx.length) : null;
         const pitchMesh = pitchIdx.length
             ? new THREE.InstancedMesh(this._geos.roofPyramid, this._mats.bldRoof, pitchIdx.length) : null;
 
         const m4 = new THREE.Matrix4();
         const q = new THREE.Quaternion();
+        const qy = new THREE.Quaternion();
+        const qp = new THREE.Quaternion();
         const e = new THREE.Euler();
         const v3 = new THREE.Vector3();
         const s3 = new THREE.Vector3();
         const col = new THREE.Color();
-        let fi = 0, pi = 0;
+        let bi = 0, fi = 0, pi = 0;
 
         for (let i = 0; i < nP; i++) {
             const b = list[i];
             const w = b.w || 5, d = b.d || 5, h = b.height || 8;
-            e.set(0, b.rot || 0, 0); q.setFromEuler(e);
+            const th = b.rot || 0;
+            const fl = b.fl | 0;
+            const nf = b.nf || Math.max(1, Math.round((h - (fl & H_STILT ? H_STILT_LIFT : 0)) / H_FLOOR_H));
+            const lift = (fl & H_STILT) ? H_STILT_LIFT : 0;
+            // tầng trên lùi: khối dưới cao bằng (nf-1) tầng, khối trên nhỏ lại
+            const sb2 = (fl & H_SETBACK2) && nf >= 2;
+            const h1 = sb2 ? (nf - 1) * H_FLOOR_H : h;
+            const h2 = h - h1;
+            const sy = Math.sin(th), cy = Math.cos(th);
+            // gương ngang: đổi bên cánh/cửa sổ cầu thang -> 1 byte, hình khác
+            const mx = (b.mir ? -1 : 1);
+            e.set(0, th, 0); q.setFromEuler(e);
 
-            v3.set(b.x, b.y + h / 2, b.z);
-            s3.set(w, h, d);
+            // thân chính
+            v3.set(b.x, b.y + lift + h1 * 0.5, b.z);
+            s3.set(w, h1, d);
             m4.compose(v3, q, s3);
-            bodies.setMatrixAt(i, m4);
+            bodies.setMatrixAt(bi, m4);
             col.setHex(b.color || b.facade || 0xe6e2d8);
-            bodies.setColorAt(i, col);
+            bodies.setColorAt(bi, col);
+            bi++;
 
-            const pitched = b.roof_type === "pitched";
-            const target = pitched ? pitchMesh : flatMesh;
-            const idx = pitched ? pi++ : fi++;
-            if (pitched) {
-                // MÁI RỘNG (nhà VN): mái nhô ra ngoài thân nhà ~15%, mái thấp
-                v3.set(b.x, b.y + h + 0.95, b.z);
-                const rw = Math.max(w, d) * 1.16;
-                s3.set(rw, 2.5, rw);
-            } else {
-                v3.set(b.x, b.y + h + 0.22, b.z);
-                s3.set(w * 1.10, 0.44, d * 1.10);
+            // tầng trên lùi vào (nhà 2 lầu lùi, nhà 3 tầng lùi)
+            if (sb2) {
+                const uw = w * 0.86, ud = d * 0.84;
+                const lz = -(d - ud) * 0.5;
+                v3.set(b.x + cy * 0 + sy * lz, b.y + lift + h1 + h2 * 0.5,
+                    b.z + cy * lz);
+                s3.set(uw, h2, ud);
+                m4.compose(v3, q, s3);
+                bodies.setMatrixAt(bi, m4);
+                col.setHex(b.color || b.facade || 0xe6e2d8);
+                bodies.setColorAt(bi, col);
+                bi++;
             }
-            m4.compose(v3, q, s3);
-            target.setMatrixAt(idx, m4);
-            col.setHex(b.roof_color || 0x8b3a3a);
-            target.setColorAt(idx, col);
+
+            // cánh chữ L phía sau + bên (nhà L, nhà có gác/nhà phụ)
+            if (fl & H_WING) {
+                const ww = w * 0.56, wd = d * 0.52;
+                const wh = h * (fl & H_STILT ? 0.68 : 0.78);
+                const lx = mx * (w - ww) * 0.5;
+                const lz = -(d * 0.5 + wd * 0.5);
+                v3.set(b.x + cy * lx + sy * lz, b.y + lift + wh * 0.5,
+                    b.z - sy * lx + cy * lz);
+                s3.set(ww, wh, wd);
+                m4.compose(v3, q, s3);
+                bodies.setMatrixAt(bi, m4);
+                col.setHex(b.color || b.facade || 0xe6e2d8);
+                bodies.setColorAt(bi, col);
+                bi++;
+            }
+
+            // --- mái
+            const topY = b.y + lift + h;
+            if (b.roof_type === "pitched") {
+                // MÁI NGHI (nhà vườn/nhà lái): mái nhô 16%, mái nhô sâu (nhà gỗ
+                // trại câu, nhà lái) 30% + thấp lại.
+                const ov = (fl & H_OVERHANG) ? 1.30 : 1.16;
+                const rw = Math.max(w, d) * ov;
+                v3.set(b.x, topY + (nf >= 2 ? 0.95 : 0.72), b.z);
+                s3.set(rw, nf >= 2 ? 2.5 : 1.9, rw);
+                m4.compose(v3, q, s3);
+                pitchMesh.setMatrixAt(pi, m4);
+                col.setHex(b.roof_color || 0x8b3a3a);
+                pitchMesh.setColorAt(pi, col);
+                pi++;
+            } else if (b.roof_type === "shed") {
+                // MÁI ĐƠN (mái tôn nhà nông thôn, mái xưởng): một tấm nghiêng,
+                // cao bên sau (-Z) thấp bên trước. Tilt quanh trục X cục bộ
+                // theo sau yaw, nên phải nhân 2 quaternion theo đúng thứ tự.
+                const rd = d * 1.16;
+                e.set(-H_SHED_SLOPE, 0, 0); qp.setFromEuler(e);
+                qy.copy(q); qy.multiply(qp);
+                v3.set(b.x + sy * 0 + 0, topY + Math.sin(H_SHED_SLOPE) * rd * 0.5 * 0.92,
+                    b.z + cy * 0);
+                s3.set(w * 1.16, 0.30, rd);
+                m4.compose(v3, qy, s3);
+                slabMesh.setMatrixAt(fi, m4);
+                col.setHex(b.roof_color || 0x7a7a72);
+                slabMesh.setColorAt(fi, col);
+                fi++;
+                e.set(0, th, 0); q.setFromEuler(e);
+            } else {
+                // MÁI BẰNG: có lan can (nhà phố chỉ tính) thì khối lan can dày
+                // hơn và lùi nhẹ — khác hẳn khối mỏng của nhà ống.
+                const par = (fl & H_PARAPET) !== 0;
+                v3.set(b.x, topY + (par ? 0.50 : 0.22), b.z);
+                s3.set(w * (par ? 1.04 : 1.10), par ? 1.00 : 0.44, d * (par ? 1.04 : 1.10));
+                m4.compose(v3, q, s3);
+                slabMesh.setMatrixAt(fi, m4);
+                col.setHex(b.roof_color || 0x8b3a3a);
+                slabMesh.setColorAt(fi, col);
+                fi++;
+            }
         }
 
         bodies.instanceMatrix.needsUpdate = true;
         if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
         bodies.computeBoundingSphere();
         parent.add(bodies);
-        for (const rm of [flatMesh, pitchMesh]) {
+        for (const rm of [slabMesh, pitchMesh]) {
             if (!rm) continue;
             rm.instanceMatrix.needsUpdate = true;
             if (rm.instanceColor) rm.instanceColor.needsUpdate = true;
@@ -2102,61 +2209,113 @@ export class MapLoader {
         }
 
         this._addShopFronts(list, parent);
-        this._addHouseDetails(list, parent);
+        this._addHouseDetails(list, parent, far);
     }
 
-    // CHI TIẾT NHÀ VIỆT: dải cửa sổ + hàng rào + ban công (3 InstancedMesh)
-    // Quy tắc không cần field thêm: nhà thấp/mái nhip = nhà vườn (có rào),
-    // nhà cao >= 3 tầng = shophouse (có ban công).
-    _addHouseDetails(buildings, parent) {
-        const bands = [], fences = [], balcs = [];
+    // CHI TIẾT NHÀ — GỘP HẾT VÀO 1 InstancedMesh (bldTrim), màu phân biệt bằng
+    // instanceColor. Mỗi mẫu chỉ vẽ khi template có bit tương ứng, nên nhà ống
+    // không mọc ban công còn nhà gỗ trại câu thì có hiên + nhà sàn.
+    // `far` (chunk > 900m): bỏ chi tiết nhỏ, fog đã che — N5000 không gánh.
+    _addHouseDetails(buildings, parent, far = false) {
+        const trim = [];
+        const C_GLASS = 0x2b3a4a, C_ROLLER = 0x8a8a80, C_GATE = 0xbfb9ab,
+            C_BALC = 0xd8d2c4, C_PORCH = 0x7a5a38, C_SHED = 0x9aa0a6;
         for (const b of buildings) {
             const w = b.w || 5, d = b.d || 5, h = b.height || 8;
             const th = b.rot || 0;
+            const fl = b.fl | 0;
             const sy = Math.sin(th), cy = Math.cos(th);
+            const mx = (b.mir ? -1 : 1);
+            const nf = b.nf || Math.max(1, Math.round((h - (fl & H_STILT ? H_STILT_LIFT : 0)) / H_FLOOR_H));
+            const lift = (fl & H_STILT) ? H_STILT_LIFT : 0;
             const front = d * 0.5 + 0.05;
-            // 1) dải cửa sổ tầng 1 (tầng trệt / cửa hàng) + tầng 2
-            bands.push([b.x, b.y + 1.75, b.z, th, w * 0.86, 1.5, front, cy, sy]);
-            if (h > 6.2) {
-                bands.push([b.x, b.y + 5.1, b.z, th, w * 0.80, 1.15, front, cy, sy]);
+            // kho / xưởng rộng: không khoét dải cửa sổ (không có tường đứng)
+            const glazed = !(fl & H_SHEDJOIN) || w <= 11;
+
+            if (!far && glazed) {
+                for (let f = 0; f < nf && f < 5; f++) {
+                    const y = lift + f * H_FLOOR_H + (f === 0 ? 1.75 : 1.45);
+                    const sw = w * (0.86 - 0.05 * f);
+                    const sh = f === 0 ? 1.5 : 1.15;
+                    trim.push([b.x + sy * front, b.y + y, b.z + cy * front,
+                        th, sw, sh, C_GLASS, cy, sy]);
+                }
             }
-            if (h > 9.6) {
-                bands.push([b.x, b.y + 8.3, b.z, th, w * 0.74, 1.0, front, cy, sy]);
+            // cửa cuốn: ô tô ra/thay kính ở tầng trệt, rộng gần hết mặt tiền
+            if (!far && (fl & H_ROLLER) && w <= 11) {
+                trim.push([b.x + sy * (front + 0.06), b.y + lift + 1.45,
+                    b.z + cy * (front + 0.06), th, w * 0.74, 2.7, C_ROLLER, cy, sy]);
             }
-            // 2) hàng rào / tường viện trước nhà vườn (nhà 1-2 tầng, mái nhip)
-            if (h <= 8.2 && b.roof_type === "pitched") {
-                fences.push([b.x, b.y + 0.62, b.z, th, w * 1.05, 1.25, front + 2.6, cy, sy]);
+            // vách kính cửa trượt tầng 1
+            if (!far && (fl & H_SLIDING) && w <= 11) {
+                trim.push([b.x + sy * (front + 0.05), b.y + lift + 1.5,
+                    b.z + cy * (front + 0.05), th, w * 0.62, 2.5, C_GLASS, cy, sy]);
             }
-            // 3) ban công cho shophouse 3+ tầng
-            if (h >= 9.6) {
-                balcs.push([b.x, b.y + 6.4, b.z, th, w * 0.88, 0.16, front + 0.75, cy, sy]);
+            // cửa sổ cầu thang bên hông — đặc trưng nhà ống VN
+            if (!far && (fl & H_STAIRWIN)) {
+                const lx = mx * (w * 0.5 + 0.04);
+                trim.push([b.x + cy * lx, b.y + lift + h * 0.45,
+                    b.z - sy * lx, th, 0.10, h * 0.62, 0.55, C_GLASS, cy, sy, 1]);
+            }
+            // tường rào + 2 cánh cổng (chừa lối xe 3m ở giữa)
+            if (!far && (fl & H_GATE)) {
+                const off = d * 0.5 + 2.4;
+                const seg = Math.max(1.4, (w - 3.0) * 0.5);
+                for (const s of (-1, 1)) {
+                    trim.push([b.x + cy * (s * (seg * 0.5 + 1.5)) + sy * off,
+                        b.y + 0.62, b.z - sy * (s * (seg * 0.5 + 1.5)) + cy * off,
+                        th, seg, 1.25, C_GATE, cy, sy]);
+                }
+            }
+            // ban công (tầng 2, và tầng 4 nếu nhà cao)
+            if (!far && (fl & H_BALCONY) && nf >= 2) {
+                const lv = [1];
+                if (nf >= 4) lv.push(3);
+                for (const f of lv) {
+                    const o = d * 0.5 + 0.72;
+                    trim.push([b.x + sy * o, b.y + lift + f * H_FLOOR_H + 0.02,
+                        b.z + cy * o, th, w * 0.88, 0.16, C_BALC, cy, sy]);
+                }
+            }
+            // hiên gỗ / mái đón trước cửa (nhà gỗ, nhà lái, nhà sàn)
+            if (!far && (fl & H_PORCH)) {
+                const o = d * 0.5 + 0.85;
+                trim.push([b.x + sy * o, b.y + lift + 2.55, b.z + cy * o,
+                    th, w * 0.82, 0.14, C_PORCH, cy, sy]);
+            }
+            // nhà phụ mái tôn chạm hông (chở xe / hiên kho) — axis 1 = gắn
+            // vào MẶT BÊN nên `sizeA` là chiều dài dọc tường.
+            if (!far && (fl & H_SHEDJOIN)) {
+                const lx = mx * (w * 0.5 + 1.35);
+                trim.push([b.x + cy * lx, b.y + lift + 1.25,
+                    b.z - sy * lx, th, d * 0.55, 2.5, C_SHED, cy, sy, 1]);
             }
         }
+        if (!trim.length) return;
         const m4 = new THREE.Matrix4();
         const q = new THREE.Quaternion();
         const e = new THREE.Euler();
         const v3 = new THREE.Vector3();
         const s3 = new THREE.Vector3();
-
-        const build = (list, mat, name, sy0) => {
-            if (!list.length) return;
-            const mesh = new THREE.InstancedMesh(this._geos.unitBox, mat, list.length);
-            for (let i = 0; i < list.length; i++) {
-                const [x, y, z, th, sw, sh, off, cy, sy] = list[i];
-                e.set(0, th, 0); q.setFromEuler(e);
-                v3.set(x + sy * off, y + sy0, z + cy * off);
-                s3.set(sw, sh, 0.14);
-                m4.compose(v3, q, s3);
-                mesh.setMatrixAt(i, m4);
-            }
-            mesh.instanceMatrix.needsUpdate = true;
-            mesh.computeBoundingSphere();
-            mesh.name = name;
-            parent.add(mesh);
-        };
-        build(bands, this._mats.windowBand, "house_windows", 0);
-        build(fences, this._mats.fence, "house_fences", 0);
-        build(balcs, this._mats.balcony, "house_balconies", 0);
+        const col = new THREE.Color();
+        const mesh = new THREE.InstancedMesh(this._geos.unitBox, this._mats.bldTrim, trim.length);
+        for (let i = 0; i < trim.length; i++) {
+            const t = trim[i];
+            const side = t[10] || 0;   // 0 = panel ở mặt trước, 1 = gắn mặt bên
+            e.set(0, t[3], 0); q.setFromEuler(e);
+            v3.set(t[0], t[1], t[2]);
+            if (side) s3.set(0.12, t[5], t[4]);
+            else s3.set(t[4], t[5], 0.14);
+            m4.compose(v3, q, s3);
+            mesh.setMatrixAt(i, m4);
+            col.setHex(t[6]);
+            mesh.setColorAt(i, col);
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.computeBoundingSphere();
+        mesh.name = "house_trim";
+        parent.add(mesh);
     }
 
     // BANG HIEU + MAI HIEN: mat tien cua nha pho la mat +Z (generator quay
@@ -2295,6 +2454,50 @@ export class MapLoader {
                          x, y + 0.28, z, 0.16, 0.42, 8.2, o.rot || 0);
                     break;
                 }
+                case "EMERGENCY_BAY": {
+                    // điểm dừng khẩn cấp cao tốc: vệt bê tông + vạch chéo
+                    push("epad", G.unitBox, M.shoulder,
+                         x, y + 0.02, z, o.w || 4.0, 0.1, o.d || 30.0, o.rot || 0);
+                    break;
+                }
+                case "KM_MARKER": {
+                    // CỘT KM QL1: cột + biển trắng CÓ SỐ KM (generator ghi
+                    // sẵn `o.km` theo cột km thật Tuy Hoa 1329 → HCMC 1889).
+                    // Cache theo số => tối đa ~537 canvas nhỏ 192x96.
+                    const kn = "KM" + (o.km | 0);
+                    if (!this._kmSignMats) this._kmSignMats = new Map();
+                    let kmat = this._kmSignMats.get(kn);
+                    if (!kmat) {
+                        kmat = this._makeSignMat(kn, "#f4f2e8", "#101010", 192, 96);
+                        this._kmSignMats.set(kn, kmat);
+                    }
+                    push("kmpost", G.pole, M.metal,
+                         x, y + 1.1, z, 0.24, 2.2, 0.24, 0);
+                    push("kmplate:" + kn, G.unitBox, kmat,
+                         x, y + 2.1, z, 0.95, 0.8, 0.16, o.rot || 0);
+                    break;
+                }
+                case "HIGHWAY_SIGN": {
+                    // BIỂN CAO TỐC xanh lá + 2 trụ; nhãn = địa danh gần nhất.
+                    // Texture được CACHE theo nhãn => ~30 canvas cho cả map.
+                    const lbl = String(o.label || "CT01");
+                    if (!this._hwSignMats) this._hwSignMats = new Map();
+                    let sm = this._hwSignMats.get(lbl);
+                    if (!sm) {
+                        sm = this._makeSignMat(lbl, "#0d6b3f");
+                        this._hwSignMats.set(lbl, sm);
+                    }
+                    const rr = o.rot || 0;
+                    // trục X cục bộ sau khi quay rr = vuông góc đường
+                    const px2 = Math.cos(rr) * 3.7, pz2 = -Math.sin(rr) * 3.7;
+                    push("hsignpost", G.pole, M.metal,
+                         x + px2, y + 3.2, z + pz2, 0.5, 6.4, 0.5, 0);
+                    push("hsignpost", G.pole, M.metal,
+                         x - px2, y + 3.2, z - pz2, 0.5, 6.4, 0.5, 0);
+                    push("hsign:" + lbl, G.unitBox, sm,
+                         x, y + 7.2, z, 7.6, 2.4, 0.3, rr);
+                    break;
+                }
                 case "POLE": {
                     push("pole", G.pole, M.pole, x, y + 4.5, z, 1, 9.0, 1, 0);
                     push("arm", G.poleArm, M.pole, x, y + 8.4, z, 2.4, 1, 1, o.rot || 0);
@@ -2329,6 +2532,39 @@ export class MapLoader {
     }
 
     // ------------------------------------------------------------ facilities
+    // Texture biển báo có chữ (bến xe / trạm dừng / cây xăng) — 1 canvas mỗi POI
+    _makeSignMat(text, bg, fg, cw, ch) {
+        const name = String(text || "").toUpperCase();
+        // cw/ch tùy chọn: cột KM dùng canvas nhỏ (192x96) thay vì 512x128 —
+        // ~537 tấm kia mà canvas to sẽ phình ~140MB VRAM cho máy 4GB.
+        cw = cw || 512; ch = ch || 128;
+        const cv = document.createElement("canvas");
+        cv.width = cw; cv.height = ch;
+        const c = cv.getContext("2d");
+        c.fillStyle = bg || "#0d4f9c"; c.fillRect(0, 0, cw, ch);
+        const band = Math.max(4, Math.round(ch * 0.06));
+        c.fillStyle = "#ffffff"; c.fillRect(0, 0, cw, band);
+        c.fillStyle = "#f7c948"; c.fillRect(0, ch - band, cw, band);
+        c.fillStyle = fg || "#ffffff";
+        let size = Math.round(ch * 0.41);
+        c.font = "bold " + size + "px Arial, sans-serif";
+        c.textAlign = "center"; c.textBaseline = "middle";
+        while (size > 12 && c.measureText(name).width > cw * 0.92) {
+            size -= 2; c.font = "bold " + size + "px Arial, sans-serif";
+        }
+        c.fillText(name, cw / 2, ch * 0.53);
+        const tex = new THREE.CanvasTexture(cv);
+        tex.anisotropy = 2;
+        const mat = new THREE.MeshBasicMaterial({ map: tex });
+        this._signMats = this._signMats || [];
+        this._signMats.push(mat);
+        return mat;
+    }
+
+    // BÃI DỪNG / TRẠM NGHỈ / CÂY XĂNG dọc tuyến
+    //   * cây xăng: mái che + cột bơm + cửa hàng + biển tên
+    //   * trạm nghỉ: nhà hàng + WC + cửa hàng + bãi xe khách/xe con
+    //     + đường quay đầu + biển tên + cây/đèn  (rule 12 của task)
     _addFacility(f, parent) {
         if (!f) return;
         const g = new THREE.Group();
@@ -2337,66 +2573,238 @@ export class MapLoader {
         g.rotation.y = f.rot || 0;
         const isFuel = f.type === "FUEL_STATION";
         const W = f.w || 50, D = f.d || 40;
+        const M = this._mats, GEO = this._geos;
+        const box = (w, h, d, px, py, pz, mat) => {
+            const m = new THREE.Mesh(GEO.unitBox, mat);
+            m.scale.set(w, h, d);
+            m.position.set(px, py, pz);
+            g.add(m);
+            return m;
+        };
 
         // mặt sàn
-        const pad = new THREE.Mesh(new THREE.PlaneGeometry(W, D), this._mats.concrete);
+        const pad = new THREE.Mesh(new THREE.PlaneGeometry(W, D), M.concrete);
         pad.rotation.x = -Math.PI / 2;
         pad.position.y = 0.08;
         g.add(pad);
 
         if (isFuel) {
             // mái che + cột bơm (Petrolimex/PVOIL)
-            const canopy = new THREE.Mesh(this._geos.unitBox, this._mats.fuelBrandA);
+            const canopy = new THREE.Mesh(GEO.unitBox, M.fuelBrandA);
             canopy.scale.set(W * 0.7, 0.6, D * 0.42);
             canopy.position.set(0, 6.2, 0);
             g.add(canopy);
             for (const sx of [-1, 1]) {
-                const col = new THREE.Mesh(this._geos.pole, this._mats.metal);
+                const col = new THREE.Mesh(GEO.pole, M.metal);
                 col.scale.set(1.3, 6.2, 1.3);
                 col.position.set(sx * W * 0.28, 3.1, 0);
                 g.add(col);
             }
             for (let i = 0; i < 3; i++) {
-                const pump = new THREE.Mesh(this._geos.unitBox, this._mats.fuel);
+                const pump = new THREE.Mesh(GEO.unitBox, M.fuel);
                 pump.scale.set(1.2, 2.0, 1.0);
                 pump.position.set((i - 1) * 5, 1.0, -D * 0.1);
                 g.add(pump);
             }
-            const shop = new THREE.Mesh(this._geos.unitBox, this._mats.wall);
+            const shop = new THREE.Mesh(GEO.unitBox, M.wall);
             shop.scale.set(W * 0.28, 5.5, D * 0.22);
             shop.position.set(-W * 0.3, 2.75, D * 0.28);
             g.add(shop);
-        } else {
-            // trạm nghỉ: nhà + bãi đỗ xe buýt
-            const b = new THREE.Mesh(this._geos.unitBox, this._mats.wall);
-            b.scale.set(W * 0.3, 6.5, D * 0.28);
-            b.position.set(-W * 0.3, 3.25, -D * 0.25);
-            g.add(b);
-            const roof = new THREE.Mesh(this._geos.unitBox, this._mats.roof);
-            roof.scale.set(W * 0.32, 0.4, D * 0.3);
-            roof.position.set(-W * 0.3, 6.6, -D * 0.25);
-            g.add(roof);
-            for (let i = 0; i < 4; i++) {
-                const line = new THREE.Mesh(this._geos.unitBox, this._mats.paintWhite);
-                line.scale.set(16, 0.06, 0.3);
-                line.position.set(W * 0.18, 0.12, (i - 1.5) * 7);
-                g.add(line);
+            // vệt ra vào + đèn cao áp + biển tên cây xăng
+            box(W * 0.6, 0.06, 0.3, 0, 0.12, D * 0.42, M.laneLine);
+            for (const sx of [-1, 1]) {
+                const p = new THREE.Mesh(GEO.pole, M.pole);
+                p.scale.set(0.6, 9.0, 0.6);
+                p.position.set(sx * W * 0.4, 4.5, -D * 0.4);
+                g.add(p);
+                const lamp = new THREE.Mesh(GEO.unitBox, M.lamp);
+                lamp.scale.set(1.6, 0.3, 0.8);
+                lamp.position.set(sx * W * 0.4, 9.0, -D * 0.4);
+                g.add(lamp);
             }
-            const canopy = new THREE.Mesh(this._geos.unitBox, this._mats.metal);
+            if (f.name) {
+                const sm = this._makeSignMat(f.name, "#b22222");
+                const board = new THREE.Mesh(GEO.unitBox, sm);
+                board.scale.set(Math.min(30, W * 0.8), Math.min(30, W * 0.8) * 0.25, 0.5);
+                board.position.set(0, 7.5, D * 0.46);
+                g.add(board);
+                for (const sx of [-1, 1]) {
+                    const post = new THREE.Mesh(GEO.pole, M.metal);
+                    post.scale.set(0.9, 7.5, 0.9);
+                    post.position.set(sx * Math.min(30, W * 0.8) * 0.42, 3.75, D * 0.46);
+                    g.add(post);
+                }
+            }
+        } else {
+            // ---------- TRẠM DỪNG: KHU NHÀ PHỤC VỤ ----------
+            // 1) nhà hàng / nhà điều hành (nửa trái, mái vừa)
+            box(W * 0.3, 6.0, D * 0.3, -W * 0.28, 3.0, -D * 0.24, M.wall);
+            box(W * 0.34, 0.5, D * 0.34, -W * 0.28, 6.3, -D * 0.24, M.roof);
+            box(W * 0.24, 2.6, 0.3, -W * 0.28, 2.0, -D * 0.24 + D * 0.15, M.glass);
+            // 2) nhà vệ sinh — tách riêng (kiểu trạm dừng VN)
+            box(7.5, 3.6, 6.5, W * 0.34, 1.8, -D * 0.3, M.wall);
+            box(8.2, 0.4, 7.2, W * 0.34, 3.8, -D * 0.3, M.roof);
+            box(2.0, 2.2, 0.25, W * 0.34, 1.2, -D * 0.3 + 3.4, M.windowBand);
+            // 3) cửa hàng / quán cơm nhỏ + mái hiên
+            box(W * 0.2, 4.4, D * 0.18, -W * 0.06, 2.2, D * 0.3, M.wall);
+            box(W * 0.21, 0.4, D * 0.2, -W * 0.06, 4.6, D * 0.3, M.roof);
+            box(W * 0.18, 0.14, 1.8, -W * 0.06, 3.1, D * 0.3 - D * 0.11, M.awning);
+
+            // ---------- BÃI ĐỖ ----------
+            // xe khách: slot dài dọc trục X (đứng song song nhau)
+            for (let i = 0; i < 5; i++) {
+                const zt = (i - 2) * 8.5;
+                box(D * 0.34, 0.06, 0.3, W * 0.16, 0.12, zt, M.paintWhite);
+                box(0.3, 0.06, 8.0, W * 0.16 - D * 0.17, 0.12, zt + 4.0, M.paintWhite);
+                box(0.3, 0.06, 8.0, W * 0.16 + D * 0.17, 0.12, zt + 4.0, M.paintWhite);
+            }
+            // xe con: slot ngắn phía trong
+            for (let i = 0; i < 6; i++) {
+                box(4.6, 0.06, 0.25, -W * 0.36 + i * 5.2, 0.12, D * 0.05, M.paintWhite);
+            }
+            // ---------- ĐƯỜNG QUAY ĐẦU (vệt vòng cua sát mép bãi) ----------
+            box(0.3, 0.06, D * 0.5, W * 0.44, 0.12, 0, M.laneLine);
+            box(D * 0.2, 0.06, 0.3, W * 0.44 - D * 0.1, 0.12, -D * 0.25, M.laneLine);
+
+            // ---------- MÁI CHE + CỘT ----------
+            const canopy = new THREE.Mesh(GEO.unitBox, M.metal);
             canopy.scale.set(W * 0.5, 0.4, 8);
             canopy.position.set(W * 0.1, 5.4, 0);
             g.add(canopy);
             for (const sx of [-1, 1]) {
-                const col = new THREE.Mesh(this._geos.pole, this._mats.metal);
+                const col = new THREE.Mesh(GEO.pole, M.metal);
                 col.scale.set(1.2, 5.4, 1.2);
                 col.position.set(W * 0.1 + sx * W * 0.22, 2.7, 0);
                 g.add(col);
+            }
+
+            // ---------- BIỂN TÊN TRẠM DỪNG ----------
+            if (f.name) {
+                const sw = Math.min(34, W * 0.7);
+                const sm = this._makeSignMat(f.name, "#0d6b3f");
+                const board = new THREE.Mesh(GEO.unitBox, sm);
+                board.scale.set(sw, sw * 0.25, 0.5);
+                board.position.set(0, 8.0, D * 0.48);
+                g.add(board);
+                for (const sx of [-sw * 0.44, sw * 0.44]) {
+                    const post = new THREE.Mesh(GEO.pole, M.metal);
+                    post.scale.set(1.0, 8.0, 1.0);
+                    post.position.set(sx, 4.0, D * 0.48);
+                    g.add(post);
+                }
+            }
+
+            // ---------- CÂY + ĐÈN ----------
+            for (let i = -2; i <= 2; i++) {
+                if (i === 0) continue;
+                const tx = i * W * 0.18;
+                const tr = new THREE.Mesh(GEO.pole, M.trunk);
+                tr.scale.set(1.1, 4.2, 1.1);
+                tr.position.set(tx, 2.1, -D * 0.46);
+                g.add(tr);
+                const cn = new THREE.Mesh(GEO.canopy || GEO.unitBox, M.leaves);
+                cn.scale.set(4.6, 3.4, 4.6);
+                cn.position.set(tx, 5.6, -D * 0.46);
+                g.add(cn);
+            }
+            for (const sx of [-1, 1]) {
+                const p = new THREE.Mesh(GEO.pole, M.pole);
+                p.scale.set(0.6, 8.5, 0.6);
+                p.position.set(sx * W * 0.42, 4.25, D * 0.1);
+                g.add(p);
+                const lamp = new THREE.Mesh(GEO.unitBox, M.lamp);
+                lamp.scale.set(1.5, 0.3, 0.7);
+                lamp.position.set(sx * W * 0.42, 8.5, D * 0.1);
+                g.add(lamp);
             }
         }
         parent.add(g);
     }
 
-    // ĐIỂM DỪNG XE BUÝT dọc QL1A: mái chờ + biển bảng + ghế + vệt đường
+    // Phase 5: Công trình công cộng (SCHOOL, HOSPITAL, MARKET, INDUSTRIAL)
+    _addPublicFacility(s, parent) {
+        if (!s) return;
+        const g = new THREE.Group();
+        const y = s.y || 0;
+        g.position.set(s.x, y, s.z);
+        g.rotation.y = s.rot || 0;
+        const W = s.w || 60, D = s.d || 50;
+        const M = this._mats, GEO = this._geos;
+        const box = (w, h, d, px, py, pz, mat) => {
+            const m = new THREE.Mesh(GEO.unitBox, mat);
+            m.scale.set(w, h, d);
+            m.position.set(px, py, pz);
+            g.add(m);
+            return m;
+        };
+
+        // mặt sàn
+        const pad = new THREE.Mesh(new THREE.PlaneGeometry(W, D), M.concrete);
+        pad.rotation.x = -Math.PI / 2;
+        pad.position.y = 0.08;
+        g.add(pad);
+
+        if (s.type === "SCHOOL") {
+            // Trường học: nhà chính 3 tầng + sân trường + nhà xe
+            box(W * 0.5, 9.0, D * 0.4, 0, 4.5, -D * 0.2, M.wall);
+            box(W * 0.55, 0.6, D * 0.45, 0, 9.3, -D * 0.2, M.roof);
+            box(W * 0.2, 6.0, D * 0.3, -W * 0.3, 3.0, D * 0.25, M.wall);
+            box(W * 0.25, 0.5, D * 0.35, -W * 0.3, 6.3, D * 0.25, M.roof);
+            // sân trường
+            box(W * 0.3, 0.06, D * 0.3, W * 0.25, 0.12, D * 0.2, M.grass);
+            // nhà xe
+            box(W * 0.15, 4.0, D * 0.25, W * 0.35, 2.0, -D * 0.3, M.metal);
+        } else if (s.type === "HOSPITAL") {
+            // Bệnh viện: nhà chính 5 tầng + nhà phụ + bãi đỗ
+            box(W * 0.6, 15.0, D * 0.5, 0, 7.5, -D * 0.15, M.wall);
+            box(W * 0.65, 0.8, D * 0.55, 0, 15.4, -D * 0.15, M.roof);
+            box(W * 0.25, 8.0, D * 0.35, -W * 0.35, 4.0, D * 0.2, M.wall);
+            box(W * 0.3, 0.6, D * 0.4, -W * 0.35, 8.3, D * 0.2, M.roof);
+            // bãi đỗ
+            for (let i = 0; i < 4; i++) {
+                box(4.5, 0.06, 0.25, W * 0.3 + i * 5.5, 0.12, D * 0.25, M.paintWhite);
+            }
+        } else if (s.type === "MARKET") {
+            // Chợ: nhà chính 2 tầng + mái hiên + quầy hàng
+            box(W * 0.7, 6.0, D * 0.6, 0, 3.0, 0, M.wall);
+            box(W * 0.75, 0.5, D * 0.65, 0, 6.3, 0, M.roof);
+            // mái hiên
+            box(W * 0.8, 0.3, D * 0.2, 0, 4.5, D * 0.35, M.awning);
+            // quầy hàng
+            for (let i = 0; i < 3; i++) {
+                box(W * 0.15, 2.5, D * 0.15, -W * 0.25 + i * W * 0.25, 1.25, D * 0.3, M.wall);
+            }
+        } else if (s.type === "INDUSTRIAL") {
+            // Khu công nghiệp: nhà máy + kho hàng + bãi đỗ
+            box(W * 0.5, 8.0, D * 0.4, 0, 4.0, -D * 0.2, M.metal);
+            box(W * 0.55, 0.5, D * 0.45, 0, 8.3, -D * 0.2, M.roof);
+            box(W * 0.3, 6.0, D * 0.3, -W * 0.35, 3.0, D * 0.2, M.metal);
+            box(W * 0.35, 0.5, D * 0.35, -W * 0.35, 6.3, D * 0.2, M.roof);
+            // bãi đỗ
+            for (let i = 0; i < 5; i++) {
+                box(5.0, 0.06, 0.3, W * 0.3 + i * 6.0, 0.12, D * 0.25, M.paintWhite);
+            }
+        }
+
+        // biển tên
+        if (s.name) {
+            const sm = this._makeSignMat(s.name, "#1f6fb2");
+            const board = new THREE.Mesh(GEO.unitBox, sm);
+            board.scale.set(Math.min(40, W * 0.8), Math.min(40, W * 0.8) * 0.25, 0.5);
+            board.position.set(0, 10.0, D * 0.48);
+            g.add(board);
+            for (const sx of [-1, 1]) {
+                const post = new THREE.Mesh(GEO.pole, M.metal);
+                post.scale.set(1.0, 10.0, 1.0);
+                post.position.set(sx * Math.min(40, W * 0.8) * 0.42, 5.0, D * 0.48);
+                g.add(post);
+            }
+        }
+
+        parent.add(g);
+    }
+
+    // ĐIỂM DỪNG XE BUÝT dọc QL1: mái chờ + biển bảng + ghế + vệt đường
     _addBusStop(s) {
         const M = this._mats, G = this._geos;
         const g = new THREE.Group();
@@ -2441,6 +2849,30 @@ export class MapLoader {
         signFace.scale.set(1.15, 0.72, 0.06);
         signFace.position.set(-2.6, 3.2, -1.92);
         g.add(signFace);
+
+        // ghế chờ + thùng rác + đèn (trạm dừng VN thật, không phải mái che trơ)
+        const bench = new THREE.Mesh(this._geos.unitBox, M.trunk);
+        bench.scale.set(2.6, 0.12, 0.5);
+        bench.position.set(0, 0.65, -1.6);
+        g.add(bench);
+        for (const bx of [-1.1, 1.1]) {
+            const leg = new THREE.Mesh(G.pole, M.metal);
+            leg.scale.set(0.12, 0.6, 0.4);
+            leg.position.set(bx, 0.32, -1.6);
+            g.add(leg);
+        }
+        const bin = new THREE.Mesh(G.pole, M.metal);
+        bin.scale.set(0.5, 0.9, 0.5);
+        bin.position.set(1.9, 0.45, -1.7);
+        g.add(bin);
+        const lampP = new THREE.Mesh(G.pole, M.pole);
+        lampP.scale.set(0.16, 4.6, 0.16);
+        lampP.position.set(2.4, 2.3, 2.2);
+        g.add(lampP);
+        const lampH = new THREE.Mesh(this._geos.unitBox, M.lamp);
+        lampH.scale.set(0.7, 0.18, 0.4);
+        lampH.position.set(2.4, 4.6, 2.2);
+        g.add(lampH);
 
         this.stationGroup.add(g);
     }
@@ -2523,6 +2955,12 @@ export class MapLoader {
                 track(this.stationGroup.children[this.stationGroup.children.length - 1], s, 750);
                 continue;
             }
+            // Phase 5: Công trình công cộng mới
+            if (s.type === "SCHOOL" || s.type === "HOSPITAL" || s.type === "MARKET" || s.type === "INDUSTRIAL") {
+                this._addPublicFacility(s, this.stationGroup);
+                track(this.stationGroup.children[this.stationGroup.children.length - 1], s, 1000);
+                continue;
+            }
             const g = new THREE.Group();
             g.name = `station_${s.id}`;
             g.position.set(s.x, s.y, s.z);
@@ -2530,12 +2968,10 @@ export class MapLoader {
             const W = s.w || 180, D = s.d || 130;
 
             // 1) SÂN BẾN — MỘT MẶT PHẲNG CÓ THÂN (P50)
-            //
             // Bản cũ (trước P44) là `PlaneGeometry` phẳng lẻ, lơ lửng trên nền.
             // Bản P44/P46 dựng lưới 16×12 bám `_surfaceAt` bán kính 160m — SAI:
             // ở mép sân, bán kính 160m nuốt cả đường NGOÀI sân ở cao độ khác,
             // các đỉnh lưới nhảy nhót ⇒ sân vỡ thành tấm vá (đã thấy trong ảnh).
-            //
             // Sân là MẶT PHẲNG BÊ TÔNG: nó chỉ cần ĐÚNG CAO ĐỘ (P40 đã bảo đảm
             // `st.y` khớp đường trong sân: cả 5 bến lệch ≤ 0.011m) và CÓ THÂN.
             // Không có node hình học nào trên sân nên không thể vỡ mảnh.
@@ -2543,7 +2979,7 @@ export class MapLoader {
                 const yl = this._yardLift();
                 const top = new MeshAccum();
                 const sideA = new MeshAccum();
-                // P58: HỆ CỤC BỘ CỦA GROUP = (oz, ox), KHÔNG phải (ox, oz).
+                // HỆ CỤC BỘ CỦA GROUP = (oz, ox), KHÔNG phải (ox, oz).
                 //   w = 190 là chiều DỌC trục ox (vuông góc đường) -> ô lz (z cục bộ)
                 //   d = 140 là chiều NGANG trục oz (dọc đường)     -> ô lx (x cục bộ)
                 // Bản cũ đặt W lên x, D lên z = xoay sân 90° so với đường nội bộ.
@@ -2551,7 +2987,7 @@ export class MapLoader {
                     [-D / 2, 0, -W / 2], [D / 2, 0, -W / 2],
                     [D / 2, 0, W / 2], [-D / 2, 0, W / 2]
                 ].map(q => [q[0], yl, q[2]]);
-                // P57: chiều kim phải để pháp tuyến hướng LÊN (+Y).
+                // chiều kim phải để pháp tuyến hướng LÊN (+Y).
                 // `quad(a,b,c,d)` sinh (a,b,c)+(b,d,c); với ring theo chiều
                 // kim đồng hồ từ trên xuống thì cross((b-a),(c-b)) = (0,-W*D,0)
                 // ⇒ pháp tuyến hướng XUỐNG ⇒ `MeshLambertMaterial` cho sân
@@ -2559,7 +2995,7 @@ export class MapLoader {
                 // đen. Đảo chiều ở đây.
                 top.quad(ring[1], ring[0], ring[3], ring[2]);
                 const sa_ = Math.sin(s.rot || 0), ca_ = Math.cos(s.rot || 0);
-                // P58: local -> world PHẢI theo ma trận của `g.rotation.y`:
+                // local -> world PHẢI theo ma trận của `g.rotation.y`:
                 //   x' = lx·cos(r) + lz·sin(r) ;  z' = −lx·sin(r) + lz·cos(r)
                 // Bản cũ dùng w2() của generator (phản xạ, det = −1) ⇒ mẫu
                 // terrain lệch hàng chục mét ⇒ váy sân bám nhầm chỗ.
@@ -2582,7 +3018,7 @@ export class MapLoader {
 
             // 2) vạch ranh sân
             const edge = new THREE.Mesh(this._geos.unitBox, M.paintWhite);
-            // P58: dọc đường = trục x cục bộ (chiều D), hướng vào bến = trục z (chiều W)
+            // dọc đường = trục x cục bộ (chiều D), hướng vào bến = trục z (chiều W)
             edge.scale.set(D, 0.05, 0.35);
             edge.position.set(0, this.world.yardLift + 0.03, W / 2 - 2);
             g.add(edge);
@@ -2620,9 +3056,13 @@ export class MapLoader {
 
             // 4) tiện ích (kho/nhà vệ sinh/quầy) — cũng từ `structures`
             const utils = [];
+            const STRUCT_H = { WAREHOUSE: 6.0, DEPOT: 7.0, WAITING_HALL: 6.0,
+                               CANTEEN: 5.0, TICKET_OFFICE: 4.0, RESTROOM: 3.5,
+                               GUARDHOUSE: 3.5 };
             for (const k of (s.structures || [])) {
                 if (k.type === "TERMINAL") continue;
-                utils.push({ x: k.oz, z: k.ox, w: k.d, d: k.w, h: k.type === "WAREHOUSE" ? 6.0 : 4.5 });
+                utils.push({ x: k.oz, z: k.ox, w: k.d, d: k.w,
+                             h: STRUCT_H[k.type] || 4.5 });
             }
             for (const u of utils) {
                 const b = new THREE.Mesh(this._geos.unitBox, M.wall);
@@ -2642,7 +3082,7 @@ export class MapLoader {
             for (let i = 0; i < slots.length; i++) {
                 const slot = slots[i];
                 const lx = slot.x - s.x, lz = slot.z - s.z;
-                // P58: world -> cục bộ phải dùng Rᵀ(rot) = ĐẢO ma trận của
+                // world -> cục bộ phải dùng Rᵀ(rot) = ĐẢO ma trận của
                 // `g.rotation.y`, tức cos(+rot)/sin(+rot). Bản cũ lấy cos(−rot)
                 // = áp DUNG ma trận chuyển tiếp ⇒ xoay HAI LẦN (đo: lệch
                 // 110.8 / 115.7 / 130.2 / 130.2 m ⇒ "cột, mái lung tung").
@@ -2653,7 +3093,7 @@ export class MapLoader {
                     ? (slot.y - s.y) : this.world.yardLift;
 
                 const canopy = new THREE.Mesh(this._geos.unitBox, M.metal);
-                // P58: mái che/nan bám TRỤC CỦA GROUP (lxx = dọc đường,
+                // mái che/nan bám TRỤC CỦA GROUP (lxx = dọc đường,
                 // lzz = trục đỗ xe) — không cần xoay thêm. Bản cũ đặt
                 // `rotation.y = −rot` ⇒ tổng quay = 0 (cố định theo WORLD)
                 // ⇒ mái che quay lệch so với hàng bãi.
@@ -2692,6 +3132,9 @@ export class MapLoader {
             // Bến xe VN ban đêm sáng trắng, có hàng cây bóng mát dọc lối vào.
             this._addStationLights(g, s, W, D);
 
+            // 8) HÀNG RÀO + CỔNG (ranh giới khuôn viên riêng, không phải bãi đất trống)
+            this._addStationFence(g, s, W, D);
+
             this.stationGroup.add(g);
             track(g, s, 2600);
         }
@@ -2723,7 +3166,7 @@ export class MapLoader {
         this._signMats = this._signMats || [];
         this._signMats.push(mat);
 
-        // P58: trục x cục bộ = DỌC ĐƯỜNG (chiều D), trục z cục bộ = HƯỚNG ĐƯỜNG (W)
+        // trục x cục bộ = DỌC ĐƯỜNG (chiều D), trục z cục bộ = HƯỚNG ĐƯỜNG (W)
         const sw = Math.min(46, D * 0.42);
         const board = new THREE.Mesh(this._geos.unitBox, mat);
         board.scale.set(sw, sw * 0.25, 0.5);
@@ -2783,6 +3226,36 @@ export class MapLoader {
         add(lampPos, G.unitBox, M.lamp, 1.0, 0.26, 0.5, false);
         add(treePos.map(p => [p[0], p[1] + 2.0, p[2]]), G.trunk, M.trunk, 1.1, 4.0, 1.1, false);
         add(treePos.map(p => [p[0], p[1] + 5.4, p[2]]), G.canopy, M.leaves, 2.6, 2.2, 2.6, true);
+    }
+
+    // HÀNG RÀO + CỔNG BẾN — ranh giới khuôn viên riêng.
+    // x cục bộ = dọc đường (D), z = hướng vào bến (W), cổng ở +z.
+    _addStationFence(g, s, W, D) {
+        const M = this._mats;
+        const y = this.world.yardLift;
+        const GATE_HALF = 9.0;   // nửa rộng cổng (xe khách ra vào)
+        const FH = 1.8;          // cao hàng rào
+        const wall = (sx, sy, sz, px, py, pz, mat) => {
+            const m = new THREE.Mesh(this._geos.unitBox, mat || M.metal);
+            m.scale.set(sx, sy, sz);
+            m.position.set(px, py, pz);
+            g.add(m);
+        };
+        // 3 mặt kín: sau (-z), trái (-x), phải (+x)
+        wall(D, FH, 0.3, 0, y + FH / 2, -W / 2);
+        wall(0.3, FH, W, -D / 2, y + FH / 2, 0);
+        wall(0.3, FH, W, D / 2, y + FH / 2, 0);
+        // mặt cổng (+z): chừa khoảng trống ở giữa cho xe ra vào
+        const sideW = D / 2 - GATE_HALF;
+        if (sideW > 1.0) {
+            wall(sideW, FH, 0.3, -(GATE_HALF + sideW / 2), y + FH / 2, W / 2);
+            wall(sideW, FH, 0.3, GATE_HALF + sideW / 2, y + FH / 2, W / 2);
+        }
+        // 2 trụ cổng + dầm ngang mang biển
+        for (const px of [-GATE_HALF - 0.6, GATE_HALF + 0.6]) {
+            wall(1.2, 4.2, 1.2, px, y + 2.1, W / 2, M.wall);
+        }
+        wall(GATE_HALF * 2 + 2.4, 0.8, 1.0, 0, y + 4.4, W / 2, M.wall);
     }
 
     // CULL POI: bến/trạm/điểm dừng ở xa -> ẩn group (không mất nội dung,
@@ -2999,12 +3472,14 @@ export class MapLoader {
         this._addChunkTerrain(entry.cx, entry.cz, g, px, pz);
         this._addChunkRoads(entry.cx, entry.cz, g);
         if (entry.data) {
-            this._addChunkBuildings(entry.data.buildings, g);
-            // FAR-LOD: chunk xa > 1100m bo cay/cot/ruong (fog 1450m da che
-            // ~70%, giam manh instance count -> N5000 khong bi gio)
+            // FAR-LOD: chunk xa > 1100m bo cay/cot/ruong, > 900m bo chi tiet
+            // nho cua nha (cua so/cua cuon/hienh/ran) — fog 1450m da che het,
+            // giam manh instance count -> N5000 khong bi gio.
             const ccx0 = entry.cx * CHUNK_SIZE + CHUNK_SIZE / 2;
             const ccz0 = entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-            const far = Math.hypot(ccx0 - px, ccz0 - pz) > 1100;
+            const cd = Math.hypot(ccx0 - px, ccz0 - pz);
+            const far = cd > 1100;
+            this._addChunkBuildings(entry.data.buildings, g, cd > 900);
             this._addChunkObjects(entry.data.objects, g, far);
             // facilities (tram xang/nghi) da render toan cuc 1 lan trong
             // _buildStations -> khong render lai o day (tranh nhan ban + z-fighting)
@@ -3016,14 +3491,14 @@ export class MapLoader {
     // ----------------------------------------------------------------- API
     // getTerrainHeight: trên đường -> node.y - BUS_AXLE (để bus.y == mặt đường),
     // ngoài đường -> terrain thật. Đây là hàm main.js gọi MỖI FRAME.
-    // P43 — `roadLift` / `yardLift` được set trên lớp `WorldTerrain`
+    // `roadLift` / `yardLift` được set trên lớp `WorldTerrain`
     // (`this.world`), KHÔNG có trên `MapLoader`. Dùng `this.roadLift` ở đây
     // là `undefined` ⇒ phép cộng ra NaN ⇒ xe đứng ở NaN. Đo được:
     // `loaderRoadLift = UNDEFINED` còn `worldRoadLift = 0.12`.
     _roadLift() { return (this.world && this.world.roadLift) || ROAD_LIFT; }
     _yardLift() { return (this.world && this.world.yardLift) || YARD_LIFT; }
 
-    // P41 — `yHint`: cao độ xe đang ở. Truy vấn mặt trên cùng LIÊN TỤC
+    // `yHint`: cao độ xe đang ở. Truy vấn mặt trên cùng LIÊN TỤC
     // để xe leo được ramp / chạy được cầu / không chui xuống đường dưới.
     getTerrainHeight(x, z, yHint = null) {
         if (!this.world) return 10;
@@ -3059,8 +3534,16 @@ export class MapLoader {
         if (!this.roadGraph) return { segments: [], route: [], pois: [] };
         if (this._minimapCache) return this._minimapCache;   // tĩnh 1 lần (ui.js cache)
         const raw = this.roadGraph.getMinimapData();
+        // Minimap là BẢN ĐỒ ĐƯỜNG THÔN (regional map), không phải sơ đồ
+        // từng con hẻm: giữ xương sống + đường tỉnh + đường liên xã + đường
+        // vào KCN (đều là đường tài xế cần biết tên). `RESIDENTIAL` /
+        // `COMMERCIAL` / `AGRICULTURAL` cố tình KHÔNG vào đây — đưa vào là
+        // minimap thành nấm tóc, vẽ thêm hàng nghìn đoạn cho 1 bản đồ tĩnh.
         const KEEP = new Set(["NATIONAL", "EXPRESSWAY", "ARTERIAL", "COLLECTOR",
-                              "RAMP", "TUNNEL", "STATION_ACCESS"]);
+                              "PROVINCIAL_ROAD", "RAMP", "TUNNEL", "STATION_ACCESS",
+                              "INTER_VILLAGE", "INDUSTRIAL_ACCESS", "COMMERCIAL",
+                              "RESIDENTIAL", "SERVICE", "LOCAL", "RURAL_LOCAL",
+                              "AGRICULTURAL", "ALLEY", "INTERNAL"]);
         const segs = [];
         const all = this.roadGraph.segments || [];
         const nodeMap = this.roadGraph._nodeMap || new Map();
@@ -3161,8 +3644,102 @@ export class MapLoader {
     }
     getPOIs() { return this.stationsData; }
 
+    // ================================================================= LỚP
+    // HÀNH CHÍNH (đơn vị sau sáp nhập, hiệu lực 12/6/2025 — NQ 202/2025/QH15)
+    // -----------------------------------------------------------------------
+    // Dữ liệu do tools/map_generator.py sinh trong world.json["admin"].
+    // JS KHÔNG tự dựng lại trục km: dùng đúng polyline `axis` mà generator
+    // đã gửi (README 3g/P19 — bản độc lập thứ hai là nguồn lệch).
+    _buildAdminIndex() {
+        this._adminBands = null;
+        this._adminSeats = null;
+        this._adminAxis = null;
+        this._adminKm = null;
+        const a = this.worldData && this.worldData.admin;
+        if (!a || !Array.isArray(a.units) || !a.units.length) return;
+        // Dải km: chỉ đơn vị nằm trên hành lang và có km. Đã sort sẵn ở
+        // generator; sort lại để không phụ thuộc thứ tự file.
+        const bands = a.units
+            .filter(u => u.onCorridor && typeof u.km === "number")
+            .slice()
+            .sort((p, q) => p.km - q.km);
+        // Trục km = corridor_coarse (mắt lưới 1500 m) + km của từng điểm.
+        const axis = Array.isArray(a.axis) && a.axis.length >= 2
+            ? a.axis.filter(p => Array.isArray(p) && p.length >= 3)
+            : null;
+        if (axis) {
+            this._adminAxis = axis;
+            this._adminKm = axis.map(p => p[2]);
+        }
+        if (bands.length) this._adminBands = bands;
+        const seats = a.units.filter(u => typeof u.x === "number" && typeof u.z === "number");
+        if (seats.length) this._adminSeats = seats;
+        this._adminNearMaxM = (typeof a.nearMaxKm === "number" ? a.nearMaxKm : 25) * 1000;
+    }
+
+    // (x,z) -> { km, lateral, dist } theo trục km. Giống hệt _corridor_project()
+    // của generator (cùng bộ điểm, cùng phép chiếu).
+    _projectKm(x, z) {
+        const ax = this._adminAxis;
+        if (!ax) return null;
+        let best = -1, bd = Infinity;
+        for (let k = 0; k < ax.length - 1; k++) {
+            const x1 = ax[k][0], z1 = ax[k][1], x2 = ax[k + 1][0], z2 = ax[k + 1][1];
+            const dx = x2 - x1, dz = z2 - z1;
+            const l2 = dx * dx + dz * dz;
+            if (l2 <= 0) continue;
+            let t = ((x - x1) * dx + (z - z1) * dz) / l2;
+            t = t < 0 ? 0 : (t > 1 ? 1 : t);
+            const ex = x - (x1 + dx * t), ez = z - (z1 + dz * t);
+            const d2 = ex * ex + ez * ez;
+            if (d2 < bd) { bd = d2; best = k + t; }
+        }
+        if (best < 0) return null;
+        const i = Math.floor(best), t = best - i;
+        const k0 = this._adminKm[i];
+        const k1 = this._adminKm[Math.min(i + 1, this._adminKm.length - 1)];
+        return { km: k0 + (k1 - k0) * t, dist: Math.sqrt(bd) };
+    }
+
+    // Đơn vị hành chính tại (x, z). Trả null nếu world không có lớp admin.
+    // `via`: "band" = theo dải km trên hành lang, "seat" = đơn vị gần nhất có
+    // toạ độ (chỉ dùng khi lệch khỏi hành lang quá xa).
+    getAdminUnit(x, z) {
+        if (!this._adminBands && !this._adminSeats) return null;
+        const proj = this._projectKm(x, z);
+        if (proj && this._adminBands) {
+            const far = this._adminNearMaxM;
+            if (proj.dist <= far) {
+                const b = this._adminBands;
+                let lo = 0, hi = b.length - 1;
+                while (lo < hi) {
+                    const mid = (lo + hi + 1) >> 1;
+                    if (b[mid].km <= proj.km) lo = mid; else hi = mid - 1;
+                }
+                const u = b[lo];
+                // Ngoài 2 đầu hành lang -> đơn vị ở đầu gần nhất, đánh dấu.
+                return Object.assign({}, u, {
+                    via: "band", km: Math.round(proj.km * 100) / 100,
+                    offCorridor: Math.round(proj.dist)
+                });
+            }
+        }
+        if (this._adminSeats) {
+            let best = null, bd = Infinity;
+            for (const u of this._adminSeats) {
+                const dx = u.x - x, dz = u.z - z;
+                const d2 = dx * dx + dz * dz;
+                if (d2 < bd) { bd = d2; best = u; }
+            }
+            const d = Math.sqrt(bd);
+            if (best && d <= this._adminNearMaxM) {
+                return Object.assign({}, best, { via: "seat", offCorridor: Math.round(d) });
+            }
+        }
+        return null;
+    }
+
     // NAN ĐỖ XE TĨNH (npc.js BusStationManager dùng) — lấy từ generator.
-    //
     // rule 40/42: bến lớn phải có đủ xe, và bến KHÔNG phải mép thế giới —
     // khi lái tới Bến xe Miền Đông Mới thì phải thấy bến đó có xe.
     // Trước đây chỉ nan của bến spawn trong 800m được trả về, nên 4 bến còn
@@ -3218,6 +3795,10 @@ export class MapLoader {
             for (const m of this._signMats) { m.map?.dispose?.(); m.dispose?.(); }
             this._signMats.length = 0;
         }
+        // cache texture biển — nếu không xoá thì lần dispose() kế (restart map)
+        // sẽ trả về material ĐÃ GIẢI THỎA => biển đen/không hiện chữ.
+        if (this._hwSignMats) this._hwSignMats.clear();
+        if (this._kmSignMats) this._kmSignMats.clear();
         for (const m of this._facadeMats.values()) m.dispose?.();
         for (const m of this._roofMats.values()) m.dispose?.();
         if (this.group && this.group.parent) this.group.parent.remove(this.group);
@@ -3241,6 +3822,7 @@ export function createMap(options) {
         getMinimapData: () => loader.getMinimapData(),
         getRoadGraph: () => loader.getRoadGraph(),
         getPOIs: () => loader.getPOIs(),
+        getAdminUnit: (x, z) => loader.getAdminUnit(x, z),
         getParkingSlots: () => loader.getParkingSlots(),
         updateChunks: (x, z, dt, camDir) => loader.updateChunks(x, z, dt, camDir),
         dispose: () => loader.dispose()

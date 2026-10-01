@@ -1,5 +1,6 @@
 // js/passenger.js
 import * as THREE from "three";
+import { clamp } from "./utils.js";
 const _tmpLerpTarget = new THREE.Vector3();
 let _passengerUpdateTimer = 0;
 
@@ -31,34 +32,109 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
     gctx.fillRect(0, 0, 256, 256);
     const glowTexture = new THREE.CanvasTexture(glowCanvas);
 
-    function createHumanoidModel(color1, color2) {
-        const g = new THREE.Group();
-        const skinMat = new THREE.MeshStandardMaterial({ color: color2 || 0xe8c9a0, roughness: 0.7 });
-        const clothMat = new THREE.MeshStandardMaterial({ color: color1 || 0x4a6fa5, roughness: 0.8 });
-        const pantsMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9 });
+    // ---- Shared geometry + material (tạo 1 lần, mọi passenger dùng chung) ----
+    // Tránh 50 khách = 200 material riêng (rule: không material-per-NPC).
+    const _pGeo = {
+        torso: new THREE.BoxGeometry(0.34, 0.47, 0.17),
+        neck: new THREE.CylinderGeometry(0.05, 0.05, 0.05, 6),
+        head: new THREE.SphereGeometry(0.105, 10, 8),
+        hair: new THREE.SphereGeometry(0.11, 8, 7),
+        upperArm: new THREE.CapsuleGeometry(0.05, 0.28, 3, 4),
+        forearm: new THREE.CapsuleGeometry(0.043, 0.26, 3, 4),
+        hand: new THREE.BoxGeometry(0.06, 0.08, 0.04),
+        thigh: new THREE.CapsuleGeometry(0.07, 0.37, 3, 4),
+        calf: new THREE.CapsuleGeometry(0.055, 0.36, 3, 4),
+        foot: new THREE.BoxGeometry(0.075, 0.05, 0.16)
+    };
+    const _pMatCache = new Map();
+    function pMat(color, rough) {
+        const k = color + "_" + rough;
+        let m = _pMatCache.get(k);
+        if (!m) { m = new THREE.MeshStandardMaterial({ color, roughness: rough }); _pMatCache.set(k, m); }
+        return m;
+    }
 
-        const torso = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.6, 0.2), clothMat);
-        torso.position.y = 1.1; g.add(torso);
-        const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), skinMat);
-        head.position.y = 1.5; g.add(head);
-        const armGeo = new THREE.CapsuleGeometry(0.06, 0.4, 4, 4);
-        const leftArm = new THREE.Mesh(armGeo, skinMat);
-        leftArm.position.set(-0.28, 1.1, 0); leftArm.rotation.z = 0.1; g.add(leftArm);
-        const rightArm = new THREE.Mesh(armGeo, skinMat);
-        rightArm.position.set(0.28, 1.1, 0); rightArm.rotation.z = -0.1; g.add(rightArm);
-        const legGeo = new THREE.CapsuleGeometry(0.08, 0.6, 4, 4);
-        const leftLeg = new THREE.Mesh(legGeo, pantsMat);
-        leftLeg.position.set(-0.12, 0.4, 0); g.add(leftLeg);
-        const rightLeg = new THREE.Mesh(legGeo, pantsMat);
-        rightLeg.position.set(0.12, 0.4, 0); g.add(rightLeg);
+    function createHumanoidModel(color1, color2) {
+        // Model humanoid đầy đủ (thay NPC tí hon cũ): head + neck + torso + shirt
+        // + arms + hands + legs + feet, tỷ lệ VN ~1.60m (giới hạn 1.50–1.75).
+        const g = new THREE.Group();
+        const skinMat = pMat(color2 || 0xe8c9a0, 0.65);
+        const clothMat = pMat(color1 || 0x4a6fa5, 0.85);
+        const pantsMat = pMat(0x333333, 0.9);
+        const shoeMat = pMat(0x222222, 0.7);
+        const hairMat = pMat(0x1a1a1a, 0.9);
+
+        // TORSO (0.78 -> 1.25)
+        const torso = new THREE.Mesh(_pGeo.torso, clothMat);
+        torso.position.y = 0.78 + 0.47 * 0.5; g.add(torso);
+        // NECK
+        const neck = new THREE.Mesh(_pGeo.neck, skinMat);
+        neck.position.y = 0.78 + 0.47 + 0.025; g.add(neck);
+        // HEAD
+        const head = new THREE.Mesh(_pGeo.head, skinMat);
+        head.scale.y = 1.12;
+        head.position.y = 0.78 + 0.47 + 0.05 + 0.105 * 1.12; g.add(head);
+        // HAIR
+        const hair = new THREE.Mesh(_pGeo.hair, hairMat);
+        hair.scale.y = 1.15; hair.position.y = head.position.y + 0.03; g.add(hair);
+
+        // ARMS (pivot tại vai, y = 0.78 + 0.47*0.88 ≈ 1.19)
+        const shoulderY = 0.78 + 0.47 * 0.88;
+        function arm(side) {
+            const ag = new THREE.Group();
+            ag.position.set(side * 0.19, shoulderY, 0);
+            const upper = new THREE.Mesh(_pGeo.upperArm, clothMat);
+            upper.position.y = -0.19; ag.add(upper);
+            const fore = new THREE.Mesh(_pGeo.forearm, skinMat);
+            fore.position.y = -0.28 - 0.155; ag.add(fore);
+            const hand = new THREE.Mesh(_pGeo.hand, skinMat);
+            hand.position.y = -0.28 - 0.26 - 0.05; ag.add(hand);
+            g.add(ag);
+            return ag;
+        }
+        arm(-1); arm(1);
+
+        // LEGS (pivot tại hông y = 0.78 — bàn chân chạm đất y≈0)
+        function leg(side) {
+            const lg = new THREE.Group();
+            lg.position.set(side * 0.08, 0.78, 0);
+            const thigh = new THREE.Mesh(_pGeo.thigh, pantsMat);
+            thigh.position.y = -0.185; lg.add(thigh);
+            const calf = new THREE.Mesh(_pGeo.calf, pantsMat);
+            calf.position.y = -0.37 - 0.18; lg.add(calf);
+            const foot = new THREE.Mesh(_pGeo.foot, shoeMat);
+            foot.position.set(0, -0.37 - 0.36 - 0.02, 0.035); lg.add(foot);
+            g.add(lg);
+            return lg;
+        }
+        leg(-1); leg(1);
+
+        g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
         return g;
     }
 
     function createGlow() {
-        const mat = new THREE.SpriteMaterial({ map: glowTexture, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+        // Marker khách: beam xanh nhẹ — sprite glow + cột ánh sáng mảnh.
+        // Chiều cao giới hạn (~3m), alpha nhẹ, fade theo khoảng cách trong
+        // updatePassengers, KHÔNG che màn hình / biển báo / xe.
+        const grp = new THREE.Group();
+
+        const mat = new THREE.SpriteMaterial({ map: glowTexture, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.7 });
         const sprite = new THREE.Sprite(mat);
-        sprite.scale.set(12, 12, 1);
-        return sprite;
+        sprite.scale.set(4, 4, 1);        // nhỏ hơn hẳn bản 12x12 cũ (che màn)
+        sprite.position.y = 2.2;          // ✦ ở trên đầu, ~3m trần
+        grp.add(sprite);
+
+        // Cột sáng mảnh (billboard-ish bằng sprite dọc)
+        const beamMat = new THREE.SpriteMaterial({ map: glowTexture, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.28, color: 0x33bbff });
+        const beam = new THREE.Sprite(beamMat);
+        beam.scale.set(1.1, 3.0, 1);
+        beam.position.y = 1.5;
+        grp.add(beam);
+
+        grp.userData.sprite = sprite;
+        grp.userData.beam = beam;
+        return grp;
     }
 
     function loadPassengers() {
@@ -71,7 +147,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             model.position.set(w.x, w.y, w.z);
             model.rotation.y = Math.random() * Math.PI * 2;
             const glow = createGlow();
-            glow.position.set(w.x, w.y + 0.5, w.z);
+            glow.position.set(w.x, w.y, w.z);   // local sprite đã ở y=2.2 (trên đầu NPC)
             passengerGroup.add(model);
             passengerGroup.add(glow);
             waitingPassengers.push({
@@ -96,10 +172,17 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             if (inRange) {
                 p.state = 'IN_PICKUP_ZONE';
                 p.glowIntensity = Math.sin(now * 3) * 0.3 + 0.7;
-                p.glow.material.opacity = p.glowIntensity * 0.8;
+                // Fade theo khoảng cách: gần = rõ, xa = mờ dần (LOD thị giác)
+                const fade = clamp(1 - dist / 180, 0.15, 1);
+                const sp = p.glow.userData.sprite, bm = p.glow.userData.beam;
+                if (sp) sp.material.opacity = p.glowIntensity * 0.8 * fade;
+                if (bm) bm.material.opacity = 0.28 * fade + Math.sin(now * 2) * 0.06;
             } else {
                 p.state = 'WAITING';
-                p.glow.material.opacity = 0.5;
+                const fade = clamp(1 - dist / 180, 0.15, 1);
+                const sp = p.glow.userData.sprite, bm = p.glow.userData.beam;
+                if (sp) sp.material.opacity = 0.55 * fade;
+                if (bm) bm.material.opacity = 0.22 * fade;
             }
         }
         for (const p of onboardPassengers) {

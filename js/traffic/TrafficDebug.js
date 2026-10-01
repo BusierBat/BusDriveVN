@@ -1,7 +1,6 @@
 // js/traffic/TrafficDebug.js
 // =====================================================================
 // Chế độ debug giao thông (F3 hoặc lệnh console "traffic").
-//
 // 1) PANEL DOM: ID, tốc độ/tốc độ mong muốn, trạng thái, đoạn đường + class,
 //    làn (lane/lanesPerDir/chiều), LOD AI, đích + độ dài route, khe trước/sau,
 //    TTC, làn đích + phase FSM đổi làn/tấp lề.
@@ -12,7 +11,6 @@
 // 3) SELF-CHECK: kiểm lại ĐỘC LẬP toạ độ (không đọc laneOffset của AI) —
 //    xe có nằm bên phải tâm đường không, heading có khớp chiều đi không,
 //    có lều mép đường không. Dùng cho Test 1/2/12.
-//
 // Không ảnh hưởng gameplay: bật/tắt tức thì, dispose dọn sạch object.
 // =====================================================================
 import * as THREE from "three";

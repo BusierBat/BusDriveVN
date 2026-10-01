@@ -1,8 +1,6 @@
 // js/RuntimeRoadGraph.js
-//
 // SOURCE OF TRUTH của road network (rule 56): world render, minimap, NPC
 // routing, audit đều đọc từ đây. KHÔNG có bản song song.
-//
 // Ngoài API cũ (nodes/segments/routes/pois) có thêm ĐỒ THỊ ĐỒ N HƯỚNG + A*
 // (rule 57). Routing phải hiểu node / edge / direction / junction — chọn nhánh
 // NGẪU NHIÊN ở ngã ba là cách NPC đi lung tung trong map, không phải lái xe.
@@ -16,17 +14,23 @@
 // =====================================================================
 const DEFAULT_SPEED_KMH = {
     EXPRESSWAY: 90, NATIONAL: 70, TUNNEL: 60, ARTERIAL: 50, RAMP: 40,
-    COLLECTOR: 40, LOCAL: 30, RURAL_LOCAL: 30, ALLEY: 20,
-    SERVICE: 25, STATION_ACCESS: 25, INTERNAL: 15
+    COLLECTOR: 40, PROVINCIAL_ROAD: 45, LOCAL: 30, RURAL_LOCAL: 30, ALLEY: 20,
+    SERVICE: 25, STATION_ACCESS: 25, INTERNAL: 15,
+    // --- Road types mới (Phase 3) ---
+    INTER_VILLAGE: 35, INDUSTRIAL_ACCESS: 45, RESIDENTIAL: 25,
+    COMMERCIAL: 35, AGRICULTURAL: 25
 };
 // Không đổi làn / không tấp lề tại đây (rule 11: tôn trọng loại đường)
-const NO_LANE_CHANGE = new Set(["TUNNEL", "INTERNAL", "ALLEY", "SERVICE", "STATION_ACCESS"]);
-const NO_SHOULDER = new Set(["ALLEY", "INTERNAL", "STATION_ACCESS"]);
+const NO_LANE_CHANGE = new Set(["TUNNEL", "INTERNAL", "ALLEY", "SERVICE", "STATION_ACCESS", "AGRICULTURAL"]);
+const NO_SHOULDER = new Set(["ALLEY", "INTERNAL", "STATION_ACCESS", "AGRICULTURAL"]);
 // Mật độ giao thông theo loại đường (rule 14: không spawn đều mọi nơi)
 const DENSITY_BY_CLASS = {
     EXPRESSWAY: 1.0, NATIONAL: 1.0, ARTERIAL: 0.9, COLLECTOR: 0.75,
-    LOCAL: 0.6, RURAL_LOCAL: 0.5, TUNNEL: 0.5, RAMP: 0.3,
-    SERVICE: 0.15, ALLEY: 0.1, STATION_ACCESS: 0.1, INTERNAL: 0.1
+    PROVINCIAL_ROAD: 0.7, LOCAL: 0.6, RURAL_LOCAL: 0.5, TUNNEL: 0.5, RAMP: 0.3,
+    SERVICE: 0.15, ALLEY: 0.1, STATION_ACCESS: 0.1, INTERNAL: 0.1,
+    // --- Road types mới (Phase 3) ---
+    INTER_VILLAGE: 0.55, INDUSTRIAL_ACCESS: 0.65, RESIDENTIAL: 0.45,
+    COMMERCIAL: 0.7, AGRICULTURAL: 0.2
 };
 
 // Pure: suy metadata làn từ 1 segment (không cần graph).
@@ -102,7 +106,19 @@ export class RuntimeRoadGraph {
                 name: s.name,
                 position: { x: s.x, y: s.y, z: s.z },
                 size: { width: s.w, depth: s.d },
-                busBays: s.buses || []
+                // stations.json có `rot` (góc quay sân bến, radian) và `bays`
+                // (số bến đỗ). Thiếu 2 trường này thì mọi kiểm tra "xe có đang
+                // ở trong sân bến không" đều dùng hình chữ nhật KHÔNG XOAY =>
+                // đứng ở sân bến xoay 90° vẫn báo là ngoài bến.
+                rotation: s.rot || 0,
+                bays: s.bays || 0,
+                // stations.json không có trường `buses` (0/78) — `baySlots`
+                // mới là vị trí đỗ thật {x,y,z,heading}. Map bug cũ
+                // (busBays: s.buses) làm queue bến (setupStationTraffic)
+                // không bao giờ có xe -> bến trống lặng.
+                busBays: (Array.isArray(s.baySlots) && s.baySlots.length)
+                    ? s.baySlots
+                    : (Array.isArray(s.buses) ? s.buses : [])
             }));
         }
         this._buildAdjacency();
@@ -184,7 +200,7 @@ export class RuntimeRoadGraph {
             const f = cls === "EXPRESSWAY" || cls === "RAMP" ? 0.75
                 : cls === "NATIONAL" ? 0.85
                 : cls === "ARTERIAL" ? 1.0
-                : cls === "COLLECTOR" ? 1.25
+                : (cls === "COLLECTOR" || cls === "PROVINCIAL_ROAD") ? 1.25
                 : (cls === "LOCAL" || cls === "RURAL_LOCAL") ? 1.9
                 : cls === "ALLEY" ? 3.4
                 : (cls === "INTERNAL" || cls === "SERVICE" || cls === "STATION_ACCESS") ? 2.6
@@ -345,7 +361,12 @@ export class RuntimeRoadGraph {
                 return { from: { x: f.x, z: f.z }, to: { x: t.x, z: t.z } };
             }).filter(Boolean),
             route: this.getRouteWaypoints().map(w => ({ x: w.x, z: w.z })),
-            pois: this.pois.map(p => ({ x: p.position.x, z: p.position.z }))
+            pois: this.pois.map(p => ({
+                x: p.position.x,
+                z: p.position.z,
+                type: p.type,
+                name: p.name
+            }))
         };
     }
 

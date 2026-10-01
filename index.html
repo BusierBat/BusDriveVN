@@ -25,7 +25,7 @@
 <body>
     <canvas id="game-canvas"></canvas>
 
-    <!-- LOADING SCREEN -->
+    <!-- Màn hình tải -->
     <div id="loading-screen" style="display:none; position:fixed; inset:0; background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); z-index:1000; flex-direction:column; justify-content:center; align-items:center; text-align:center;">
         <h1 style="font-size:3rem; color:#3b82f6;">🚍 BUSDRIVEVN</h1>
         <p id="loading-tip" style="color:#94a3b8; font-size:1.2rem; margin-top:10px;">HÃY LÁI XE AN TOÀN!</p>
@@ -35,7 +35,7 @@
         <p id="loading-status" style="color:#64748b; margin-top:15px;"></p>
     </div>
 
-<!-- MAIN MENU GỐC -->
+<!-- Menu chính GỐC -->
     <div id="main-menu" style="display:flex;">
         <img src="assets/ui/title.png" id="game-logo" alt="BusDriveVN Logo">
         <button id="btn-new-game">🚍 LÁI XE THÔI!</button>
@@ -43,42 +43,213 @@
       <button id="btn-settings-main">⚙ CÀI ĐẾT</button>
     </div>
 
-    <!-- UV SKIN PANEL -->
-    <div id="uv-skin-panel" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#1e293b; padding:30px; border-radius:10px; z-index:100; text-align:center;">
-        <h2>🎨 THÊM UV SKIN</h2>
-        <p>Chọn file PNG UV Skin của bạn (2048 x 1024).</p>
-        <button id="btn-choose-skin" style="padding:10px 20px; margin:10px; cursor:pointer; background:#3b82f6; color:#fff; border:none; border-radius:5px;">📁 CHỌN FILE</button>
-        <p id="uv-skin-status" style="color:#fff; margin-top:10px;"></p>
-        <a id="uv-skin-download" style="display:none; margin-top:10px; color:#3b82f6;" download="bus_final.png">⬇ TẢI XUỐNG bus_final.png</a>
-        <br><button id="btn-close-uv-skin" style="padding:5px 15px; margin-top:20px; cursor:pointer; background:#ef4444; color:#fff; border:none; border-radius:5px;">ĐÓNG</button>
+    <!-- Overlay backdrop cho các panel -->
+    <div id="panel-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); z-index:99; animation:fadeIn 0.2s ease;"></div>
+
+    <!-- Bảng skin xe - Redesigned -->
+    <div id="uv-skin-panel" style="display:none; position:fixed; top:15%; left:50%; transform:translateX(-50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); padding:0; border-radius:16px; z-index:100; width:90%; max-width:480px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2); border:1px solid rgba(59,130,246,0.15); overflow:hidden; animation:slideDown 0.3s cubic-bezier(0.16,1,0.3,1);">
+        <div style="background:linear-gradient(90deg, #1e293b 0%, #0f172a 100%); padding:20px 24px; border-bottom:1px solid rgba(59,130,246,0.2); display:flex; align-items:center; justify-content:space-between;">
+            <h2 style="margin:0; font-size:1.25rem; font-weight:700; color:#fff; display:flex; align-items:center; gap:10px;">
+                <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;">🎨 UV SKIN</span>
+            </h2>
+            <button id="btn-close-uv-skin" style="width:36px; height:36px; border:none; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)">✕</button>
+        </div>
+        <div style="padding:24px;">
+            <p style="margin:0 0 16px; color:#94a3b8; font-size:0.9rem; line-height:1.5;">Chọn file PNG UV Skin (<strong>2048 × 1024</strong>) để áp dụng cho xe khách.</p>
+            
+            <div style="position:relative; margin-bottom:20px;">
+                <input type="file" id="uv-skin-input" accept="image/png" style="display:none;">
+                <button id="btn-choose-skin" style="width:100%; padding:16px 24px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; display:flex; align-items:center; justify-content:center; gap:10px; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(59,130,246,0.3);">
+                    <span>📁</span> CHỌN FILE UV SKIN
+                </button>
+            </div>
+
+            <div id="uv-skin-dropzone" style="border:2px dashed rgba(59,130,246,0.3); border-radius:12px; padding:24px; text-align:center; margin-bottom:20px; transition:all 0.2s ease; background:rgba(59,130,246,0.03);">
+                <p style="margin:0 0 8px; color:#64748b; font-size:0.85rem;">HOẶC KÉO THẢ FILE VÀO ĐÂY</p>
+                <p style="margin:0; color:#475569; font-size:0.75rem;">PNG · 2048×1024 · < 5MB</p>
+            </div>
+
+            <div id="uv-skin-preview" style="display:none; margin-bottom:20px; border-radius:10px; overflow:hidden; border:1px solid rgba(59,130,246,0.2);">
+                <img id="uv-skin-preview-img" style="width:100%; max-height:200px; object-fit:contain; background:#0f172a;" alt="Preview">
+            </div>
+
+            <p id="uv-skin-status" style="margin:0 0 16px; min-height:24px; font-size:0.9rem; font-weight:500;"></p>
+
+            <a id="uv-skin-download" style="display:none; width:100%; padding:14px; background:linear-gradient(135deg, #10b981 0%, #059669 100%); color:#fff; text-decoration:none; border-radius:12px; text-align:center; font-weight:600; font-size:1rem; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(16,185,129,0.3);" download="bus_final.png" href="#">
+                ⬇ TẢI XUỐNG bus_final.png
+            </a>
+        </div>
     </div>
 
-    <!-- SETTINGS PANEL -->
-    <div id="settings-panel" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#1e293b; padding:30px; border-radius:10px; z-index:100; width:300px;">
-        <h2 style="text-align:center; color:#fff;">⚙ CÀI ĐẾT</h2>
-        <div style="margin:15px 0; color:#fff;">
-            <label>Chất lượng đồ họa:</label><br>
-            <select id="setting-graphics"><option value="low">Thấp</option><option value="medium">Trung bình</option><option value="high">Cao</option></select>
+    <!-- Bảng cài đặt - Redesigned -->
+    <div id="settings-panel" style="display:none; position:fixed; top:15%; left:50%; transform:translateX(-50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); padding:0; border-radius:16px; z-index:100; width:90%; max-width:420px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2); border:1px solid rgba(59,130,246,0.15); overflow:hidden; animation:slideDown 0.3s cubic-bezier(0.16,1,0.3,1);">
+        <div style="background:linear-gradient(90deg, #1e293b 0%, #0f172a 100%); padding:20px 24px; border-bottom:1px solid rgba(59,130,246,0.2); display:flex; align-items:center; justify-content:space-between;">
+            <h2 style="margin:0; font-size:1.25rem; font-weight:700; color:#fff; display:flex; align-items:center; gap:10px;">
+                <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;">⚙ CÀI ĐẶT</span>
+            </h2>
+            <button id="btn-close-settings" style="width:36px; height:36px; border:none; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)">✕</button>
         </div>
-        <div style="margin:15px 0; color:#fff;">
-            <label>Mật độ xe NPC: <span id="val-npc-density">5</span></label><br>
-            <input type="range" id="setting-npc-density" min="0" max="20" value="5" style="width:100%;">
+        <div style="padding:24px; max-height:70vh; overflow-y:auto;">
+            <!-- Chất lượng đồ họa tổng thể -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">🎮 Chất lượng đồ họa tổng thể</label>
+                <select id="setting-graphics" style="width:100%; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.2); border-radius:10px; color:#fff; font-size:1rem; cursor:pointer; appearance:none; background-image:url('data:image/svg+xml;utf8,<svg fill="%2394a3b8" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>'); background-repeat:no-repeat; background-position:right 12px center; padding-right:40px;">
+                    <option value="low">🔧 Thấp (Performance)</option>
+                    <option value="medium" selected>⚖️ Trung bình (Balanced)</option>
+                    <option value="high">🎨 Cao (Quality)</option>
+                </select>
+            </div>
+
+            <!-- Chất lượng Lighting/Shadow -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">☀️ Chất lượng ánh sáng & Bóng đổ</label>
+                <select id="setting-lighting" style="width:100%; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.2); border-radius:10px; color:#fff; font-size:1rem; cursor:pointer; appearance:none; background-image:url('data:image/svg+xml;utf8,<svg fill="%2394a3b8" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>'); background-repeat:no-repeat; background-position:right 12px center; padding-right:40px;">
+                    <option value="low">🔧 Thấp (512, 2 cascade, no god rays)</option>
+                    <option value="medium" selected>⚖️ Trung bình (1024, 3 cascade, god rays)</option>
+                    <option value="high">🎨 Cao (2048, 4 cascade, god rays + post)</option>
+                </select>
+            </div>
+
+            <!-- God Rays -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">✨ God Rays (Tia sáng thể tích)</label>
+                <select id="setting-godrays" style="width:100%; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.2); border-radius:10px; color:#fff; font-size:1rem; cursor:pointer; appearance:none; background-image:url('data:image/svg+xml;utf8,<svg fill="%2394a3b8" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>'); background-repeat:no-repeat; background-position:right 12px center; padding-right:40px;">
+                    <option value="off">🚫 Tắt</option>
+                    <option value="low">💡 Thấp (256px, 16 samples)</option>
+                    <option value="high" selected>✨ Cao (512px, 32 samples)</option>
+                </select>
+            </div>
+
+            <hr style="border:none; border-top:1px solid rgba(148,163,184,0.15); margin:20px 0;">
+
+            <!-- Mật độ NPC -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
+                    🚌 Mật độ xe NPC
+                    <span id="val-npc-density" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">5</span>
+                </label>
+                <input type="range" id="setting-npc-density" min="0" max="20" value="5" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
+                <p style="margin:8px 0 0; color:#64748b; font-size:0.75rem;">Số lượng xe AI spawn quanh người chơi (0-20)</p>
+            </div>
+
+            <!-- Độ nhạy Camera -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
+                    🎮 Độ nhạy Camera
+                    <span id="val-cam-sens" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">30</span>
+                </label>
+                <input type="range" id="setting-cam-sens" min="10" max="50" value="30" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
+                <p style="margin:8px 0 0; color:#64748b; font-size:0.75rem;">Độ nhạy xoay camera chuột/touch (10-50)</p>
+            </div>
+
+            <!-- FOV -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
+                    👁️ Field of View (FOV)
+                    <span id="val-fov" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">70</span>
+                </label>
+                <input type="range" id="setting-fov" min="50" max="100" value="70" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
+                <p style="margin:8px 0 0; color:#64748b; font-size:0.75rem;">Góc nhìn camera (50-100°)</p>
+            </div>
+
+            <!-- Render Distance -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
+                    🌍 Render Distance
+                    <span id="val-render-dist" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">2</span>
+                </label>
+                <input type="range" id="setting-render-dist" min="1" max="4" value="2" step="1" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
+                <p style="margin:8px 0 0; color:#64748b; font-size:0.75rem;">Số chunk render quanh xe (1=Low, 4=Ultra)</p>
+            </div>
+
+            <hr style="border:none; border-top:1px solid rgba(148,163,184,0.15); margin:20px 0;">
+
+            <!-- Nút hành động -->
+            <div style="display:flex; gap:12px;">
+                <button id="btn-apply-settings" style="flex:1; padding:14px 24px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(59,130,246,0.4);">
+                    ✅ ÁP DỤNG & LƯU
+                </button>
+                <button id="btn-reset-settings" style="flex:1; padding:14px 24px; background:rgba(148,163,184,0.15); color:#94a3b8; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease;">
+                    ↩ KHÔI PHỤC MẶC ĐỊNH
+                </button>
+                <button id="btn-close-settings" style="width:48px; padding:14px; background:rgba(239,68,68,0.15); color:#ef4444; border:1px solid rgba(239,68,68,0.3); border-radius:12px; cursor:pointer; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)">
+                    ✕
+                </button>
+            </div>
         </div>
-        <div style="margin:15px 0; color:#fff;">
-            <label>Độ nhạy Camera: <span id="val-cam-sens">30</span></label><br>
-            <input type="range" id="setting-cam-sens" min="10" max="50" value="30" style="width:100%;">
-        </div>
-        <button id="btn-apply-settings" style="width:100%; padding:10px; cursor:pointer; background:#3b82f6; color:#fff; border:none; border-radius:5px;">ÁP DỤNG</button>
-        <button id="btn-close-settings" style="width:100%; padding:5px; margin-top:5px; cursor:pointer; background:#ef4444; color:#fff; border:none; border-radius:5px;">ĐÓNG</button>
     </div>
 
-    <!-- HUD GAMEPLAY -->
+    <style>
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideDown { from { opacity: 0; transform: translateX(-50%) translateY(-20px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+
+        /* Hover effects cho buttons */
+        #btn-close-uv-skin:hover, #btn-close-settings:hover {
+            background:rgba(239,68,68,0.3) !important;
+            transform:scale(1.05);
+        }
+        #btn-choose-skin:hover {
+            transform:translateY(-2px) !important;
+            box-shadow:0 6px 20px rgba(59,130,246,0.4) !important;
+        }
+        #btn-choose-skin:active { transform:translateY(0) !important; }
+        #uv-skin-download:hover {
+            transform:translateY(-2px) !important;
+            box-shadow:0 6px 20px rgba(16,185,129,0.4) !important;
+        }
+        #uv-skin-download:active { transform:translateY(0) !important; }
+
+        #btn-apply-settings:hover {
+            transform:translateY(-2px) !important;
+            box-shadow:0 6px 20px rgba(59,130,246,0.5) !important;
+        }
+        #btn-apply-settings:active { transform:translateY(0) !important; }
+        #btn-reset-settings:hover {
+            background:rgba(148,163,184,0.25) !important;
+            color:#e2e8f0 !important;
+            border-color:rgba(148,163,184,0.5) !important;
+        }
+
+        /* Drag over effect */
+        #uv-skin-dropzone.drag-over {
+            border-color:#3b82f6 !important;
+            background:rgba(59,130,246,0.15) !important;
+        }
+        #uv-skin-dropzone.drag-over p { color:#3b82f6 !important; }
+
+        /* Select focus */
+        select:focus, input[type="range"]:focus {
+            outline:none;
+            border-color:#3b82f6 !important;
+            box-shadow:0 0 0 3px rgba(59,130,246,0.2);
+        }
+
+        /* Custom scrollbar */
+        #settings-panel::-webkit-scrollbar { width:6px; }
+        #settings-panel::-webkit-scrollbar-track { background:transparent; }
+        #settings-panel::-webkit-scrollbar-thumb { background:rgba(148,163,184,0.3); border-radius:3px; }
+        #settings-panel::-webkit-scrollbar-thumb:hover { background:rgba(148,163,184,0.5); }
+
+        /* Input file styling */
+        #uv-skin-input { position:absolute; width:100%; height:100%; top:0; left:0; opacity:0; cursor:pointer; z-index:10; }
+
+        /* Mobile responsive */
+        @media (max-width: 520px) {
+            #uv-skin-panel, #settings-panel { top:10%; width:95%; max-width:none; border-radius:12px; }
+            #settings-panel { max-height:80vh; }
+        }
+    </style>
+
+    <!-- Giao diện chơi -->
     <div id="hud" style="display:none;">
         <div id="hud-top-right">
             <div>📍 TUYẾN: <span id="hud-next-dest">Phú Yên → TP. HCM</span></div>
             <div>🚍 KHÁCH: <span id="hud-passengers">0/24</span></div>
             <div>🗺️ X: <span id="hud-x">0</span> | Z: <span id="hud-z">0</span></div>
             <div>⏰ <span id="hud-time">06:30</span> | FPS: <span id="hud-fps">0</span></div>
+            <!-- Hành trình đo bởi TravelClock: quãng đường / thời gian game /
+                 tốc độ bình quân / loại đường / độ dốc. Không phải số gõ tay. -->
+            <div id="hud-trip-row">🛣️ <span id="hud-trip">0.0 km · 0.0 km/h · —</span></div>
         </div>
         <div id="hud-minimap-container"><canvas id="hud-minimap" width="200" height="200"></canvas></div>
         <div id="hud-speedometer-container"><canvas id="hud-speedometer" width="180" height="180"></canvas></div>
@@ -86,7 +257,7 @@
         <div id="hud-notification"></div>
     </div>
 
-    <!-- COMMAND CONSOLE -->
+    <!-- Bảng lệnh -->
     <div id="command-console" style="display:none;">
         <div id="console-header">COMMAND CONSOLE <span style="float:right;">ESC ĐÓNG</span></div>
         <div id="console-output"></div>

@@ -1,11 +1,9 @@
 // js/traffic/TrafficAI.js
 // =====================================================================
 // AI giao thông NPC — lane-aware, đi bên phải, không xuyên xe.
-//
 // NGUYÊN TẮC CỐT LÕI
 //  - Lateral: lane 0 = làn ngoài cùng BÊN PHẢI hướng di chuyển (VN đi bên
 //    phải). Mọi offset tính theo vector PHẢI của hướng đi (rx,rz)=(-uz,ux)
-//    nên direction 0 và direction 1 đều nằm ĐÚNG làn của mình (bug cũ:
 //    offset áp theo vector (cos,-sin)=PHẢI nhưng `_getLaneOffset` đảo dấu
 //    theo direction -> direction 0 lái tay trái, 2 chiều chạy cùng một bên).
 //  - Longitudinal: IDM (Intelligent Driver Model). Khoảng cách theo vận
@@ -19,7 +17,6 @@
 //    suất, luôn nằm trong giới hạn vật lý.
 //  - LOD (NEAR/MID/FAR) chỉ giảm TẦN SUẤT RA QUYẾT ĐỊNH; DI CHUYỂN luôn
 //    tích phân mỗi frame -> xe ở xa không đóng băng, không pop.
-//
 // API GIỮ NGUYÊN: constructor, setActive, setAILevel, setGoal,
 // update, dispose, collider, laneOffset, targetLaneOffset,
 // currentSegmentId, direction, progress, heading, AI_STATE.
@@ -37,6 +34,14 @@ const HALF_W = BUS_W * 0.5;
 
 const LOOKAHEAD = 90;        // m: quét xe quanh xe (trước + sau)
 const EMERGENCY_TTC = 0.8;   // s: TTC dưới mức này -> phanh khẩn cấp
+// Nhường ngã tư: xe khác KHÁC chiều trong bán kính này quanh node đầu đoạn
+// -> xe mình dừng ở vạch cách node JUNCTION_STOP_M. Đường vượt tầng (chênh
+// cao độ > JUNCTION_Y_EPS) KHÔNG tính — không phải giao cắt mặt phẳng.
+const JUNCTION_BOX = 10;
+const JUNCTION_STOP_M = 8;
+const JUNCTION_Y_EPS = 3;
+const YIELD_TIMEOUT = 8;     // s: chờ nhường quá lâu -> xe kia bị kẹt, mình đi
+const ENTRY_WAIT_MAX = 5;    // s: chờ cửa ra segment mới bị xe chiếm quá lâu -> vào anyway
 const DECIDE_NEAR = 1 / 30;  // s: ra quyết định mỗi frame ở cự ly gần
 const DECIDE_MID = 1 / 12;
 const DECIDE_FAR = 1 / 4;
@@ -115,6 +120,10 @@ export class TrafficAI {
         this.currentSegmentId = null;
         this.direction = 0;
         this.progress = 0;
+        // Sàn progress: khi sang đoạn mới, phân rã lại toạ độ có thể ra tiến
+        // ÂM (xe chưa vượt hết node trong khung mới) — không cho clamp(0) nuốt
+        // mất phần đó (nuốt là vị trí nhảy cóc). Tự về 0 khi progress >= 0.
+        this._progFloor = 0;
         this.turning = false;
         this.turnTimer = 0;
         this.followTarget = null;    // xe dẫn đường (debug/compat)
@@ -151,6 +160,10 @@ export class TrafficAI {
         this.meta = null;
         this._pathFails = 0;
         this._recoverCount = 0;
+        this._yieldTimer = 0;      // thời gian chờ nhường ngã tư liên tục (s)
+        this._stuckT = 0;          // thời gian xe chồng nhau/leaderGap<0 liên tục (s)
+        this._stuckCreep = false;  // đang "trườn ra" giải cứu kẹt cùng chiều
+        this._entryWait = 0;       // thời gian chờ cửa ra segment mới bị chiếm (s)
 
         // kết quả quét giao thông (dùng cho AI + debug, không cấp phát mới/frame)
         this.scan = {
@@ -158,7 +171,7 @@ export class TrafficAI {
             rear: null, rearGap: Infinity, rearSpeed: 0,
             candFrontGap: Infinity, candFrontSpeed: 0,
             candRearGap: Infinity, candRearSpeed: 0,
-            nearestFrontGap: Infinity, ttc: Infinity
+            nearestFrontGap: Infinity, ttc: Infinity, junctionBlocked: false
         };
         this._scanLane = -1;
 
@@ -237,7 +250,7 @@ export class TrafficAI {
     _updatePositionFromSegment() {
         const f = this._frame;
         if (!f) return;
-        const t = clamp(this.progress, 0, 1);
+        const t = clamp(this.progress, Math.min(this._progFloor, 0), 1);
         const cx = f.p0.x + f.ux * (t * f.len);
         const cz = f.p0.z + f.uz * (t * f.len);
         const cy = f.p0.y + (f.p1.y - f.p0.y) * t;
@@ -309,7 +322,9 @@ export class TrafficAI {
         s.candRearGap = Infinity; s.candRearSpeed = 0;
         s.nearestFrontGap = Infinity; s.ttc = Infinity;
         const f = this._frame;
-        if (!f || !allVehicles || !allVehicles.length) { this.followTarget = null; return s; }
+        if (!f || !allVehicles || !allVehicles.length) {
+            this.followTarget = null; this.scan.junctionBlocked = false; return s;
+        }
 
         const meta = this.meta;
         const laneW = meta ? meta.laneW : 3.5;
@@ -322,6 +337,20 @@ export class TrafficAI {
         const candCenter = (this._scanLane >= 0 && meta) ? meta.laneCenter(this._scanLane) : null;
         const ux = f.ux, uz = f.uz, rx = f.rx, rz = f.rz;
         const look2 = LOOKAHEAD * LOOKAHEAD;
+
+        // --- nhường ngã tư: node sắp tới của đoạn này ---
+        // Xe KHÁC ĐƯỜNG (ngược chiều, hoặc cùng chiều nhưng trên đoạn KHÁC =
+        // nhánh rẽ/cắt/merge) đang đứng trong hộp ngã (≤ JUNCTION_BOX quanh
+        // node) -> mình coi như có vật cản đứng yên ở vạch dừng (cách node
+        // JUNCTION_STOP_M). Xe CÙNG đoạn cùng chiều = xe dẫn theo đúng đường
+        // mình, IDM lo. Xe trong hộp LUÔN thắng xe còn ở ngoài vạch.
+        const nodeX = f.p1.x, nodeZ = f.p1.z;
+        const distToEnd = f.len - this.progress * f.len;    // tâm xe -> node
+        const checkJunction = distToEnd < LOOKAHEAD;
+        const box2 = JUNCTION_BOX * JUNCTION_BOX;
+        const myY = this.collider.y;
+        let junctionBlock = false;
+        s.junctionBlocked = false;
 
         for (let i = 0; i < allVehicles.length; i++) {
             const o = allVehicles[i];
@@ -338,13 +367,49 @@ export class TrafficAI {
             const sameDir = (typeof o.heading !== 'number') ? true
                 : (Math.sin(o.heading) * ux + Math.cos(o.heading) * uz) > 0.1;
 
+            if (checkJunction && t > 0 &&
+                (!sameDir || o.currentSegmentId !== this.currentSegmentId) &&
+                Math.abs(o.collider.y - myY) < JUNCTION_Y_EPS) {
+                const dnx = o.collider.x - nodeX, dnz = o.collider.z - nodeZ;
+                const dn2 = dnx * dnx + dnz * dnz;
+                if (dn2 <= box2) {
+                    const oD = Math.sqrt(dn2);
+                    let pri;
+                    if (distToEnd > JUNCTION_STOP_M - 2) {
+                        // Mình còn ở NGOÀI vạch mà đã có xe khác đường trong
+                        // hộp -> nhường (xe trong hộp = xe ĐÃ vào trước).
+                        pri = 1;
+                    } else if (oD < distToEnd - 0.5) pri = 1;    // cả 2 đều trong vùng: xe gần tâm hơn
+                    else if (distToEnd < oD - 0.5) pri = 0;
+                    else {                                          // sát nút: đúng 1 xe nhường
+                        const kO = o.id != null ? o.id : 0;
+                        const kM = this.id != null ? this.id : 0;
+                        pri = (kO !== kM) ? (kO < kM ? 1 : 0)
+                            : (oSpeed > this.speed + 0.05 ? 1 : 0);
+                    }
+                    if (pri) junctionBlock = true;
+                }
+            }
+
             if (t > 0) {
                 const gap = t - BUS_LEN;              // khoảng cách bumper->bumper
                 if (gap < s.nearestFrontGap) s.nearestFrontGap = gap;
                 const inLane = latDiff < sameLat && sameDir;
                 const hard = latDiff < hardLat && gap < 20;     // lấn làn / ngược chiều / player
-                if ((inLane || hard) && gap < s.leaderGap) {
-                    s.leader = o; s.leaderGap = Math.max(gap, -BUS_LEN); s.leaderSpeed = oSpeed;
+                // Xe đang ở LÀN MÌH SẮP VỀ (offset mình còn dịch dở qua ngã
+                // hay đang đổi làn): nó trên đường đi của mình dù chưa cùng
+                // laneOffset thật. Không có gate này, xe vừa rẽ vào (offset
+                // theo trục cũ) MÙ leader ở ngay trước đầu -> IDM không phanh
+                // -> đè đuôi xe đang đứng trên làn đích.
+                const inTargetLane = sameDir &&
+                    Math.abs(oCenter - this.targetLaneOffset) < sameLat;
+                if ((inLane || inTargetLane || hard) && gap < s.leaderGap) {
+                    s.leader = o; s.leaderGap = Math.max(gap, -BUS_LEN);
+                    // Xe ngược chiều tiệm cận với vận tốc RELATIVE = v_mình +
+                    // |v_nó|. IDM tính dv = v - leaderSpeed -> phải để SỐ ÂM
+                    // (đang lái vào mặt nhau), nếu không sẽ trừ ngược ra
+                    // v - |vo| = phanh thiếu, lao chồng lên nhau rồi kẹt.
+                    s.leaderSpeed = sameDir ? oSpeed : -oSpeed;
                 }
                 if (candCenter !== null && Math.abs(oCenter - candCenter) < candLat && gap < s.candFrontGap) {
                     s.candFrontGap = gap; s.candFrontSpeed = oSpeed;
@@ -357,6 +422,23 @@ export class TrafficAI {
                 if (candCenter !== null && Math.abs(oCenter - candCenter) < candLat && gapBack < s.candRearGap) {
                     s.candRearGap = gapBack; s.candRearSpeed = oSpeed;
                 }
+            }
+        }
+        // Vật cản ảo ở vạch dừng: ghi đè gap nếu nó gần hơn xe dẫn thật.
+        if (junctionBlock) {
+            // Chốt liveness: chờ nhường quá YIELD_TIMEOUT -> xe trong hộp đang
+            // bị kẹt (chờ hàng của nó), không việc gì mình đứng chết đạo.
+            this._yieldTimer += this.updateInterval;
+            if (this._yieldTimer > YIELD_TIMEOUT) junctionBlock = false;
+        } else {
+            this._yieldTimer = 0;
+        }
+        if (junctionBlock) {
+            const gap = distToEnd - HALF_LEN - JUNCTION_STOP_M;   // bumper -> vạch
+            if (gap < s.leaderGap) {
+                s.leaderGap = Math.max(gap, -BUS_LEN);
+                s.leaderSpeed = 0;
+                s.junctionBlocked = true;
             }
         }
         this.followTarget = s.leader;
@@ -403,8 +485,22 @@ export class TrafficAI {
         } else {
             if (this.lc.phase !== 'IDLE') this._laneChangeFSM(dt);
             else this._considerLaneChange(dt);
+            // Không FSM nào đang giữ target (ngoại trừ COMMIT vừa tự set làn
+            // đích trong tick này) -> ghim về tâm làn hiện tại. applyAvoidance
+            // xích lệch target mỗi lần va chạm (+/-0.6m) nhưng không ai đưa
+            // về lại: tích tụ nhiều lần = xe trôi hẳn ra giữa đường/ghé sát
+            // xe ngược chiều -> 2 xe chồng nhau, mỗi xe coi xe kia là leader
+            // -> deadlock đứng vĩnh viễn. Ghim ở đây để lệch làn chỉ tạm thời.
+            if (this.lc.phase !== 'COMMIT' && this.stop.phase === 'IDLE') {
+                this.targetLaneOffset = this._laneCenter(this.lane);
+            }
             this._maybeRequestStop(dt);
         }
+
+        // 2b) giải cứu xe đã CHỒNG nhau (leaderGap < 0 mà đứng im mãi): IDM
+        // chỉ phanh nên không bao giờ tự gỡ -> phải tự tách (ưu tiên CAO hơn
+        // re-center ở trên).
+        this._updateStuckEscape(dt);
 
         // 3) điều khiển dọc (IDM)
         this._updateAccel(dt);
@@ -440,6 +536,44 @@ export class TrafficAI {
         return node && node.connections ? node.connections.length : 0;
     }
 
+    // Xe đã chồng nhau/nhìn nhau mà cả 2 cùng đứng im -> không FSM nào tự
+    // gỡ: IDM chỉ phanh, không bao giờ tăng ga. Sau 4s chồng nhau, tự tách:
+    //  - leader NGƯỢC CHIỀU: ép sát lề PHẢI tối đa (target = maxOffset) ->
+    //    2 xe đẩy sang 2 bên, hết hard-leader thì mỗi xe chạy tiếp;
+    //  - leader CÙNG CHIỀU giao cắt (lệch ngang > 1.2m): "trườn" ra thật
+    //    chậm (_stuckCreep, ≤1.5 m/s) để thoát khỏi giao điểm.
+    _updateStuckEscape(dt) {
+        const s = this.scan, f = this._frame;
+        const overlapped = s.leader && s.leaderGap < 0.5 && !s.junctionBlocked &&
+            this.stop.phase === 'IDLE';
+        if (!overlapped || !f) {
+            this._stuckT = 0;
+            this._stuckCreep = false;
+            return;
+        }
+        this._stuckT += dt;
+        if (this._stuckT < 4) return;                 // chưa kẹt lâu -> để IDM lo
+
+        const L = s.leader;
+        let lat = 0, oncoming = false;
+        if (L.collider) {
+            const dx = L.collider.x - this.collider.x;
+            const dz = L.collider.z - this.collider.z;
+            lat = Math.abs(dx * f.rx + dz * f.rz);
+            oncoming = typeof L.heading === 'number' &&
+                (Math.sin(L.heading) * f.ux + Math.cos(L.heading) * f.uz) <= 0.1;
+        }
+        if (oncoming) {
+            this.targetLaneOffset = this._maxOffset();   // ép sát lề phải = tách 2 bên
+        } else if (this.speed < 0.6 && this._stuckT > 5 && lat > 1.2) {
+            // CHỈ trườn khi 2 xe giao cắt lệch ngang thật sự (lộ ra giao
+            // điểm). Đụng xe cùng làn đứng trước (lat≈0) mà trườn là đẩy
+            // xe sau vào hẳn trong xe trước (gap thành -12m, chồng kim),
+            // creep không tắt được vì gap không bao giờ hở ra.
+            this._stuckCreep = true;
+        }
+    }
+
     _updateAccel(dt) {
         const p = this.profile;
         const v0 = Math.max(0, this.targetSpeed);
@@ -447,6 +581,16 @@ export class TrafficAI {
         const s = this.scan;
 
         if (v0 <= 0.05 && v < 0.05) { this.speed = 0; this.accel = 0; this._brakePending = false; return; }
+
+        // Đang trườn ra giải cứu kẹt: IDM bị gác (khoảng cách vẫn âm -> IDM
+        // chỉ phanh mãi), giữ tốc độ trườn ≤1.5 m/s tới khi hở ra là
+        // _updateStuckEscape tự tắt.
+        if (this._stuckCreep) {
+            this.accel = v < 1.5 ? 1.2 : -3;
+            this._brakePending = false;
+            this._emergencyTimer = 0;
+            return;
+        }
 
         let want;
         if (s.leaderGap === Infinity || s.leaderGap > LOOKAHEAD) {
@@ -493,6 +637,7 @@ export class TrafficAI {
         if (this.lc.phase === 'COMMIT') { this.state = AI_STATE.LANE_CHANGING; return; }
         if (this.lc.phase === 'OVERTAKING') { this.state = AI_STATE.OVERTAKING; return; }
         if (this._emergencyTimer > 0) { this.state = AI_STATE.EMERGENCY_BRAKING; return; }
+        if (this.scan.junctionBlocked) { this.state = AI_STATE.YIELDING; return; }
 
         const p = this.profile, s = this.scan;
         if (s.leaderGap === Infinity || s.leaderGap > LOOKAHEAD) {
@@ -556,6 +701,14 @@ export class TrafficAI {
     _laneChangeFSM(dt) {
         const meta = this.meta, lc = this.lc;
         if (!meta) { lc.phase = 'IDLE'; return; }
+        // Không giữ trạng thái đổi làn qua giao lộ: còn <12m tới node mà
+        // đang CHECK/COMMIT -> về làn hiện tại (tránh ôm cua ngay giữa ngã).
+        const fNow = this._frame;
+        if ((lc.phase === 'CHECK' || lc.phase === 'COMMIT') && fNow &&
+            fNow.len - this.progress * fNow.len < 12) {
+            this._abortLaneChange();
+            return;
+        }
 
         if (lc.phase === 'CHECK') {
             lc.timer += dt;
@@ -651,6 +804,9 @@ export class TrafficAI {
         const myT = this.progress * f.len, remain = f.len - myT;
         if (myT < 40 || remain < 40) return;                 // tránh giao lộ/cuối đoạn
         if (!(this.scan.leaderGap === Infinity || this.scan.leaderGap > 40)) return;
+        // Có xe bám sát phía sau -> đừng tấp: nó sẽ xếp hàng sau mình và khe
+        // nhập lại (MERGE_CHECK) không bao giờ mở -> deadlock nguyên con dốc.
+        if (!(this.scan.rearGap === Infinity || this.scan.rearGap > 20)) return;
         if (this.speed < 3) return;
         // BUS_DRIVER: ưu tiên dừng gần bến (node bus_station phía trước)
         let nearStation = false;
@@ -717,14 +873,23 @@ export class TrafficAI {
             this.targetLaneOffset = st.offset;
             st.timer += dt;
             const ok = this._gapOk(this.scan.candFrontGap, this.scan.candRearGap, this.scan.candRearSpeed);
-            st.hold = ok ? st.hold + dt : 0;
+            // Nhập "trườn": xe sau ĐÃ DỪNG mà còn đủ chỗ (>=8m). Khe chuẩn
+            // (24m) không bao giờ tới khi hàng xe đã dựng sau lưng mình — chờ
+            // mãi = chặn nguyên đoạn đường. Xe sau đứng yên nên vào làn an toàn.
+            const creep = this.scan.candFrontGap >= 6 &&
+                this.scan.candRearGap >= 8 && this.scan.candRearSpeed <= 1.5;
+            // Chốt thời gian (liveness): >15s mà vẫn kẹt thì vào khi có tối
+            // thiểu chỗ; >25s chỉ cần xe sau chậm (đủ để không bị húc đuôi).
+            const desperate = st.timer > 15 && this.scan.candFrontGap >= 6 &&
+                this.scan.candRearSpeed <= 3 && (st.timer > 25 || this.scan.candRearGap >= 4);
+            st.hold = (ok || creep || desperate) ? st.hold + dt : 0;
             if (st.hold > 0.25) {
                 st.phase = 'MERGE_IN';
                 this.targetLaneOffset = this._laneCenter(0);
                 this.targetSpeed = (this.meta ? this.meta.speedMs * this.profile.speedFactor : 6) * 0.6;
             }
-            // Không an toàn -> CHỜ MÃI, không bao giờ tự ý lao ra (timer chỉ
-            // để debug; không có nhánh "chờ lâu quá thì đi").
+            // Không an toàn -> CHỜ (vẫn có nhánh creep/desperate ở trên để
+            // không bao giờ chờ vĩnh viễn).
             return;
         }
 
@@ -769,12 +934,16 @@ export class TrafficAI {
         this.speed = Math.max(0, this.speed + this.accel * dt);
         if (this.targetSpeed <= 0.05 && this.speed < 0.2 && this.accel <= 0) { this.speed = 0; this.accel = 0; }
 
-        // chuyển dịch ngang: đổi làn giữ vận tốc ngang ~1.6-3.2 m/s (mượt)
+        // chuyển dịch ngang: đổi làn giữ vận tốc ngang ~1.6-3.2 m/s (mượt).
+        // Lệch > 4m = vừa thoát ngã (phân rã lại toạ độ theo trục mới) ->
+        // nhập làn nhanh hơn (5 m/s) để thời gian "ngoài làn" ngắn nhất.
+        // ⚠ Giữ ngưỡng 4m: hạ xuống 1.5 từng làm xe rẽ ngang 5m/s (quỹ
+        // đạo chéo) cắt qua xe đang đứng ở làn đích -> overlap nghìn frame.
         const diff = this.targetLaneOffset - this.laneOffset;
         if (Math.abs(diff) > 0.002) {
             const rate = (this.lc.phase === 'COMMIT')
                 ? clamp(1.6 + this.speed * 0.08, 1.6, 3.2)
-                : 2.4;
+                : (Math.abs(diff) > 4 ? 5 : 2.4);
             const step = Math.min(Math.abs(diff), rate * dt);
             this.laneOffset += (diff > 0 ? step : -step);
         } else {
@@ -783,17 +952,21 @@ export class TrafficAI {
 
         const f = this._frame;
         this.progress += (this.speed / f.len) * dt;
-        if (this.progress >= 1.0) {
-            this._handleJunction();
+        // _entryWait > 0: đang giữ xe tại node chờ cửa ra — vẫn phải vào
+        // junction mỗi frame để đếm timeout, kể cả khi speed về 0 (progress
+        // không tăng nên < 1.0).
+        if (this.progress >= 1.0 || this._entryWait > 0) {
+            this._handleJunction(dt);
             if (!this._frame && !this._updateFrame()) return;
         }
-        this.progress = clamp(this.progress, 0, 0.9999);
+        this.progress = clamp(this.progress, Math.min(this._progFloor, 0), 0.9999);
+        if (this.progress >= 0 && this._progFloor < 0) this._progFloor = 0;
         this._updatePositionFromSegment();
         this._updateHeading(dt);
     }
 
     // ---------------------------------------------------------- junction
-    _handleJunction() {
+    _handleJunction(dt = 0) {
         const seg = this._getSegment(this.currentSegmentId);
         if (!seg) { this._recover(); return; }
         const curId = this.direction === 0 ? seg.to : seg.from;
@@ -811,8 +984,7 @@ export class TrafficAI {
                 return s && (s.from === nextNodeId || s.to === nextNodeId);
             });
             if (nextSeg) {
-                this._setNewSegment(nextSeg, curId);
-                this.currentPathIndex++;
+                if (this._enterNewSegment(nextSeg, curId, dt)) this.currentPathIndex++;
                 return;
             }
             this.pathNodes = [];            // path hỏng -> tính lại
@@ -837,7 +1009,7 @@ export class TrafficAI {
             const nextSegId = this.roadGraph.nextSegmentToward(curId, this.goalNodeId, this.currentSegmentId);
             if (nextSegId) {
                 const s2 = this._getSegment(nextSegId);
-                if (s2) { this._setNewSegment(s2, curId); return; }
+                if (s2) { this._enterNewSegment(s2, curId, dt); return; }
             }
         }
 
@@ -853,13 +1025,60 @@ export class TrafficAI {
         }
         const nextSeg = this._getSegment(best.seg);
         if (!nextSeg) { this._uTurn(); return; }
+        this._enterNewSegment(nextSeg, curId, dt);
+    }
+
+    // Vào segment mới CHỈ KHI cửa ra chưa bị xe cùng chiều chiếm. 2 xe cùng
+    // rẽ vào 1 đoạn lúc này từng chồng prog ~0.1 lên nhau (đứng chết stack).
+    // Bị chặn -> giữ xe tại node (progress gần 1, giảm tốc), đếm timeout:
+    // quá ENTRY_WAIT_MAX mà xe trong cửa ra vẫn đứng đó (nó cũng kẹt) thì
+    // vào anyway để không chết đạo — sau đó IDM + collision avoidance lo.
+    _enterNewSegment(nextSeg, curId, dt) {
+        if (this._entryOccupied(nextSeg, curId)) {
+            this._entryWait += dt || (1 / 30);
+            if (this._entryWait < ENTRY_WAIT_MAX) {
+                this.progress = Math.min(this.progress, 0.9999);
+                if (this.speed > 1.5) { this.speed = 1.5; }
+                this.accel = Math.min(this.accel, -3);
+                return false;
+            }
+        }
+        this._entryWait = 0;
         this._setNewSegment(nextSeg, curId);
+        return true;
+    }
+
+    // Xe khác đang đứng trong vùng cửa ra (0 -> BUS_LEN+14m) của segment đích,
+    // cùng chiều -> chặn. O(N) với N = số xe active, chỉ chạy khi tới ngã.
+    _entryOccupied(nextSeg, curId) {
+        const vehs = this._lastVehicles;
+        if (!vehs || !vehs.length) return false;
+        const dir = nextSeg.from === curId ? 0 : 1;
+        const a = this._getNode(dir === 0 ? nextSeg.from : nextSeg.to);
+        const b = this._getNode(dir === 0 ? nextSeg.to : nextSeg.from);
+        if (!a || !b) return false;
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const len = Math.hypot(dx, dz) || 1;
+        const ux = dx / len, uz = dz / len;
+        const win = BUS_LEN + 14;
+        for (let i = 0; i < vehs.length; i++) {
+            const o = vehs[i];
+            if (!o || o === this || !o.collider || o.isStatic) continue;
+            if (o.currentSegmentId !== nextSeg.id) continue;
+            if (typeof o.direction === 'number' && o.direction !== dir) continue;
+            const t = (o.collider.x - a.x) * ux + (o.collider.z - a.z) * uz;
+            // t âm = vừa rẽ vào, tâm xe chưa vượt điểm đầu segment (progr-
+            // ess decompose ra số âm khi cua). Mở tới -BUS_LEN để bắt cả
+            // xe đứng sờ sờ ngay cửa với prog -0.03 (trước đó window -2m
+            // để lọt -> xe thứ 2 ùa vào đè lên).
+            if (t >= -BUS_LEN && t < win) return true;
+        }
+        return false;
     }
 
     // Đích mới. Ưu tiên POI thật (bến/trạm nghỉ/cây xăng) gần, không có
     // thì chọn node đường lớn 0.4-2.5km. Đích phải CÙNG thành phần liên
     // thông với xe, nếu không A* không ra đường.
-    //
     // ⚠ CHỈ CHẠY A* MỘT LẦN ở đây. Các ngã khác đi theo pathNodes; chỉ
     // khi hết path / path hỏng mới tính lại (N5000: A* 40ms là cấm mỗi ngã).
     setGoal(nodeId) {
@@ -909,7 +1128,7 @@ export class TrafficAI {
             }
         }
         // 2) node đường lớn ngẫu nhiên 0.4-2.5km
-        const BIG = new Set(["NATIONAL", "EXPRESSWAY", "ARTERIAL", "COLLECTOR"]);
+        const BIG = new Set(["NATIONAL", "EXPRESSWAY", "ARTERIAL", "COLLECTOR", "PROVINCIAL_ROAD"]);
         for (let tries = 0; tries < 8; tries++) {
             const n = rg.nodes[Math.floor(this.random() * rg.nodes.length)];
             if (!n) break;
@@ -922,13 +1141,30 @@ export class TrafficAI {
         this.goalNodeId = null;   // không có đích -> tự bám đường lớn (bước 3)
     }
 
+    // Giữ NGUYÊN vị trí vật lý khi đổi khung đoạn: phân rã lại toạ độ (tiến,
+    // ngang) trong khung MỚI thay vì đặt progress = 0 rồi giữ nguyên laneOffset.
+    // vuông góc MỚI đảo chiều -> tâm xe nhảy ngang tới 2×offset (10.8m với làn
+    // 5.63m) trong 1 frame. Phân rã là DUY NHẤT nên có thể ra tiến/lệch ÂM —
+    // đó là vị trí thật trong hộp ngã, xe sẽ từ từ về làn phải.
+    // Yêu cầu: _frame đã cập nhật cho segment/direction mới.
+    _adoptWorldPos(wx, wz) {
+        const f = this._frame;
+        if (!f) return;
+        const sx = wx - f.p0.x, sz = wz - f.p0.z;
+        this.progress = (sx * f.ux + sz * f.uz) / f.len;
+        this.laneOffset = sx * f.rx + sz * f.rz;
+        this._progFloor = Math.min(0, this.progress);
+    }
+
     _setNewSegment(nextSeg, curId) {
+        const wx = this.collider.x, wz = this.collider.z;   // vị trí trước khi đổi khung
         if (nextSeg.from === curId) this.direction = 0;
         else if (nextSeg.to === curId) this.direction = 1;
         else { this._uTurn(); return; }
         this.oldHeading = this.heading;
         this.currentSegmentId = nextSeg.id;
         this.progress = 0;
+        this._entryWait = 0;
         // Qua ngã: hủy mọi FSM dở dang (không đổi làn/tấp lề qua giao lộ)
         this.lc.phase = 'IDLE'; this.lc.kind = null;
         this.stop.phase = 'IDLE'; this.stop.hold = 0;
@@ -936,7 +1172,6 @@ export class TrafficAI {
         if (this.meta) this.lane = clamp(this.lane, 0, this.meta.lanesPerDir - 1);
         this.targetLaneOffset = this._laneCenter(this.lane);
         this.targetHeading = this._getSegmentHeading();
-        // Chỉ vào FSM "rẽ" khi góc đổi hướng ĐÁNG KỂ. Bug cũ: mọi lần sang
         // đoạn mới (đường thẳng tắp cũng vậy) đều bật turning -> speed *= 0.35
         // mỗi đoạn -> xe giật cục giảm tốc liên tục. Góc nhỏ: heading tự mượt
         // qua lerpAngle trong _updateHeading (nhánh không turning).
@@ -951,31 +1186,36 @@ export class TrafficAI {
             this.turning = false;
             this.turnTimer = 0;
         }
+        this._adoptWorldPos(wx, wz);        // không nhảy cóc qua ngã
         this._updatePositionFromSegment();
     }
 
     _uTurn() {
-        // Quay đầu TẠI ĐƯỜNG CÙNG (chỉ xảy ra ở đường cụt): offset đổi dấu
-        // để xe KHÔNG nhảy vị trí, rồi từ từ về làn phải của chiều mới.
+        // Quay đầu TẠI ĐƯỜNG CÙNG (chỉ xảy ra ở đường cụt): phân rã lại toạ
+        // độ trong khung chiều mới -> xe đứng yên tại chỗ, rồi từ từ trôi về
+        // làn phải của chiều mới (offset âm = đang ở bên trái, hợp lý khi vừa
+        // quay xong).
+        const wx = this.collider.x, wz = this.collider.z;
         this.direction = 1 - this.direction;
-        this.progress = 0;
+        this._entryWait = 0;
         this.oldHeading = this.heading;
         this.targetHeading = this.heading + Math.PI;
-        this._updateFrame();
-        this.laneOffset = -this.laneOffset;          // vẫn ở đúng điểm vật lý
         this.lane = 0;
-        this.targetLaneOffset = this._laneCenter(0); // rồi trôi về làn phải
         this.lc.phase = 'IDLE';
         this.stop.phase = 'IDLE';
         this.turning = true;
         this.turnTimer = 0;
         this.state = AI_STATE.TURNING;
+        if (!this._updateFrame()) { this.progress = 0; return; }
+        this.targetLaneOffset = this._laneCenter(0); // rồi trôi về làn phải
+        this._adoptWorldPos(wx, wz);
         this._updatePositionFromSegment();
     }
 
     _recover() {
         this.state = AI_STATE.RECOVERING;
         this._recoverCount++;
+        this._entryWait = 0;
         if (!this.roadGraph.segments?.length) return;
         const seg = this.roadGraph.segments[Math.floor(this.random() * this.roadGraph.segments.length)];
         const dir = seg.twoWay ? Math.floor(this.random() * 2) : 0;

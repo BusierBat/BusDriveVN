@@ -7,7 +7,6 @@
 //   4) STRUCTURE  — bến xe có entrance/exit/internal/bay/parking (16/63)
 //   5) PERF       — draw call, triangle, instance, RAM JS heap (29/66)
 //   6) OCCUPANCY  — nhà/station có nằm trên đường không (14/15/22/39)
-//
 // Dùng:  await import('/tools/world_probe.js')  -> window.WP
 // Rồi:    WP.probeAll() hoặc WP.driveRoute() ...
 // ===========================================================================

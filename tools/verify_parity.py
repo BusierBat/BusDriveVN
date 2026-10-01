@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 PARITY + PROFILE js/map.js vs tools/map_generator.py (CPU thuan, Node).
 Dung thu muc tam + stub 'three' (module nho, khong loi data: URL).

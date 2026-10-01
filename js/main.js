@@ -6,7 +6,8 @@ import { createNPC } from "./npc.js";
 import { createBus, loadNpcSkinList } from "./bus.js";
 import { createBusInterior } from "./interior.js";
 import { CameraSystem } from "./camera.js";
-import { LightingSystem } from "./lighting.js";
+import { LightingSystem, LIGHTING_QUALITY_PRESETS } from "./lighting.js";
+import { TravelClock } from "./TravelClock.js";
 import { createPassengerSystem } from "./passenger.js";
 import { createTrafficManager } from "./traffic/TrafficManager.js";
 import { TrafficDebug } from "./traffic/TrafficDebug.js";
@@ -14,6 +15,7 @@ import { initEndermanEasterEgg, updateEnderman } from "./enderman.js";
 import { CollisionSystem } from "./collisionSystem.js";
 
 let renderer, scene, camera, canvas, map, lighting, npc, bus, interior, passengerSystem, trafficManager, trafficDebug, ui, cameraSystem;
+let travelClock = null;   // ước lượng giờ game từ lái xe thật (js/TravelClock.js)
 const clock = new THREE.Clock();
 let gameState = "menu", paused = false;
 let doorProgress = 0, doorTarget = 0;
@@ -25,7 +27,16 @@ let speedCameraFlashTimer = 0;
 
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent);
 const isLowEnd = (navigator.hardwareConcurrency || 4) <= 4 || (navigator.deviceMemory || 4) <= 4;
-let gameSettings = { graphics: 'low', renderDist: 2, npcDensity: 5, camSens: 30, fov: 70 };
+let gameSettings = { graphics: 'low', renderDist: 2, npcDensity: 5, camSens: 30, fov: 70, lightingQuality: 'MEDIUM', godRays: 'high' };
+
+// Load settings from localStorage
+try {
+    const saved = localStorage.getItem('busdrivevn_settings');
+    if (saved) {
+        const parsed = JSON.parse(saved);
+        gameSettings = { ...gameSettings, ...parsed };
+    }
+} catch(e) {}
 
 if (isMobile || isLowEnd) { 
     gameSettings.renderDist = 1; 
@@ -37,12 +48,12 @@ let mobileInput = { steer: 0, accel: 0, brake: 0 };
 const SPEED_CONVERSION = 0.4;
 const vehiclePhysics = {
     speed: 0,
-    maxSpeedKmh: 160,
-    maxSpeed: 160 * SPEED_CONVERSION,
+    maxSpeedKmh: 200,
+    maxSpeed: 200 * SPEED_CONVERSION,
     maxReverseSpeed: -40 * SPEED_CONVERSION,
     acceleration: 20.0 * SPEED_CONVERSION,
     braking: 40.0 * SPEED_CONVERSION,
-    drag: 2.0 * SPEED_CONVERSION,
+    drag: 4.0 * SPEED_CONVERSION,
     currentSpeedKmh: 0,
     isReversing: false,
     forwardVector: new THREE.Vector3()
@@ -51,19 +62,16 @@ const vehiclePhysics = {
 let steerAngle = 0, steerTarget = 0;
 
 // ===== INPUT: sống được với UniKey / IME tiếng Việt =====
-//
 // VẤN ĐỀ CŨ: game đọc KeyboardEvent.code thẳng. Nhưng khi bộ gõ tiếng Việt
 // (UniKey / IME Windows) ở chế độ VI, nó can thiệp vào stream phím:
 //   - có khi nuốt luôn event (code === "" ),
 //   - có khi bơm ký tự đã gõ thay cho phím vật lý: W -> "ư", D -> "đ", A -> "á"...
 // Ket qua: keysPressed.add("") -> WASD khong con ten -> phai chuyen EN moi lai duoc.
-//
 // CACH FIX: resolve event ve ma phim VẬT LÝ theo 3 lớp, lớp nào chắc nhất dùng lớp đó:
 //   1) e.code      -> chuẩn nhất (KeyW/KeyA/KeyS/KeyD), ko phụ thuộc gõ gì.
 //   2) e.key       -> ký tự/tên phím, map ngược lại mã vật lý (kể cả chữ tiếng Việt).
 //   3) e.which/kc  -> UniKey hay bơm sự kiện theo VK (W=87, A=65...).
 // Không resolve được -> bỏ qua, KHÔNG bịa phím ảo.
-//
 // Quy tắc an toàn: keyup dùng CÙNG bộ resolve (nếu không thì phím kẹt vĩnh viễn),
 // và không bao giờ đụng tới khi đang gõ trong ô input (text/UI vẫn gõ bình thường).
 
@@ -71,7 +79,7 @@ const KEY_BY_NAME = new Map();
 const LEGACY_BY_KEYCODE = new Map();
 const keysPressed = new Map();   // code -> timestamp keydown gần nhất (chống phím kẹt)
 
-const KEY_HOLD_TIMEOUT_MS = 2000;
+const KEY_HOLD_TIMEOUT_MS = 5000;
 // Chống phím kẹt khi IME nuốt keyup. 2000ms an toàn cho cả Windows repeat chậm nhất
 // (delay <= 1s + interval <= 0.5s) nên phím đang giữ thật không bị nhả nhầm.
 
@@ -206,7 +214,7 @@ function pruneStaleKeys(now) {
 
 function clearPressedKeys() { keysPressed.clear(); }
 
-let lKeyTimer = 0, lastFPressTime = 0, lastCameraPressTime = 0, lastHornPressTime = 0;
+let lastFPressTime = 0, lastCameraPressTime = 0, lastHornPressTime = 0;
 
 // === 3D PHYSICS RAYCAST VARS ===
 const _raycaster = new THREE.Raycaster();
@@ -228,23 +236,20 @@ function updateVehiclePhysics(dt) {
     const isShift = keysPressed.has("ShiftLeft") || keysPressed.has("ShiftRight");
     
     if (isShift && isAccel) {
-        phys.speed += phys.acceleration * dt;
+        // Shift+W: Tăng tốc từ từ như thực tế (giảm acceleration xuống 50%)
+        phys.speed += phys.acceleration * 0.5 * dt;
         phys.speed = Math.min(phys.speed, phys.maxSpeed);
         phys.isReversing = false;
     } else if (isAccel && !isShift) {
+        // W: Giữ tốc độ (không tăng tốc)
+        // Nếu đang lùi, thì thắng dần về 0
         if (phys.speed < 0) {
             phys.speed += phys.braking * dt;
             if (phys.speed > 0) phys.speed = 0;
-        } else {
-            // BUG CU: `else if (phys.speed === 0)` -> chi tang toc O MOT FRAME.
-            // speed len >0 roi khong con nhanh nao khop `isAccel` nua, ga chet
-            // o 1 km/h ma cam ga. Chi can `else` la ga thuong chay duoc.
-            // Tran 30 km/h: speed la m/s, SPEED_CONVERSION = 0.2777 m/s/km/h
-            // => 30 * SPEED_CONVERSION = 8.33 m/s. (KHONG chia, se ra 388 km/h)
-            phys.speed += phys.acceleration * dt;
-            phys.speed = Math.min(phys.speed, 30 * SPEED_CONVERSION);
         }
+        // Nếu đang đi hoặc đứng, giữ nguyên speed
     } else if (isBrake) {
+        // S: Giảm tốc từ từ và lùi khi về 0
         if (phys.speed > 0) {
             phys.speed -= phys.braking * dt;
             if (phys.speed < 0) phys.speed = 0;
@@ -256,6 +261,7 @@ function updateVehiclePhysics(dt) {
     } else if (keysPressed.has("Space")) {
         phys.speed = 0;
     } else {
+        // Thả W: Giảm tốc từ từ và dừng hẳn khi 0
         phys.speed = phys.speed > 0 ? Math.max(phys.speed - phys.drag * dt, 0) : Math.min(phys.speed + phys.drag * dt, 0);
     }
     
@@ -296,8 +302,7 @@ function updateVehiclePhysics(dt) {
     }
     
     // ĐỊA HÌNH PHẲNG TUYỆT ĐỐI - KHÔNG RAYCAST
-    //
-    // P41/P42: truyền `yHint` = cao độ xe ĐANG ở. Không có nó thì thuật toán
+    // /P42: truyền `yHint` = cao độ xe ĐANG ở. Không có nó thì thuật toán
     // mặt trên cùng phải chọn theo "cao nhất" ⇒ đi ngang dưới cầu vượt là
     // nhảy lên cầu. Có `yHint` thì nó bám đúng mặt xe đang đứng trên đó, và
     // đi lên ramp/cầu vượt vẫn leo được vì cao độ thay đổi liên tục.
@@ -382,16 +387,14 @@ function initInput() {
             ui?.toast(`🚪 Cửa ${bus.doorOpen ? 'MỞ' : 'ĐÓNG'}`);
             if (bus.doorOpen && passengerSystem) passengerSystem.pickUpPassengers();
         }
-        if (code === "KeyL") { lKeyTimer = performance.now(); }
-        if (code.startsWith("Digit") && performance.now() - lKeyTimer < 1000) {
-            const group = parseInt(code.replace("Digit", ""));
-            if (group >= 1 && group <= 4 && interior) {
-                interior.userData.ledGroups = interior.userData.ledGroups || {};
-                interior.userData.ledGroups[group] = !interior.userData.ledGroups[group];
-                interior.setInteriorLedGroup?.(group, interior.userData.ledGroups[group]);
-                ui?.toast(`💡 Nhóm đèn ${group}: ${interior.userData.ledGroups[group] ? "ON" : "OFF"}`);
-                lKeyTimer = 0;
-            }
+        if (code === "KeyL" && bus && interior) {
+            // L: Bật/tắt TẤT CẢ đèn cùng lúc (pha + đuôi + interior)
+            const allLightsOn = !bus.areLightsOn;
+            bus.areLightsOn = allLightsOn;
+            bus.setHeadlights?.(allLightsOn);
+            bus.setTaillights?.(allLightsOn);
+            interior.setInteriorLed?.(allLightsOn);
+            ui?.toast(`💡 Tất cả đèn ${allLightsOn ? 'BẬT' : 'TẮT'}`);
         }
         if (code === "KeyH" && performance.now() - lastHornPressTime > 300) {
             lastHornPressTime = performance.now();
@@ -485,7 +488,11 @@ function initRenderer() {
     renderer.setPixelRatio(isLowEnd ? 0.8 : 1.0);
     renderer.setSize(window.innerWidth, window.innerHeight, true);
     renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-    renderer.shadowMap.enabled = false;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.autoUpdate = false; // LightingSystem controls shadow updates
     renderer.domElement.addEventListener("webglcontextlost", (e) => {
         e.preventDefault();
         webglLost = true;
@@ -513,71 +520,222 @@ async function boot() {
 
 function setupMenuEvents() {
     document.getElementById("btn-new-game")?.addEventListener("click", startGameFromMenu);
+    
+    const backdrop = document.getElementById('panel-backdrop');
     const settingsPanel = document.getElementById('settings-panel');
+    const uvPanel = document.getElementById('uv-skin-panel');
+    
     const btnSettings = document.getElementById('btn-settings-main');
+    const btnUvSkin = document.getElementById('btn-uv-skin');
+    
     const btnCloseSettings = document.getElementById('btn-close-settings');
+    const btnCloseUvSkin = document.getElementById('btn-close-uv-skin');
     const btnApplySettings = document.getElementById('btn-apply-settings');
+    const btnResetSettings = document.getElementById('btn-reset-settings');
+    
     const rngNpc = document.getElementById('setting-npc-density');
     const valNpc = document.getElementById('val-npc-density');
     const rngCamSens = document.getElementById('setting-cam-sens');
     const valCamSens = document.getElementById('val-cam-sens');
+    const rngFov = document.getElementById('setting-fov');
+    const valFov = document.getElementById('val-fov');
+    const rngRenderDist = document.getElementById('setting-render-dist');
+    const valRenderDist = document.getElementById('val-render-dist');
+    
+    // Live update value displays
     rngNpc?.addEventListener('input', () => { if(valNpc) valNpc.textContent = rngNpc.value; });
     rngCamSens?.addEventListener('input', () => { if(valCamSens) valCamSens.textContent = rngCamSens.value; });
-    btnSettings?.addEventListener("click", () => { if(settingsPanel) settingsPanel.style.display = 'flex'; });
-    btnCloseSettings?.addEventListener("click", () => { if(settingsPanel) settingsPanel.style.display = 'none'; });
+    rngFov?.addEventListener('input', () => { if(valFov) valFov.textContent = rngFov.value; });
+    rngRenderDist?.addEventListener('input', () => { if(valRenderDist) valRenderDist.textContent = rngRenderDist.value; });
+
+    // Helper to open panel with backdrop
+    function openPanel(panel) {
+        if (backdrop) backdrop.style.display = 'block';
+        if (panel) panel.style.display = 'block';
+        document.body.style.overflow = 'hidden';
+    }
+    function closeAllPanels() {
+        if (backdrop) backdrop.style.display = 'none';
+        if (settingsPanel) settingsPanel.style.display = 'none';
+        if (uvPanel) uvPanel.style.display = 'none';
+        document.body.style.overflow = '';
+    }
+
+    // Settings panel
+    btnSettings?.addEventListener("click", () => { 
+        openPanel(settingsPanel);
+        // Sync dropdown values with current settings
+        const selGraphics = document.getElementById('setting-graphics');
+        const selLighting = document.getElementById('setting-lighting');
+        const selGodRays = document.getElementById('setting-godrays');
+        if(selGraphics) selGraphics.value = gameSettings.graphics;
+        if(selLighting) selLighting.value = gameSettings.lightingQuality.toLowerCase();
+        if(selGodRays) selGodRays.value = gameSettings.godRays;
+        if(rngFov) rngFov.value = gameSettings.fov;
+        if(valFov) valFov.textContent = gameSettings.fov;
+        if(rngRenderDist) rngRenderDist.value = gameSettings.renderDist;
+        if(valRenderDist) valRenderDist.textContent = gameSettings.renderDist;
+    });
+    
+    // UV Skin panel
+    btnUvSkin?.addEventListener('click', () => {
+        openPanel(uvPanel);
+        const uvStatus = document.getElementById('uv-skin-status');
+        const uvDownload = document.getElementById('uv-skin-download');
+        const uvPreview = document.getElementById('uv-skin-preview');
+        if(uvStatus) uvStatus.innerHTML = '';
+        if(uvDownload) uvDownload.style.display = 'none';
+        if(uvPreview) uvPreview.style.display = 'none';
+    });
+
+    // Close handlers
+    [btnCloseSettings, btnCloseUvSkin, backdrop].forEach(btn => {
+        btn?.addEventListener('click', closeAllPanels);
+    });
+    
+    // ESC key to close
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeAllPanels();
+    });
+
+    // Apply settings
     btnApplySettings?.addEventListener("click", () => {
         const selGraphics = document.getElementById('setting-graphics');
         if(selGraphics) gameSettings.graphics = selGraphics.value;
+        
+        const selLighting = document.getElementById('setting-lighting');
+        if(selLighting) {
+            gameSettings.lightingQuality = selLighting.value.toUpperCase();
+            if(lighting) lighting.setQuality(gameSettings.lightingQuality);
+        }
+        
+        const selGodRays = document.getElementById('setting-godrays');
+        if(selGodRays) {
+            gameSettings.godRays = selGodRays.value;
+            if(lighting && lighting.atmosphereSystem) {
+                const val = selGodRays.value;
+                if (val === 'off') lighting.atmosphereSystem.toggleGodRays(false);
+                else lighting.atmosphereSystem.toggleGodRays(true);
+            }
+        }
+        
         if(rngNpc) gameSettings.npcDensity = parseInt(rngNpc.value);
         if(rngCamSens) gameSettings.camSens = parseInt(rngCamSens.value);
+        if(rngFov) {
+            gameSettings.fov = parseInt(rngFov.value);
+            if(camera) { camera.fov = gameSettings.fov; camera.updateProjectionMatrix(); }
+            if(cameraSystem) cameraSystem.settings.fov = gameSettings.fov;
+        }
+        if(rngRenderDist) {
+            gameSettings.renderDist = parseInt(rngRenderDist.value);
+            if(map) map.renderRadius = gameSettings.renderDist;
+        }
+        
         if(cameraSystem) cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
         if(renderer) renderer.toneMapping = (gameSettings.graphics === 'low') ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
         if(trafficManager) trafficManager.maxVehicles = gameSettings.npcDensity;
-        ui?.toast("Da ap dung cai dat!");
-        if(settingsPanel) settingsPanel.style.display = 'none';
+        
+        // Save to localStorage
+        try { localStorage.setItem('busdrivevn_settings', JSON.stringify(gameSettings)); } catch(e) {}
+        
+        ui?.toast("✅ Đã áp dụng & lưu cài đặt!");
+        closeAllPanels();
     });
-    const uvPanel = document.getElementById('uv-skin-panel');
-    const btnUvSkin = document.getElementById('btn-uv-skin');
-    const btnCloseUvSkin = document.getElementById('btn-close-uv-skin');
+
+    // Reset settings to defaults
+    btnResetSettings?.addEventListener("click", () => {
+        gameSettings = { graphics: 'low', renderDist: 2, npcDensity: 5, camSens: 30, fov: 70, lightingQuality: 'MEDIUM', godRays: 'high' };
+        // Update UI
+        const selGraphics = document.getElementById('setting-graphics');
+        const selLighting = document.getElementById('setting-lighting');
+        const selGodRays = document.getElementById('setting-godrays');
+        if(selGraphics) selGraphics.value = gameSettings.graphics;
+        if(selLighting) selLighting.value = gameSettings.lightingQuality.toLowerCase();
+        if(selGodRays) selGodRays.value = gameSettings.godRays;
+        if(rngNpc) { rngNpc.value = gameSettings.npcDensity; if(valNpc) valNpc.textContent = gameSettings.npcDensity; }
+        if(rngCamSens) { rngCamSens.value = gameSettings.camSens; if(valCamSens) valCamSens.textContent = gameSettings.camSens; }
+        if(rngFov) { rngFov.value = gameSettings.fov; if(valFov) valFov.textContent = gameSettings.fov; }
+        if(rngRenderDist) { rngRenderDist.value = gameSettings.renderDist; if(valRenderDist) valRenderDist.textContent = gameSettings.renderDist; }
+        ui?.toast("↩ Đã khôi phục mặc định!");
+    });
+
+    // UV Skin handlers
     const btnChooseSkin = document.getElementById('btn-choose-skin');
     const uvInput = document.getElementById('uv-skin-input');
     const uvStatus = document.getElementById('uv-skin-status');
     const uvDownload = document.getElementById('uv-skin-download');
-    btnUvSkin?.addEventListener('click', () => {
-        if(uvPanel) uvPanel.style.display = 'flex';
-        if(uvStatus) uvStatus.innerHTML = '';
-        if(uvDownload) uvDownload.style.display = 'none';
-    });
-    btnCloseUvSkin?.addEventListener('click', () => { if(uvPanel) uvPanel.style.display = 'none'; });
+    const uvPreview = document.getElementById('uv-skin-preview');
+    const uvPreviewImg = document.getElementById('uv-skin-preview-img');
+    const dropzone = document.getElementById('uv-skin-dropzone');
+
     btnChooseSkin?.addEventListener('click', () => { if(uvInput) uvInput.click(); });
+    
+    // Drag & drop
+    ['dragenter', 'dragover'].forEach(evt => {
+        dropzone?.addEventListener(evt, (e) => {
+            e.preventDefault(); e.stopPropagation();
+            dropzone.classList.add('drag-over');
+        });
+    });
+    ['dragleave', 'drop'].forEach(evt => {
+        dropzone?.addEventListener(evt, (e) => {
+            e.preventDefault(); e.stopPropagation();
+            dropzone.classList.remove('drag-over');
+        });
+    });
+    dropzone?.addEventListener('drop', (e) => {
+        const file = e.dataTransfer.files[0];
+        if (file) handleSkinFile(file);
+    });
+
     uvInput?.addEventListener('change', (e) => {
         const file = e.target.files[0];
-        if (!file) return;
-        if(uvStatus) { uvStatus.textContent = 'Dang kiem tra...'; uvStatus.style.color = '#fff'; }
+        if (file) handleSkinFile(file);
+    });
+
+    function handleSkinFile(file) {
+        if(uvStatus) { uvStatus.textContent = 'Đang kiểm tra...'; uvStatus.style.color = '#fff'; }
         if(uvDownload) uvDownload.style.display = 'none';
+        if(uvPreview) uvPreview.style.display = 'none';
+        
+        if (!file.type.match('image/png') && !file.name.toLowerCase().endsWith('.png')) {
+            if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '❌ File phải là PNG'; }
+            return;
+        }
+        if (file.size > 5 * 1024 * 1024) {
+            if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '❌ File quá lớn (max 5MB)'; }
+            return;
+        }
+        
         const reader = new FileReader();
         reader.onload = (ev) => {
             const arr = new Uint8Array(ev.target.result);
             const isPng = arr.length >= 8 && arr[0] === 0x89 && arr[1] === 0x50 && arr[2] === 0x4E && arr[3] === 0x47;
             if (!isPng) {
-                if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = 'File khong phai PNG'; }
+                if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '❌ File không phải PNG hợp lệ'; }
                 return;
             }
             const img = new Image();
             img.onload = () => {
                 if (img.width !== 2048 || img.height !== 1024) {
-                    if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = `Kich thuoc sai. Yeu cau: 2048x1024. File: ${img.width}x${img.height}`; }
+                    if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = `❌ Kích thước sai. Yêu cầu: 2048×1024. File: ${img.width}×${img.height}`; }
                     return;
                 }
-                if(uvStatus) { uvStatus.style.color = '#00ff99'; uvStatus.innerHTML = 'UV Skin hop le'; }
-                const url = URL.createObjectURL(file);
-                if(uvDownload) { uvDownload.href = url; uvDownload.download = 'bus_final.png'; uvDownload.style.display = 'block'; }
+                if(uvStatus) { uvStatus.style.color = '#34d399'; uvStatus.innerHTML = '✅ UV Skin hợp lệ'; }
+                if(uvPreview && uvPreviewImg) {
+                    uvPreviewImg.src = URL.createObjectURL(file);
+                    uvPreview.style.display = 'block';
+                }
+                if(uvDownload) {
+                    uvDownload.href = URL.createObjectURL(file);
+                    uvDownload.style.display = 'block';
+                }
             };
-            img.onerror = () => { if(uvStatus) { uvStatus.style.color = '#ff4d4d'; uvStatus.innerHTML = 'Loi doc file'; } };
+            img.onerror = () => { if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '❌ Lỗi đọc file'; } };
             img.src = URL.createObjectURL(file);
         };
         reader.readAsArrayBuffer(file);
-    });
+    }
 }
 
 // CHỐNG BẤM NÚT NHIỀU LẦN: bấm đúp "Lái xe thôi" hoặc bấm lúc đang tải sẽ
@@ -593,13 +751,32 @@ async function startGameFromMenu() {
     await new Promise(r => setTimeout(r, 100));
     try {
         ui.setLoading("Ánh sáng...", 0.2);
-        lighting = new LightingSystem({ scene, timeScale: 1, initialMinutes: 390 });
+        // timeScale KHÔNG đặt cứng ở đây. `TravelClock` (dựng ở dưới, ngay
+        // sau khi có roadGraph) sẽ thay nó mỗi tick bằng tốc độ thực, độ dốc,
+        // loại đường, số giao lộ, ùn tắc và thời gian đứng bến. Ở đây chỉ khởi
+        // tạo với giá tru ngang (xe đứng yên -> đồng hồ gần như đứng).
+        lighting = new LightingSystem(renderer, scene, camera, { 
+            timeScale: 0.12, 
+            initialMinutes: 1080,  // 18:00
+            quality: gameSettings.lightingQuality 
+        });
+        // Apply god rays setting
+        if (lighting.atmosphereSystem) {
+            const val = gameSettings.godRays;
+            if (val === 'off') lighting.atmosphereSystem.toggleGodRays(false);
+            else lighting.atmosphereSystem.toggleGodRays(true);
+        }
         lighting.update(0.1);
         await new Promise(r => setTimeout(r, 300));
+        
+        // Apply camera FOV
+        if (camera) { camera.fov = gameSettings.fov; camera.updateProjectionMatrix(); }
         
         ui.setLoading("Đang tải dữ liệu bản đồ (JSON)...", 0.4);
         await new Promise(r => setTimeout(r, 50));
         map = new MapLoader(scene);
+        // Apply render distance
+        map.renderRadius = gameSettings.renderDist;
         const success = await map.loadInitialData();
         if (!success) throw new Error("Không thể tải dữ liệu bản đồ JSON. Vui lòng chạy Python generator trước.");
         ui.setupMinimap(map);
@@ -615,7 +792,6 @@ async function startGameFromMenu() {
         bus.group.position.set(spawn.x, spawn.y, spawn.z);
         bus.group.rotation.y = (spawn.heading || 0) + Math.PI / 2;
         bus.group.name = 'player_bus';
-        // DEBUG HOOK: đo FPS / draw call / instance thật từ console
         // (window.__busvn.renderer.info.render.calls). Không ảnh hưởng logic.
         window.__busvn = {
             THREE,
@@ -639,12 +815,20 @@ async function startGameFromMenu() {
         cameraSystem = new CameraSystem(camera, bus.group);
         cameraSystem.setMode("driver");
         cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
+        cameraSystem.settings.fov = gameSettings.fov;
         await new Promise(r => setTimeout(r, 300));
         
         ui.setLoading("Giao thông & Hành khách...", 0.8);
         await loadNpcSkinList();
         const roadGraph = map.getRoadGraph();
         if (!roadGraph) throw new Error("Road graph chưa sẵn sàng — loadInitialData() lỗi?");
+        // Phase 6: giờ game suy từ lái xe thật. Độ dốc lấy từ `node.y` của
+        // đoạn đường đứng (đã gồm ROAD_LIFT); `getHeight` chỉ dùng khi xe
+        // chạy ngoài đường — lúc đó mới quy về địa hình.
+        travelClock = new TravelClock({
+            roadGraph,
+            getHeight: (x, z) => map.getHeight(x, z)
+        });
         npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: { x: spawn.x, z: spawn.z } });
         trafficManager = createTrafficManager({ scene, roadGraph: roadGraph, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 });
         // GỘP HAI HỆ THỐNG: npc.js trước đây tự spawn 15 xe không AI (bản song
@@ -688,7 +872,22 @@ async function startGameFromMenu() {
 
 function updateWorld(delta) {
     if (!lighting) return;
-    lighting.update(delta);
+    // --- Phase 6: giờ game suy từ lái xe thật ---
+    // TravelClock trả về timeScale (theo tốc độ/độ dốc/loại đường) và
+    // delayMinutes (giao lộ + ùn tắc + dừng bến). Đồng hồ nhận timeScale
+    // qua field sẵn có của LightingSystem nên không phải sửa contract
+    // getGameTime(); delay cộng qua addGameMinutes().
+    if (travelClock && bus?.group) {
+        const r = travelClock.update(delta, {
+            x: bus.group.position.x,
+            z: bus.group.position.z,
+            speedKmh: vehiclePhysics.currentSpeedKmh
+        });
+        lighting.timeScale = r.timeScale;
+        if (r.delayMinutes > 0) lighting.addGameMinutes(r.delayMinutes);
+    }
+    // Pass busGroup for shadow cascade updates
+    lighting.update(delta, bus?.group || null);
     if (bus && bus.setDoor) {
         doorProgress += (doorTarget - doorProgress) * 2.0 * delta;
         bus.setDoor(doorProgress);
@@ -726,7 +925,9 @@ function updateHUD(delta) {
         z: bus.group.position.z,
         heading: bus.group.rotation.y,
         passengerZones: zones,
-        npcZones: npcZones
+        npcZones: npcZones,
+        // số liệu hành trình do TravelClock đo, không phải đồng hồ đếm sẵn
+        trip: travelClock ? travelClock.getStats() : null
     });
 }
 
@@ -750,6 +951,12 @@ function loop() {
             if (steps >= 2) accumulator = 0;
         }
         if (trafficDebug && trafficDebug.enabled) trafficDebug.update(rawDelta);
+        
+        // Render shadows BEFORE main scene render
+        if (lighting && gameState === "playing") {
+            lighting.renderShadows();
+        }
+        
         if (renderer && scene && camera) renderer.render(scene, camera);
         if (gameState === "playing") updateHUD(rawDelta);
     } catch (e) {

@@ -12,6 +12,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         fps: document.getElementById('hud-fps'),
         passengers: document.getElementById('hud-passengers'),
         time: document.getElementById('hud-time'),
+        trip: document.getElementById('hud-trip'),
         x: document.getElementById('hud-x'),
         z: document.getElementById('hud-z'),
         nextDest: document.getElementById('hud-next-dest'),
@@ -58,7 +59,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
     }
 
     // rule 34: minimap dùng CÙNG source of truth với world, và CHỈ vẽ
-    // phần đang nhìn thấy (trước đây quét cả ~5k segment mỗi lần vẽ).
+    // phần đang nhìn thấy .
     function drawMinimap(playerX, playerZ, heading, npcZones = [], passengerZones = []) {
         if (!minimapCtx || !minimapData) return;
         const ctx = minimapCtx;
@@ -149,6 +150,26 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         if (els.fps) els.fps.textContent = Math.round(state.fps || 0);
         if (els.passengers) els.passengers.textContent = `${state.passengers ?? 0}/24`;
         if (els.time) els.time.textContent = formatTime(state.timeMinutes || 0);
+        if (els.trip && state.trip) {
+            const t = state.trip;
+            // độ dốc có dấu: lên (↑) / xuống (↓), làm tròn 0.1%
+            const g = Math.round(t.gradePct * 10) / 10;
+            const grade = Math.abs(g) < 0.1 ? '' : ` · dốc ${g > 0 ? '↑' : '↓'}${Math.abs(g)}%`;
+            // `avgKmh` là km/h THỰC; `gameAvgKmh` là km trên giờ game (nhỏ hơn
+            // nhiều vì đồng hồ game chạy nhanh thực). Ghi nhầm hai cái này ra
+            // "1.1 km/h" khi xe đang chạy 70 km/h.
+            els.trip.textContent =
+                `${t.distanceKm.toFixed(1)} km · TB ${t.avgKmh.toFixed(0)} km/h` +
+                ` · ${t.roadClass.toLowerCase()}${grade}`;
+            els.trip.title =
+                `Đồng hồ game chạy ${t.timeScale.toFixed(2)}x thực\n` +
+                `Quãng đường / giờ game: ${t.gameAvgKmh.toFixed(1)} km\n` +
+                `Thời gian thực đã chạy: ${Math.round(t.elapsedRealS)}s | ` +
+                `giờ game đã trôi: ${t.gameMinutes.toFixed(1)} phút\n` +
+                `Giao lộ đã qua: ${t.junctionsPassed}\n` +
+                `Bến đã ghé: ${t.stationsServed}` +
+                (t.dwellReason ? `\nĐang dừng: ${t.dwellReason}` : '');
+        }
         if (els.x) els.x.textContent = state.x !== undefined ? state.x.toFixed(0) : '0';
         if (els.z) els.z.textContent = state.z !== undefined ? state.z.toFixed(0) : '0';
         if (els.warning) { els.warning.style.display = state.warning ? 'block' : 'none'; if (state.warning) els.warning.innerText = state.warning; }
