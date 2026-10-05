@@ -205,14 +205,14 @@ export class TimeSystem {
         if (hours >= 5 && hours < 6) {
             const t = (hours - 5) / 1; // 0->1
             this._sunIntensity = lerp(0.1, 0.8, t);
-            this._ambientIntensity = lerp(0.15, 0.4, t);
+            this._ambientIntensity = lerp(0.2, 0.6, t);  // tăng ambient
             this._moonIntensity = lerp(0.15, 0, t);
             this._sunColor.setHSL(lerp(0.02, 0.08, t), lerp(0.7, 0.15, t), lerp(0.5, 0.9, t));
         }
         // Sáng: 6-17h
         else if (hours >= 6 && hours < 17) {
             this._sunIntensity = 1.0;
-            this._ambientIntensity = 0.5;
+            this._ambientIntensity = 0.7;  // tăng từ 0.5 -> 0.7
             this._moonIntensity = 0;
             this._sunColor.setHSL(0.08, 0.1, 0.98); // vàng nhẹ trắng
         }
@@ -220,14 +220,14 @@ export class TimeSystem {
         else if (hours >= 17 && hours < 18) {
             const t = (hours - 17) / 1; // 0->1
             this._sunIntensity = lerp(0.8, 0.05, t);
-            this._ambientIntensity = lerp(0.4, 0.1, t);
+            this._ambientIntensity = lerp(0.5, 0.15, t);  // tăng ambient
             this._moonIntensity = lerp(0, 0.15, t);
             this._sunColor.setHSL(lerp(0.08, 0.02, t), lerp(0.1, 0.7, t), lerp(0.98, 0.5, t));
         }
         // Tối đen: 18-5h
         else {
             this._sunIntensity = 0;
-            this._ambientIntensity = 0.06;
+            this._ambientIntensity = 0.08;  // tăng từ 0.06 -> 0.08
             const moonBase = 0.05 + 0.25 * Math.max(0, Math.sin(this._moonPhaseAngle));
             this._moonIntensity = moonBase;
             this._sunColor.setHex(0xFF3300);

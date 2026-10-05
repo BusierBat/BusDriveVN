@@ -85,6 +85,9 @@ export class ShadowSystem {
         this.shadowCameras = [];
         this.shadowMaps = [];
 
+        // Cache shadow materials per cascade to avoid creating new ones every frame
+        this._shadowMaterials = [];
+
         for (let i = 0; i < this.cascadeCount; i++) {
             // Tạo shadow map cho mỗi cascade
             const shadowMap = new THREE.WebGLRenderTarget(res, res, {
@@ -102,6 +105,15 @@ export class ShadowSystem {
             // Camera cho cascade này
             const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
             this.shadowCameras.push(cam);
+
+            // Pre-create shadow material for this cascade
+            const shadowMat = new THREE.MeshDepthMaterial({
+                depthPacking: THREE.RGBADepthPacking,
+                map: null,
+                alphaTest: 0.5,
+            });
+            shadowMat.userData.isShadowMaterial = true;
+            this._shadowMaterials.push(shadowMat);
 
             this.cascades.push({
                 map: shadowMap,
@@ -318,9 +330,9 @@ export class ShadowSystem {
             renderer.clearDepth();
 
             // Render scene từ góc nhìn light
-            // Override material cho shadow pass
+            // Use cached shadow material
             const prevOverride = scene.overrideMaterial;
-            scene.overrideMaterial = this._createShadowMaterial(cam.near, cam.far);
+            scene.overrideMaterial = this._shadowMaterials[i];
 
             renderer.render(scene, cam);
 
@@ -334,7 +346,8 @@ export class ShadowSystem {
     }
 
     _createShadowMaterial(near, far) {
-        // Material depth-only cho shadow pass
+        // Material depth-only cho shadow pass (cached in _initCascades)
+        // This is kept for backward compatibility
         const material = new THREE.MeshDepthMaterial({
             depthPacking: THREE.RGBADepthPacking,
             map: null,

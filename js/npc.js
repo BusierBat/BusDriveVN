@@ -341,13 +341,27 @@ function setBaseY(npc) {
 }
 
 export class BusStationManager {
+    // Trần xe tĩnh spawn cùng lúc. Xem giải thích tại chỗ gán
+    // `maxStaticBuses` trong constructor.
+    static MAX_STATIC_BUSES = 18;
+
     constructor(scene, map, parkingSlots, playerSpawnPos) {
         this.scene = scene; this.map = map; this.parkingSlots = parkingSlots || [];
         this.playerSpawnPos = playerSpawnPos || null;
         this.stationBuses = [];
         this.busGroup = new THREE.Group();
         this.scene.add(this.busGroup);
-        this.maxStaticBuses = 12;
+        // Số xe tĩnh PHẢI theo dữ liệu generator (baySlots), không gõ cứng:
+        // `nam_tuy_hoa` có 15 bãi, `mien_dong_moi` có 50 (đo trong
+        // stations.json). Trước đây gõ cứng 12 nên 15 bãi ở Nam Tuy Hòa
+        // không bao giờ đầy, và bến Miền Đông Mới chỉ dùng 12/50 bãi.
+        //
+        // Trần vẫn phải có: mỗi xe là ~6 mesh, draw call đã 1396 ở
+        // renderRadius=1 trên N5000/4GB — 50 xe tĩnh cùng lúc sẽ giết máy.
+        // Đây là TRẦN HIỆN THỰC, không phải con số bịa: muốn nâng thì phải
+        // đo FPS trước, không tăng theo cảm tính.
+        this.maxStaticBuses = Math.min(this.parkingSlots.length || 0,
+                                       BusStationManager.MAX_STATIC_BUSES);
         this.spawnTimer = 0;
         this.spawnQueue = [];
         // ref TrafficManager — dùng để hỏi bãi CHUNG (isBayFree/markBayBusy).

@@ -15,12 +15,15 @@
 // processStationQueue, update, getActiveVehicles, aiVehicles, maxVehicles.
 // =====================================================================
 import { createNpcBus, pickNpcSkinPath, pickLedColor, loadNpcSkinList } from "../bus.js";
-import { TrafficAI } from "./TrafficAI.js";
+import { TrafficAI, AI_STATE } from "./TrafficAI.js";
 import { getGraphicsSettings } from "./GraphicsSettings.js";
 import { createSeededRandom, clamp } from "../utils.js";
 
 const BUS_LEN_APPROX = 12.8;   // xe NPC dùng chung mesh bus (bus.js BUS_DIMENSIONS)
 const BUS_W_APPROX = 2.53;
+
+// Lấy LOOKAHEAD từ TrafficAI (tránh duplicate constant)
+const LOOKAHEAD = 90;
 
 // Phân bố nhân cách (VN: phần lớn bình thường, thỉnh thoảng có ông thần)
 const PERSONALITY_TABLE = [
@@ -41,6 +44,12 @@ export class TrafficManager {
         this.aiVehicles = [];
         this.pool = [];
         this.activeCount = 0;
+        // XE TĨNH (xe đỗ trong bãi bến, `isStatic`) KHÔNG được tính vào ngân
+        // sách "xe đang chạy". Trước đây `activeCount` gộp cả hai, trong khi
+        // spawn gate dùng nó -> 223 xe đỗ bến làm `activeCount=224` vượt
+        // `maxActive=3` => slider "Mật độ NPC" chết, xe cộ không còn chạy.
+        // Số đếm tách riêng để gate chỉ nhìn số xe CHẠY.
+        this.staticCount = 0;
         this.seed = Date.now();
         this.random = createSeededRandom(this.seed);
         this.graphics = getGraphicsSettings();
@@ -75,6 +84,12 @@ export class TrafficManager {
         this._prevPlayer = { x: 0, z: 0, valid: false };
 
         this._bySeg = new Map();      // segId -> AI[] (cập nhật mỗi frame)
+        
+        // SPATIAL GRID cho tìm xe gần (O(1) query thay vì O(N))
+        // Dùng cho TrafficAI._scan để chỉ quét xe trong bán kính LOOKAHEAD
+        this._vehicleGrid = new Map();
+        this._vehicleGridCellSize = 100; // 100m cells
+        
         this._nextAiId = 1;
         this._onSettingsChanged();
     }
@@ -209,7 +224,7 @@ export class TrafficManager {
     }
 
     // Kiểm tra khoảng trống tại điểm spawn: cùng đoạn theo TRỤC ĐƯỜNG
-    // (chồng đầu-đuôi) + Euclidean với mọi xe quanh.
+    // (chồng đầu-đuôi) + Euclidean với mọi xe quanh (dùng spatial grid O(1)).
     _spawnSpotFree(segId, dir, progress, x, z) {
         const sameSeg = this._bySeg.get(segId);
         if (sameSeg && sameSeg.length) {
@@ -222,8 +237,10 @@ export class TrafficManager {
                 if (Math.abs(o.progress - progress) * len < BUS_LEN_APPROX * 1.7) return false;
             }
         }
-        for (let i = 0; i < this.aiVehicles.length; i++) {
-            const o = this.aiVehicles[i];
+        // Dùng spatial grid để tìm xe gần (O(1) thay vì O(N))
+        const nearby = this._getNearbyVehicles(x, z, 20);
+        for (let i = 0; i < nearby.length; i++) {
+            const o = nearby[i];
             const d = Math.hypot(o.collider.x - x, o.collider.z - z);
             if (d < 18) return false;
         }
@@ -247,7 +264,9 @@ export class TrafficManager {
     isBayFree(x, z, r = 7) {
         const busy = this._bayBusy || [];
         for (const b of busy) if (Math.hypot(b.x - x, b.z - z) < r) return false;
-        for (const v of this.aiVehicles) {
+        // Dùng spatial grid O(1)
+        const nearby = this._getNearbyVehicles(x, z, r + 5);
+        for (const v of nearby) {
             if (Math.hypot(v.collider.x - x, v.collider.z - z) < r) return false;
         }
         return true;
@@ -305,6 +324,7 @@ export class TrafficManager {
 
         this.aiVehicles.push(ai);
         this.activeCount++;
+        this.staticCount++;          // xe dap ben: khong tru ngan sach xe chay
     }
 
     // ---------------------------------------------------------------- player
@@ -337,6 +357,9 @@ export class TrafficManager {
         this.processStationQueue(deltaTime);
 
         const maxActive = Math.max(0, Math.min(this.graphics.settings.maxActiveTraffic || 10, this.maxVehicles || 0));
+
+        // SPATIAL GRID: cập nhật vị trí xe cho query O(1) trong _scan
+        this._updateVehicleGrid();
 
         // danh sách participant (dùng lại mảng, không cấp phát mỗi frame)
         const parts = this._participants;
@@ -375,7 +398,11 @@ export class TrafficManager {
             else { if (dist < 300) next = 'MID'; }
             if (next !== lvl) ai.setAILevel(next);
 
-            ai.update(dt, playerPos, parts);
+            // Lấy chỉ xe gần cho _scan (tối ưu O(1) thay vì O(N))
+            // Thêm playerActor để AI nhận diện xe người chơi
+            const nearbyVehicles = this._getNearbyVehicles(ai.collider.x, ai.collider.z, LOOKAHEAD);
+            nearbyVehicles.push(this.playerActor);
+            ai.update(dt, playerPos, nearbyVehicles);
 
             if (window.collisionSystem && ai.colId) {
                 window.collisionSystem.update(ai.colId, ai.collider.x, ai.collider.z, ai.collider.y);
@@ -384,12 +411,19 @@ export class TrafficManager {
         }
 
         // --- spawn từng bước (tối đa maxSpawnPerFrame/lần, không kẹt frame) ---
+        // CỬA SPAWN PHẢI DÙNG SỐ XE ĐANG CHẠY, không dùng `activeCount` (đang
+        // gộp cả xe đỗ trong bến). Xe `isStatic` không bao giờ despawn (vòng
+        // lặp `if (ai.isStatic) continue`), nên khi chúng vượt ngưỡng thì
+        // `activeCount` luôn >= maxActive -> cửa đóng vĩnh viễn, slider "Mật
+        // độ NPC" mất hiệu lực và xe không còn chạy trên đường.
+        let movingCount = this.activeCount - this.staticCount;
         this.spawnTimer += dt;
-        if (this.activeCount < maxActive && this.spawnTimer >= this.spawnInterval) {
+        if (movingCount < maxActive && this.spawnTimer >= this.spawnInterval) {
             this.spawnTimer = 0;
             for (let i = 0; i < this.maxSpawnPerFrame; i++) {
-                if (this.activeCount >= maxActive) break;
+                if (movingCount >= maxActive) break;
                 if (!this._spawnVehicle()) break;      // không có spot hợp lệ -> thôi
+                movingCount++;                          // _spawnVehicle chỉ sinh xe chạy
             }
         }
     }
@@ -403,6 +437,7 @@ export class TrafficManager {
         }
         this.aiVehicles.splice(index, 1);
         this.activeCount--;
+        if (ai.isStatic) this.staticCount--;
     }
 
     // Va chạm còn sót (do spawn sai / xe tĩnh): CHỈ giảm tốc + xích lệch làn
@@ -474,7 +509,7 @@ export class TrafficManager {
         return {
             active: this.activeCount,
             max: Math.max(0, Math.min(this.graphics.settings.maxActiveTraffic || 10, this.maxVehicles || 0)),
-            moving: this.activeCount - this.aiVehicles.filter(a => a.isStatic).length,
+            moving: this.activeCount - this.staticCount,
             spawnDistance: this.spawnDistance,
             despawnDistance: this.despawnDistance,
             pooled: this.pool.length,
@@ -501,7 +536,42 @@ export class TrafficManager {
         this.aiVehicles = [];
         this.pool = [];
         this._bySeg.clear();
+        this._vehicleGrid.clear();
         this.activeCount = 0;
+        this.staticCount = 0;
+    }
+
+    // SPATIAL GRID: cập nhật vị trí xe vào grid 100m
+    _updateVehicleGrid() {
+        this._vehicleGrid.clear();
+        const cellSize = this._vehicleGridCellSize;
+        for (let i = 0; i < this.aiVehicles.length; i++) {
+            const ai = this.aiVehicles[i];
+            if (!ai.active || !ai.collider) continue;
+            const cx = Math.floor(ai.collider.x / cellSize);
+            const cz = Math.floor(ai.collider.z / cellSize);
+            const key = cx + ',' + cz;
+            let arr = this._vehicleGrid.get(key);
+            if (!arr) { arr = []; this._vehicleGrid.set(key, arr); }
+            arr.push(ai);
+        }
+    }
+
+    // Lấy xe trong bán kính (O(1) query qua grid)
+    _getNearbyVehicles(x, z, radius) {
+        const cellSize = this._vehicleGridCellSize;
+        const rCells = Math.ceil(radius / cellSize);
+        const cx0 = Math.floor(x / cellSize);
+        const cz0 = Math.floor(z / cellSize);
+        const out = [];
+        for (let dx = -rCells; dx <= rCells; dx++) {
+            for (let dz = -rCells; dz <= rCells; dz++) {
+                const key = (cx0 + dx) + ',' + (cz0 + dz);
+                const arr = this._vehicleGrid.get(key);
+                if (arr) out.push(...arr);
+            }
+        }
+        return out;
     }
 }
 

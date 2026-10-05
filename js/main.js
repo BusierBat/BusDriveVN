@@ -80,8 +80,14 @@ const LEGACY_BY_KEYCODE = new Map();
 const keysPressed = new Map();   // code -> timestamp keydown gần nhất (chống phím kẹt)
 
 const KEY_HOLD_TIMEOUT_MS = 5000;
-// Chống phím kẹt khi IME nuốt keyup. 2000ms an toàn cho cả Windows repeat chậm nhất
+// Chống phím kẹt khi IME nuốt keyup. 5000ms an toàn cho cả Windows repeat chậm nhất
 // (delay <= 1s + interval <= 0.5s) nên phím đang giữ thật không bị nhả nhầm.
+//
+// PHÍM LÁI A/D dùng timeout NÀY nhưng với quy tắc refresh khác: chỉ keydown
+// CỦA CHÚNG mới làm mới timestamp (ga/thắng KHÔNG được refresh giùm). Nhờ vậy
+// phím lái "ma" luôn tự hết hạn trong 5s kể từ lần bấm cuối, kể cả người chơi
+// đang giữ ga -> xe không thể tự quẹo vĩnh viễn vì một keyup bị IME nuốt.
+// Xem vòng lặp refresh trong initInput().
 
 function buildInputKeyMaps() {
     // a..z / A..Z -> KeyA..KeyZ
@@ -234,35 +240,43 @@ function updateVehiclePhysics(dt) {
     const isAccel = keysPressed.has("KeyW") || mobileInput.accel > 0;
     const isBrake = keysPressed.has("KeyS") || mobileInput.brake > 0;
     const isShift = keysPressed.has("ShiftLeft") || keysPressed.has("ShiftRight");
+    const isAlt = keysPressed.has("AltLeft") || keysPressed.has("AltRight");
     
-    if (isShift && isAccel) {
-        // Shift+W: Tăng tốc từ từ như thực tế (giảm acceleration xuống 50%)
+    if (keysPressed.has("Space")) {
+        // Space: thắng gấp — dừng ngay lập tức
+        phys.speed = 0;
+        phys.isReversing = false;
+    } else if (isShift && isAccel) {
+        // Shift+W: LUÔN tăng tốc từ từ đến giới hạn 200 km/h, không bao giờ tụt
         phys.speed += phys.acceleration * 0.5 * dt;
         phys.speed = Math.min(phys.speed, phys.maxSpeed);
         phys.isReversing = false;
-    } else if (isAccel && !isShift) {
-        // W: Giữ tốc độ (không tăng tốc)
-        // Nếu đang lùi, thì thắng dần về 0
-        if (phys.speed < 0) {
-            phys.speed += phys.braking * dt;
-            if (phys.speed > 0) phys.speed = 0;
-        }
-        // Nếu đang đi hoặc đứng, giữ nguyên speed
     } else if (isBrake) {
-        // S: Giảm tốc từ từ và lùi khi về 0
+        // S: giảm tốc từ từ, khi về 0 thì lùi
         if (phys.speed > 0) {
-            phys.speed -= phys.braking * dt;
-            if (phys.speed < 0) phys.speed = 0;
+            phys.speed = Math.max(phys.speed - phys.braking * dt, 0);
         } else {
             phys.isReversing = true;
-            phys.speed -= phys.acceleration * dt;
-            phys.speed = Math.max(phys.speed, phys.maxReverseSpeed);
+            phys.speed = Math.max(phys.speed - phys.acceleration * dt, phys.maxReverseSpeed);
         }
-    } else if (keysPressed.has("Space")) {
-        phys.speed = 0;
+    } else if (isAlt) {
+        // Alt: thắng (không gấp) — giảm từ từ, dừng tại 0, KHÔNG lùi
+        phys.speed = phys.speed > 0
+            ? Math.max(phys.speed - phys.braking * dt, 0)
+            : Math.min(phys.speed + phys.braking * dt, 0);
+        if (phys.speed === 0) phys.isReversing = false;
+    } else if (isAccel) {
+        // W: giữ nguyên tốc độ — không tăng không giảm
+        if (phys.speed < 0) {
+            // Đang lùi mà bấm W → thắng dần về 0 rồi giữ
+            phys.speed = Math.min(phys.speed + phys.braking * dt, 0);
+        }
     } else {
-        // Thả W: Giảm tốc từ từ và dừng hẳn khi 0
-        phys.speed = phys.speed > 0 ? Math.max(phys.speed - phys.drag * dt, 0) : Math.min(phys.speed + phys.drag * dt, 0);
+        // Thả W / Shift+W: giảm tốc từ từ (drag), dừng hẳn khi về 0
+        phys.speed = phys.speed > 0
+            ? Math.max(phys.speed - phys.drag * dt, 0)
+            : Math.min(phys.speed + phys.drag * dt, 0);
+        if (phys.speed === 0) phys.isReversing = false;
     }
     
     phys.currentSpeedKmh = phys.speed / SPEED_CONVERSION;
@@ -321,7 +335,7 @@ function updateVehiclePhysics(dt) {
     bus.group.position.y = ny;
     
     // Visual Pitch/Roll
-    const pitchAngle = isBrake ? -0.04 : (isAccel ? 0.02 : 0);
+    const pitchAngle = (isBrake || isAlt) ? -0.04 : (isAccel ? 0.02 : 0);
     const targetRoll = -steerAngle * 0.03 * (speedKmh / 60);
     bus.group.rotation.x = THREE.MathUtils.lerp(bus.group.rotation.x, pitchAngle, dt * 4);
     bus.group.rotation.z = THREE.MathUtils.lerp(bus.group.rotation.z, targetRoll, dt * 3);
@@ -370,8 +384,42 @@ function initInput() {
         if (gameState !== "playing" || paused) return;
         if (!code) return;   // khong resolve duoc -> bo qua, khong bia phim ao
 
-        keysPressed.set(code, performance.now());
-        if (!composing && ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(code)) e.preventDefault();
+        const _now = performance.now();
+        keysPressed.set(code, _now);
+        // Windows chỉ auto-repeat phím được nhấn SAU CÙNG. Giữ Shift+W rồi bấm A/D
+        // để rẽ -> Shift+W ngừng repeat -> pruneStaleKeys xóa -> xe giảm tốc oan.
+        // Fix: refresh timestamp TẤT CẢ phím đang giữ khi có keydown bất kỳ.
+        //
+        // TRỪ A/D (xem KEY_HOLD_TIMEOUT_MS): phím lái chỉ sống bằng keydown CỦA CHÚNG.
+        // Nếu ga/thắng refresh giùm thì khi keyup của A bị IME/jank nuốt (event
+        // không resolve được -> không xóa nổi), phím lái ma đó sẽ không bao giờ hết
+        // hạn trong lúc giữ ga -> xe tự quẹo trái, mà A vẫn đứng đầu if/else nên
+        // bấm D vô tác dụng. Vẫn refresh W/S/Shift/Alt/Space để không tái mở bug cũ
+        // "giữ Shift+W rồi lái là xe giảm tốc".
+        for (const k of keysPressed.keys()) {
+            if (k === "KeyA" || k === "KeyD") continue;
+            keysPressed.set(k, _now);
+        }
+        // LÁI: phím vừa bấm giành quyền, xóa phím đối xứng -> A và D không bao giờ
+        // cùng sống trong map. Phím lái ma bị xóa NGAY khi người chơi bấm hướng còn
+        // lại, nên lỗi "bấm lái phải không có tác dụng" không thể xảy ra — đây là
+        // phân quyền input (last-press wins), không phải khóa hay ép steering = 0.
+        if (code === "KeyA") keysPressed.delete("KeyD");
+        else if (code === "KeyD") keysPressed.delete("KeyA");
+        // Shift/Alt không auto-repeat khi phím khác được nhấn -> sync từ state vật lý.
+        if (!composing) {
+            if (e.shiftKey) {
+                if (!keysPressed.has("ShiftLeft") && !keysPressed.has("ShiftRight")) keysPressed.set("ShiftLeft", _now);
+            } else if (!code.startsWith("Shift")) {
+                keysPressed.delete("ShiftLeft"); keysPressed.delete("ShiftRight");
+            }
+            if (e.altKey) {
+                if (!keysPressed.has("AltLeft") && !keysPressed.has("AltRight")) keysPressed.set("AltLeft", _now);
+            } else if (!code.startsWith("Alt")) {
+                keysPressed.delete("AltLeft"); keysPressed.delete("AltRight");
+            }
+        }
+        if (!composing && ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "AltLeft", "AltRight"].includes(code)) e.preventDefault();
         if (e.repeat) return;   // phim tac vu chi xu ly khi VUA bam, khong khi nhan giu
 
         if (code === "KeyF" && performance.now() - lastFPressTime > 150 && bus) {
@@ -411,7 +459,8 @@ function initInput() {
     window.addEventListener("keyup", (e) => {
         const code = resolveEventCode(e);
         if (code) keysPressed.delete(code);
-        // khong resolve duoc -> pruneStaleKeys se don sau toi da 2s
+        // khong resolve duoc -> pruneStaleKeys se don sau toi da 5s (va truoc do,
+        // phim lai ma da bi xoa ngay boi phim lai doi xung khi nguoi choi bam no)
     });
 
     window.addEventListener("blur", clearPressedKeys);

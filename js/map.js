@@ -48,15 +48,15 @@ const LOAD_RADIUS = 6;
 const RENDER_RADIUS_MAX = 5;   // <= fog far (1450m)
 const RENDER_RADIUS_MIN = 3;
 const UNLOAD_RADIUS = 9;
-const MAX_LOAD_PER_TICK = 4;
-const STREAM_INTERVAL = 0.2;   // throttle: không update 60 lần/s
+const MAX_LOAD_PER_TICK = 2;   // Giảm từ 4 -> 2 để spread load, tránh frame spike
+const STREAM_INTERVAL = 0.25;  // Tăng từ 0.2 -> 0.25s (4Hz) giảm CPU overhead
 const TERRAIN_SEG = 32;        // 32x32 quad / chunk terrain (vong gan)
 const TERRAIN_SEG_LOD = 16;    // vong xa (bi fog che)
 const ACC_CELL = 4096;         // cell của spatial index (mirror Python)
 
 // ---- lớp Y (mirror Python) ----
 const ROAD_LIFT = 0.12;
-const YARD_LIFT = 0.10;
+const YARD_LIFT = 0.02;   // 2 cm — vừa đủ tránh z-fighting, khớp slot/terrain (trước 0.10 = 10 cm => sân lơ lửng, cỏ lọt)
 const BUS_AXLE = 0.5;
 // BỀ DÀY THÂN ĐƯỜNG. Đường là KHỐI, không phải texture: mặt trên +
 // váy bên xuống. 0.55m = bề dày nền đường sau vỉa.
@@ -138,7 +138,68 @@ class World {
         this._uzAmbigExported = Array.isArray(t.uzAmbig) ? new Set(t.uzAmbig) : null;
         if (typeof t.roadLift === "number") this.roadLift = t.roadLift;
         if (typeof t.yardLift === "number") this.yardLift = t.yardLift;
+        // SÂN BẾN — dằn cao độ địa hình về `st.y` (xem setYards/_yardBlend).
+        this._yards = [];
         this._buildAccel();
+    }
+
+    // ----------------------------------------------------------------------
+    // DẰN SÂN BẾN — sửa gốc "nửa sân bê tông nửa cỏ"
+    //
+    // VÌ SAO: sân bến là MỘT MẶT PHẲNG phẳng tại `st.y + yardLift`, còn
+    // địa hình quanh nó thì không ai san. Đo runtime 03/10 trên 18 bến:
+    //   dau_giay       đất cao hơn mặt sân tới  7.10 m -> CỎ MỌC XUYÊN BÊ TÔNG
+    //   mien_dong_moi  đất cao hơn mặt sân       0.78 m
+    //   dong_hoa 0.27 / phan_thiet 0.09 m         -> lấm tấm
+    //   song_cau       sân NỔI 13.09 m TRÊN KHÔNG TRUNG (đất thấp hơn sân 13m)
+    // `validate()` của generator chỉ kiểm NODE bến nằm trên mặt đất, KHÔNG
+    // kiểm cả mảng 100–340 m của sân ⇒ lỗi này không bao giờ được báo.
+    //
+    // KHÔNG sửa bằng cách cho sân bám địa hình: bến, bay, vạch ranh, nhà ga
+    // đều đặt theo `yardLift` PHẲNG, sân bám địa hình sẽ làm chúng lệch hàng
+    // chục mét. Sửa đúng chỗ là DẰN ĐỊA HÌNH quanh bến về đúng cao độ sân.
+    //
+    // Bề rộng dằn = hình chữ nhật sân + 45m vát dốc ra ngoài (bến thật có
+    // sân bằng phẳng rồi vát mái ra đường nội bộ, không bị bậc thấp thụp).
+    setYards(stations) {
+        const out = [];
+        for (const s of (stations || [])) {
+            if (s.type !== "BUS_STATION" && s.type !== "MAJOR_BUS_TERMINAL") continue;
+            const W = s.w || 180, D = s.d || 130;
+            const hx = D / 2, hz = W / 2;
+            const blend = 45;
+            const rot = s.rot || 0;
+            out.push({
+                cx: s.x, cz: s.z, y: s.y,
+                ca: Math.cos(rot), sa: Math.sin(rot),
+                hx: hx, hz: hz, blend: blend,
+                r: Math.hypot(hx, hz) + blend
+            });
+        }
+        this._yards = out;
+        return out.length;
+    }
+
+    // trả { t, y } nếu (x,z) nằm trong vùng dằn của một bến, ngược lại null.
+    // `t` = 1 trong sân, giảm dần về 0 ở mép vát.
+    _yardBlend(x, z) {
+        const ys = this._yards;
+        if (!ys || !ys.length) return null;
+        for (let i = 0; i < ys.length; i++) {
+            const g = ys[i];
+            const dx = x - g.cx, dz = z - g.cz;
+            // chặn sớm bằng hình tròn bao quanh (r = hx,hz + blend)
+            if (dx > g.r || dx < -g.r || dz > g.r || dz < -g.r) continue;
+            // nghịch đảo đúng ma trận `g.rotation.y` của group bến:
+            //   x' = lx·cos + lz·sin ;  z' = −lx·sin + lz·cos
+            const lx = dx * g.ca - dz * g.sa;
+            const lz = dx * g.sa + dz * g.ca;
+            const out = Math.max(Math.abs(lx) - g.hx, Math.abs(lz) - g.hz);
+            if (out >= g.blend) continue;
+            const t = out <= 0 ? 1 : 1 - smoothstep(0, g.blend, out);
+            return { t: t, y: g.y };
+        }
+        return null;
     }
 
     _buildAccel() {
@@ -470,12 +531,12 @@ class World {
     // Cùng công thức, trả kèm thông tin dùng cho màu terrain (1 lần quét
     // corridor/coast thay vì 2 — quan trọng trên máy yếu).
     getElevationInfo(x, z) {
+        // dằn sân bến phải tính TRƯỚC mọi nhánh return sớm bên dưới
+        const yf = this._yardBlend(x, z);
         const dCoast = this.distToCoast(x, z);
         if (dCoast <= 0) {
-            return {
-                h: this.seaFloor + 4.0 * fbm(x, z) * 0.5 + Math.max(-4.0, dCoast * 0.05),
-                d: dCoast, p: null
-            };
+            const hb = this.seaFloor + 4.0 * fbm(x, z) * 0.5 + Math.max(-4.0, dCoast * 0.05);
+            return { h: yf ? lerp(hb, yf.y, yf.t) : hb, d: dCoast, p: null };
         }
         const p = this.regionParamsWithCoast(x, z, dCoast);
 
@@ -506,9 +567,12 @@ class World {
         const wf = this.waterFactor(x, z);
         if (wf > 0) {
             const bed = this.seaLevel - 0.2 - 1.6 * wf;
-            return { h: lerp(h, bed, clamp(wf * 1.35, 0, 1)), d: dCoast, p };
+            const hw = lerp(h, bed, clamp(wf * 1.35, 0, 1));
+            // dằn bến ĐÈ LÊN cả lòng sông/hồ: bến thật đắp đất lên chứ không
+            // bị sông đào lại. Không có dòng này `song_cau` vẫn chìm 13m.
+            return { h: yf ? lerp(hw, yf.y, yf.t) : hw, d: dCoast, p };
         }
-        return { h, d: dCoast, p };
+        return { h: yf ? lerp(h, yf.y, yf.t) : h, d: dCoast, p };
     }
 }
 
@@ -528,7 +592,7 @@ function makeMaterials() {
         laneLine: new THREE.MeshLambertMaterial({ color: 0xf0ead0, side: roadSide }),
         // sân bến nằm trên sườn nên có cả mặt dưới; `FrontSide` làm mất
     // mặt khi nhìn từ dưới (và làm lộ tam giac nguoc chieu, P58).
-    concrete: new THREE.MeshLambertMaterial({ color: 0x8a8a86, side: THREE.DoubleSide }),
+    concrete: new THREE.MeshLambertMaterial({ color: 0x8a8a86, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -8.0, polygonOffsetUnits: -16.0 }),
         dirt: new THREE.MeshLambertMaterial({ color: 0x6b5540 }),
         tunnel: new THREE.MeshStandardMaterial({ color: 0x1a1a1c, roughness: 0.95, side: roadSide }),
         tunnelShell: new THREE.MeshStandardMaterial({ color: 0x2a2a2e, roughness: 0.98, side: THREE.BackSide }),
@@ -586,7 +650,8 @@ function makeMaterials() {
 // Đổi thứ tự ở một bên là đổi toàn bộ hình nhà ở bên kia.
 const H_WING = 1, H_ROLLER = 2, H_SLIDING = 4, H_GATE = 8, H_BALCONY = 16,
     H_AWNING = 32, H_PORCH = 64, H_OVERHANG = 128, H_STILT = 256,
-    H_SETBACK2 = 512, H_STAIRWIN = 1024, H_PARAPET = 2048, H_SHEDJOIN = 4096;
+    H_SETBACK2 = 512, H_STAIRWIN = 1024, H_PARAPET = 2048, H_SHEDJOIN = 4096,
+    H_VONG = 8192;   // võng phơi lưới ven QL1 — phải khớp HOUSE_DETAIL generator
 const H_STILT_LIFT = 0.95;   // khoảng không dưới nhà sàn (m)
 const H_FLOOR_H = 3.15;      // chiều cao 1 tầng (m) — phải khớp FLOOR_H
 const H_SHED_SLOPE = 0.30;   // rad, mái đơn (mái tôn)
@@ -996,6 +1061,13 @@ export class MapLoader {
             this.world = new World(worldRes);
             this.roadGraph = new RuntimeRoadGraph({ roads: roadsRes, routes: routesRes, stations: stationsRes });
             this.stationsData = Array.isArray(stationsRes) ? stationsRes : [];
+            // DẰN SÂN BẾN phải có TRƯỚC khi dựng bến (dòng dưới) và trước mọi
+            // lần hỏi cao độ của terrain — nếu thiếu, sân phẳng nằm trên đất
+            // dốc nên cỏ mọc xuyên bê tông.
+            this.world.setYards(this.stationsData);
+            // GHI ĐÈ yardLift = 0.02 (2 cm) thay vì 0.10 từ world.json:
+            // 10 cm làm sân lơ lửng 11 cm trên slot/terrain -> "layer cỏ" ảo.
+            this.world.yardLift = 0.02;
             this.spawn = worldRes.spawn || null;
             // SECTOR: 1 file chua SECTOR_CHUNKS^2 chunk (1024m) -> giam so HTTP
             // request tu ~14k file chunk xuong ~900 file sector.
@@ -1083,7 +1155,14 @@ export class MapLoader {
             case "INTER_VILLAGE": return "MINOR";
             case "RURAL_LOCAL":
             case "SERVICE":
-            case "AGRICULTURAL": return "DIRT";
+            case "AGRICULTURAL":
+            // `LOCAL` (đường nội bộ đô thị/khu dân cư) và `ALLEY` (hẻm) có
+            // thật trong ROAD_CLASS generator nhưng THIẾU case ở đây => rơi
+            // vào `default` bên dưới tức "MINOR"/roadMinor. Đo trên data export:
+            // LOCAL 414 đoạn + ALLEY 130 đoạn = 544/10942 (5.0%) bị vẽ sai vật
+            // liệu, và hẻm ALLEY lại ra màu đường lớn.
+            case "LOCAL":
+            case "ALLEY": return "DIRT";
             case "RESIDENTIAL": return "MINOR";
             default: return "MINOR";
         }
@@ -1109,6 +1188,10 @@ export class MapLoader {
             case "RURAL_LOCAL": return this._mats.roadLocal;
             case "SERVICE": return this._mats.roadLocal;
             case "AGRICULTURAL": return this._mats.roadLocal;
+            // xem ghi chú LOCAL/ALLEY trong `_roadBucket` — thiếu case ở đây
+            // khiến 544 đoạn rơi về roadMinor thay vì roadLocal.
+            case "LOCAL": return this._mats.roadLocal;
+            case "ALLEY": return this._mats.roadLocal;
             default: return this._mats.roadMinor;
         }
     }
@@ -1847,6 +1930,7 @@ export class MapLoader {
         if (!sids || !sids.length) return null;
         const N = 33, step = CHUNK_SIZE / (N - 1);
         const x0 = cx * CHUNK_SIZE;
+        const z0 = cz * CHUNK_SIZE;
         const Y = new Float32Array(N * N).fill(NaN);
         const D = new Float32Array(N * N).fill(Infinity);
         const HW = new Float32Array(N * N);
@@ -1864,8 +1948,8 @@ export class MapLoader {
             if (l2 <= 0) continue;
             const i0 = clamp(Math.floor((Math.min(p1.x, p2.x) - reach - x0) / step), 0, N - 1);
             const i1 = clamp(Math.ceil((Math.max(p1.x, p2.x) + reach - x0) / step), 0, N - 1);
-            const j0 = clamp(Math.floor((Math.min(p1.z, p2.z) - reach - x0) / step), 0, N - 1);
-            const j1 = clamp(Math.ceil((Math.max(p1.z, p2.z) + reach - x0) / step), 0, N - 1);
+            const j0 = clamp(Math.floor((Math.min(p1.z, p2.z) - reach - z0) / step), 0, N - 1);
+            const j1 = clamp(Math.ceil((Math.max(p1.z, p2.z) + reach - z0) / step), 0, N - 1);
             const y1 = typeof p1.y === "number" ? p1.y : this.world.getElevation(p1.x, p1.z);
             const y2 = typeof p2.y === "number" ? p2.y : this.world.getElevation(p2.x, p2.z);
             // Đoạn lệch terrain > 12m là cầu vượt/đường trên cao (node.y do
@@ -1873,7 +1957,7 @@ export class MapLoader {
             if (Math.abs(y1 - this.world.getElevation(p1.x, p1.z)) > 12.0) continue;
             if (Math.abs(y2 - this.world.getElevation(p2.x, p2.z)) > 12.0) continue;
             for (let j = j0; j <= j1; j++) {
-                const wz = x0 + j * step;
+                const wz = z0 + j * step;
                 for (let i = i0; i <= i1; i++) {
                     const wx = x0 + i * step;
                     let t = ((wx - p1.x) * dx + (wz - p1.z) * dz) / l2;
@@ -1886,7 +1970,7 @@ export class MapLoader {
                 }
             }
         }
-        return hit ? { Y, D, HW, N, step, x0 } : null;
+        return hit ? { Y, D, HW, N, step, x0, z0 } : null;
     }
 
     _addChunkTerrain(cx, cz, parent, px, pz) {
@@ -1906,8 +1990,8 @@ export class MapLoader {
         // 1 vòng duy nhất: height + màu (dùng chung kết quả quét corridor/bờ)
         const colors = new Float32Array(pos.count * 3);
         const cSand = new THREE.Color(0xd8c78f);
-        const cGrass = new THREE.Color(0x4d7a3c);
-        const cGrass2 = new THREE.Color(0x3f6b3a);   // xanh đậm (lục)
+        const cGrass = new THREE.Color(0x6db84f);   // xanh lá albedo chuẩn (RGB: 109, 184, 79)
+        const cGrass2 = new THREE.Color(0x5aa842);  // xanh đậm hơn chút (RGB: 90, 168, 66)
         const cDry = new THREE.Color(0x93904f);
         const cDry2 = new THREE.Color(0xa89a5c);   // cỏ khô vàng
         const cRock = new THREE.Color(0x7d766a);
@@ -1916,13 +2000,13 @@ export class MapLoader {
         const tmp = new THREE.Color();
         for (let i = 0; i < pos.count; i++) {
             const wx = pos.getX(i) + originX;
-            const wz = pos.getY(i) + originZ;   // TRUOC rotate: plane nam trong XY
+            const wz = originZ - pos.getY(i);   // TRƯỚC rotateX(-PI/2): local Y -> -world Z
             const info = this.world.getElevationInfo(wx, wz);
             let h = info.h;
             // ép terrain bám mặt đường (xem _buildRoadBench)
             if (bench) {
                 const gi = Math.round((wx - bench.x0) / bench.step);
-                const gj = Math.round((wz - bench.x0) / bench.step);
+                const gj = Math.round((wz - bench.z0) / bench.step);
                 if (gi >= 0 && gi < bench.N && gj >= 0 && gj < bench.N) {
                     const k = gj * bench.N + gi;
                     const by = bench.Y[k];
@@ -1945,7 +2029,7 @@ export class MapLoader {
             else if (info.h > 180) tmp.copy(cRock);
             else if (info.p && info.p.arid > 0.55) {
                 // pha cỏ khô 2 sắc theo noise -> đồng cỏ không bằng phẳng
-                const n = fract(Math.sin(wx * 0.013 + wz * 0.021) * 43758.5453);  // noise 1 chieu
+                const n = fract(Math.sin(wx * 0.013 + wz * 0.021) * 43758.5453);
                 tmp.copy(cDry).lerp(cDry2, n);
             } else if (info.d < 260) {
                 const n = fract(Math.sin(wx * 0.019 + wz * 0.011) * 24634.6345);
@@ -1955,6 +2039,13 @@ export class MapLoader {
                 const n1 = fract(Math.sin(wx * 0.0071 + wz * 0.0053) * 15731.743);
                 const n2 = fract(Math.sin(wx * 0.031 + wz * 0.027) * 9781.13);
                 tmp.copy(cGrass).lerp(cGrass2, n1 * 0.7 + n2 * 0.3);
+                // GIẢM CỎ THEO urban: khu đô thị (urban > 0.7) ít cỏ, nhiều đất/bê tông
+                const urb = info.p?.urban || 0;
+                if (urb > 0.7) {
+                    const cUrban = new THREE.Color(0x9a9278); // xám đất/bê tông nhẹ
+                    const t = Math.min(1, (urb - 0.7) / 0.3); // 0.7->1.0
+                    tmp.lerp(cUrban, t * 0.85); // tối đa 85% đổi sang xám
+                }
             }
             colors[i * 3] = tmp.r; colors[i * 3 + 1] = tmp.g; colors[i * 3 + 2] = tmp.b;
         }
@@ -2219,7 +2310,8 @@ export class MapLoader {
     _addHouseDetails(buildings, parent, far = false) {
         const trim = [];
         const C_GLASS = 0x2b3a4a, C_ROLLER = 0x8a8a80, C_GATE = 0xbfb9ab,
-            C_BALC = 0xd8d2c4, C_PORCH = 0x7a5a38, C_SHED = 0x9aa0a6;
+            C_BALC = 0xd8d2c4, C_PORCH = 0x7a5a38, C_SHED = 0x9aa0a6,
+            C_VONG_POST = 0x8a6a4a, C_VONG_NET = 0x6f8f5a, C_VONG_NET2 = 0x9fae72;
         for (const b of buildings) {
             const w = b.w || 5, d = b.d || 5, h = b.height || 8;
             const th = b.rot || 0;
@@ -2258,10 +2350,12 @@ export class MapLoader {
                     b.z - sy * lx, th, 0.10, h * 0.62, 0.55, C_GLASS, cy, sy, 1]);
             }
             // tường rào + 2 cánh cổng (chừa lối xe 3m ở giữa)
+            // ⚠ `(-1, 1)` là TOÁN TỬ PHẨY -> đánh giá ra `1` -> `for...of 1`
+            // ném TypeError, làm SẬP CẢ CHUNK (đo runtime 03/10). Mảng `[-1, 1]`.
             if (!far && (fl & H_GATE)) {
                 const off = d * 0.5 + 2.4;
                 const seg = Math.max(1.4, (w - 3.0) * 0.5);
-                for (const s of (-1, 1)) {
+                for (const s of [-1, 1]) {
                     trim.push([b.x + cy * (s * (seg * 0.5 + 1.5)) + sy * off,
                         b.y + 0.62, b.z - sy * (s * (seg * 0.5 + 1.5)) + cy * off,
                         th, seg, 1.25, C_GATE, cy, sy]);
@@ -2289,6 +2383,32 @@ export class MapLoader {
                 const lx = mx * (w * 0.5 + 1.35);
                 trim.push([b.x + cy * lx, b.y + lift + 1.25,
                     b.z - sy * lx, th, d * 0.55, 2.5, C_SHED, cy, sy, 1]);
+            }
+            // VÕNG — khung cọc + lưới phơi ven đường (đặc trưng miền Trung).
+            // 5 khối hộp (2 cọc + 2 tấm lưới + 1 thanh giữ) đi vào CHUNG
+            // InstancedMesh `bldTrim` ở cuối hàm => KHÔNG tốn thêm draw call.
+            // (Đo runtime 03/10 renderRadius=1: 307 draw call, 32.8 FPS.)
+            if (!far && (fl & H_VONG)) {
+                const netW = Math.min(d * 0.80, 8.5);
+                const netX = cy, netZ = -sy;            // hướng vuông góc mặt tiền
+                const base = d * 0.5 + 2.9;             // đứng ngoài hiên, sát lề đường
+                // 2 cọc gỗ đứng (cao 4.2m) — chân đứng, sizeA = bề dày cọc
+                // ⚠ `(-1, 1)` là TOÁN TỬ PHẨY: đánh giá ra `1`, rồi
+                // `for...of 1` ném TypeError và làm SẬP CẢ CHUNK (đo được
+                // runtime 03/10: _addHouseDetails map.js:2315). Phải là `[-1, 1]`.
+                for (const s2 of [-1, 1]) {
+                    trim.push([b.x + netX * (s2 * netW * 0.5) + sy * base,
+                        b.y + lift + 2.1, b.z + netZ * (s2 * netW * 0.5) + cy * base,
+                        th, 0.22, 4.2, C_VONG_POST, cy, sy, 1]);
+                }
+                // 2 tấm lưới căng ngang tầm thấp + tầm cao, hơi chùa xuống
+                trim.push([b.x + sy * base, b.y + lift + 1.55,
+                    b.z + cy * base, th, netW, 1.9, C_VONG_NET, cy, sy]);
+                trim.push([b.x + sy * (base + 0.55), b.y + lift + 3.55,
+                    b.z + cy * (base + 0.55), th, netW * 0.82, 1.5, C_VONG_NET2, cy, sy]);
+                // thanh giữ dọc — 1 cọc, tạo khung thang thang cho đỡ lưới
+                trim.push([b.x + sy * (base + 0.2), b.y + lift + 2.3,
+                    b.z + cy * (base + 0.2), th, 0.16, 4.4, C_VONG_POST, cy, sy]);
             }
         }
         if (!trim.length) return;
@@ -2805,6 +2925,66 @@ export class MapLoader {
     }
 
     // ĐIỂM DỪNG XE BUÝT dọc QL1: mái chờ + biển bảng + ghế + vệt đường
+    /**
+     * ĐỊA DANH ven QL1 — mũi Vũng Rô, Đại Lãnh, KDL Suối Tiên.
+     *
+     * Hình dạng theo thực tế VN: bảng tên địa danh (2 cột thép + bảng),
+     * mặt bê tông trước bảng để dừng xe chụp, và 4 cọc chắn mép. Không dựng
+     * nhà/tường vì đây là điểm dừng chứ không phải cơ sở.
+     *
+     * Cố tình giữ ~9 mesh: máy N5000 đang ở 1.396 draw call / 13 FPS, mỗi
+     * mesh thêm vào là draw call thật.
+     */
+    _addLandmark(s, parent) {
+        const M = this._mats, G = this._geos;
+        const g = new THREE.Group();
+        g.name = `landmark_${s.id}`;
+        g.position.set(s.x, s.y, s.z);
+        g.rotation.y = s.rot || 0;
+
+        // 1) MẶT BÊ TÔNG dừng xe (nằm ngang, không vênh theo đường)
+        const apron = new THREE.Mesh(G.unitBox, M.concrete);
+        apron.scale.set(13.0, 0.14, 7.0);
+        apron.position.set(0, 0.07, 0);
+        g.add(apron);
+
+        // 2) BẢNG TÊN: 2 cột thép
+        for (const sx of [-1.9, 1.9]) {
+            const post = new THREE.Mesh(G.pole, M.metal);
+            post.scale.set(0.16, 3.4, 0.16);
+            post.position.set(sx, 1.7, -1.4);
+            g.add(post);
+        }
+        // 3) Tấm bảng (bảng xanh dương có chữ ở bản texture, ở đây là khối
+        //    trắng — KHÔNG dựng chữ giả)
+        const board = new THREE.Mesh(G.unitBox, M.paintWhite);
+        board.scale.set(5.2, 1.5, 0.12);
+        board.position.set(0, 3.4, -1.4);
+        g.add(board);
+        // viền bảng
+        const frame = new THREE.Mesh(G.unitBox, M.metal);
+        frame.scale.set(5.5, 1.8, 0.08);
+        frame.position.set(0, 3.4, -1.48);
+        g.add(frame);
+
+        // 4) MÁI ĐỌT nhỏ che bảng (nắng/hạt mưa miền Nam)
+        const hood = new THREE.Mesh(G.unitBox, M.metal);
+        hood.scale.set(5.6, 0.10, 1.1);
+        hood.position.set(0, 4.4, -1.1);
+        g.add(hood);
+
+        // 5) 4 CỌC CHẮN mép bê tông (xe khách không lao xuống bờ)
+        for (const [cx, cz] of [[-5.4, -2.6], [5.4, -2.6], [-5.4, 2.6], [5.4, 2.6]]) {
+            const bol = new THREE.Mesh(G.pole, M.paintWhite);
+            bol.scale.set(0.18, 0.85, 0.18);
+            bol.position.set(cx, 0.42, cz);
+            g.add(bol);
+        }
+
+        parent.add(g);
+        return g;
+    }
+
     _addBusStop(s) {
         const M = this._mats, G = this._geos;
         const g = new THREE.Group();
@@ -2961,6 +3141,16 @@ export class MapLoader {
                 track(this.stationGroup.children[this.stationGroup.children.length - 1], s, 1000);
                 continue;
             }
+            // ĐỊA DANH (mũi Vũng Rô, Đại Lãnh, Suối Tiên...) — BẮT BUỘC có
+            // renderer riêng. Không khai báo ở đây thì rơi xuống nhánh fallback
+            // bên dưới, nhánh đó dựng SÂN BẾN + mái che + 4 cổng — tức biển báo
+            // ven đường sẽ mọc ra một bến xe khách. Đã kiểm: fallback là
+            // `new THREE.Group()` ở cuối hàm, không xử lý type nào.
+            if (s.type === "LANDMARK") {
+                this._addLandmark(s, this.stationGroup);
+                track(this.stationGroup.children[this.stationGroup.children.length - 1], s, 1400);
+                continue;
+            }
             const g = new THREE.Group();
             g.name = `station_${s.id}`;
             g.position.set(s.x, s.y, s.z);
@@ -3012,8 +3202,13 @@ export class MapLoader {
                 }
                 sideA.skirt(ring, bots, deep > 1.2);
                 const yard = top.build(M.concrete, `yard_${s.id}`);
+                yard.renderOrder = 1;      // render SAU terrain (terrain=0) -> khong bi cao chong
                 g.add(yard);
-                if (!sideA.empty) g.add(sideA.build(M.shoulder, `yardBody_${s.id}`));
+                if (!sideA.empty) {
+                    const body = sideA.build(M.shoulder, `yardBody_${s.id}`);
+                    body.renderOrder = 1;
+                    g.add(body);
+                }
             }
 
             // 2) vạch ranh sân
@@ -3199,11 +3394,12 @@ export class MapLoader {
             }
         }
         // cây bóng mát dọc rìa sân (không chắn nan đỗ ở giữa)
+        // treePos = [px, y, pz, rot] — rot từ treeRot để canopy xoay đúng
         for (let i = -3; i <= 3; i++) {
             const px = i * (D * 0.13);
             if (Math.abs(px) < D * 0.16) continue;
-            treePos.push([px, y, -W * 0.5 + 6]);
-            treeRot.push((i % 2) * 0.7);
+            const rot = (i % 2) * 0.7;
+            treePos.push([px, y, -W * 0.5 + 6, rot]);
         }
         const m4 = new THREE.Matrix4(), q = new THREE.Quaternion();
         const e = new THREE.Euler(), v3 = new THREE.Vector3(), s3 = new THREE.Vector3();
@@ -3212,7 +3408,8 @@ export class MapLoader {
             const mesh = new THREE.InstancedMesh(geo, mat, list.length);
             for (let i = 0; i < list.length; i++) {
                 const p = list[i];
-                e.set(0, useRot ? p[1] : 0, 0); q.setFromEuler(e);
+                const rot = useRot ? (p[3] || 0) : 0;
+                e.set(0, rot, 0); q.setFromEuler(e);
                 v3.set(p[0], p[1], p[2]);
                 s3.set(sx, sy, sz);
                 m4.compose(v3, q, s3);
@@ -3224,8 +3421,8 @@ export class MapLoader {
         };
         add(polePos, G.pole, M.pole, 0.8, 9.0, 0.8, false);
         add(lampPos, G.unitBox, M.lamp, 1.0, 0.26, 0.5, false);
-        add(treePos.map(p => [p[0], p[1] + 2.0, p[2]]), G.trunk, M.trunk, 1.1, 4.0, 1.1, false);
-        add(treePos.map(p => [p[0], p[1] + 5.4, p[2]]), G.canopy, M.leaves, 2.6, 2.2, 2.6, true);
+        add(treePos.map(p => [p[0], p[1] + 2.0, p[2], p[3]]), G.trunk, M.trunk, 1.1, 4.0, 1.1, false);
+        add(treePos.map(p => [p[0], p[1] + 5.4, p[2], p[3]]), G.canopy, M.leaves, 2.6, 2.2, 2.6, true);
     }
 
     // HÀNG RÀO + CỔNG BẾN — ranh giới khuôn viên riêng.
@@ -3353,7 +3550,7 @@ export class MapLoader {
         let built = 0;
         for (const [key, entry] of this.loadedChunks) {
             if (entry.built) continue;
-            if (built >= 1 && performance.now() - tBuild > 8) break;
+            if (built >= 1 && performance.now() - tBuild > 5) break;
             const ccx = entry.cx * CHUNK_SIZE + CHUNK_SIZE / 2;
             const ccz = entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2;
             if (Math.hypot(ccx - playerX, ccz - playerZ) > this.renderRadius * CHUNK_SIZE) continue;

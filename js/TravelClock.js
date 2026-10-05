@@ -437,6 +437,7 @@ function densityWeight(cls) {
         case "LOCAL": case "RESIDENTIAL": return 1.3;
         case "INTER_VILLAGE": case "RURAL_LOCAL": return 0.9;
         case "SERVICE": case "INDUSTRIAL_ACCESS": return 0.8;
+        case "STATION_ACCESS": case "INTERNAL": return 0.1;
         case "ALLEY": case "AGRICULTURAL": case "OFFROAD": return 0.4;
         default: return 0.7;
     }

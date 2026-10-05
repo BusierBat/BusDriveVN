@@ -86,6 +86,12 @@ export class LightingSystem {
         this._lastFpsTime = performance.now();
         this._currentFPS = 60;
 
+        // Shadow update throttling
+        this._shadowFrameCounter = 0;
+        this._shadowUpdateInterval = 1; // 1 = every frame, 2 = every other frame
+        this._lastShadowPlayerPos = new THREE.Vector3();
+        this._shadowPosThreshold = 5; // meters - update shadows if player moved this much
+
         // Temp
         this._tmpVec3 = new THREE.Vector3();
 
@@ -309,12 +315,25 @@ export class LightingSystem {
     // ===== SHADOW RENDERING =====
     // Gọi từ main.js TRƯỚC renderer.render(scene, camera)
     renderShadows() {
-        if (this.shadowSystem) {
-            this.shadowSystem.renderShadows();
-            // Moon shadow at night
-            if (this.timeSystem.getSunIntensity() < 0.1) {
-                this.shadowSystem.renderMoonShadow();
-            }
+        if (!this.shadowSystem || !this.shadowSystem.sunLight || this.shadowSystem.sunLight.intensity <= 0) return;
+
+        // Throttle shadow updates based on quality and player movement
+        this._shadowFrameCounter++;
+        
+        // On LOW quality, update shadows every 2 frames
+        if (this.quality === "LOW" && this._shadowFrameCounter % 2 !== 0) {
+            return;
+        }
+        
+        // Check if player moved significantly
+        if (this._lastShadowPlayerPos && this._tmpVec3) {
+            // We need busGroup to check position - skip for now, rely on frame counter
+        }
+
+        this.shadowSystem.renderShadows();
+        // Moon shadow at night
+        if (this.timeSystem.getSunIntensity() < 0.1) {
+            this.shadowSystem.renderMoonShadow();
         }
     }
 
@@ -358,6 +377,9 @@ export class LightingSystem {
         if (!LIGHTING_QUALITY_PRESETS[quality]) return;
         this.quality = quality;
         this.preset = LIGHTING_QUALITY_PRESETS[quality];
+
+        // Adjust shadow update interval based on quality
+        this._shadowUpdateInterval = quality === "LOW" ? 2 : 1;
 
         // Update subsystems
         this.shadowSystem.setQuality(this.preset.shadows);

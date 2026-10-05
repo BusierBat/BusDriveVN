@@ -1,4 +1,5 @@
 // js/utils.js
+import * as THREE from "three";
 
 export const EPSILON = 1e-6;
 export const TWO_PI = Math.PI * 2;
@@ -274,39 +275,7 @@ export function createId(prefix = "id") {
   return `${prefix}_${idCounter.toString(36)}`;
 }
 
-export function createObjectPool(create, reset = null, initialSize = 0) {
-  const available = [];
 
-  initialSize = Math.max(0, initialSize | 0);
-
-  for (let i = 0; i < initialSize; i++) {
-    available.push(create(i));
-  }
-
-  return {
-    acquire() {
-      return available.length > 0 ? available.pop() : create(available.length);
-    },
-
-    release(item) {
-      if (!item) return;
-
-      if (typeof reset === "function") {
-        reset(item);
-      }
-
-      available.push(item);
-    },
-
-    clear() {
-      available.length = 0;
-    },
-
-    get available() {
-      return available.length;
-    }
-  };
-}
 
 export function createEventBus() {
   const listeners = new Map();
@@ -561,3 +530,117 @@ export function disposeObject3D(root) {
     root.clear();
   }
 }
+
+// =====================================================================
+// OBJECT POOLING - Tối ưu GC cho các object thường tạo trong hot loop
+// =====================================================================
+
+// Vector3 pool
+const _vec3Pool = [];
+let _vec3PoolSize = 0;
+export function getVec3(x = 0, y = 0, z = 0) {
+    const v = _vec3Pool.pop() || new THREE.Vector3();
+    v.set(x, y, z);
+    return v;
+}
+export function releaseVec3(v) {
+    if (_vec3PoolSize < 64) {
+        _vec3Pool.push(v);
+        _vec3PoolSize++;
+    }
+}
+
+// Matrix4 pool
+const _mat4Pool = [];
+let _mat4PoolSize = 0;
+export function getMat4() {
+    return _mat4Pool.pop() || new THREE.Matrix4();
+}
+export function releaseMat4(m) {
+    if (_mat4PoolSize < 32) {
+        _mat4Pool.push(m);
+        _mat4PoolSize++;
+    }
+}
+
+// Color pool
+const _colorPool = [];
+let _colorPoolSize = 0;
+export function getColor(r = 1, g = 1, b = 1) {
+    const c = _colorPool.pop() || new THREE.Color();
+    c.set(r, g, b);
+    return c;
+}
+export function releaseColor(c) {
+    if (_colorPoolSize < 32) {
+        _colorPool.push(c);
+        _colorPoolSize++;
+    }
+}
+
+// Euler pool
+const _eulerPool = [];
+let _eulerPoolSize = 0;
+export function getEuler(x = 0, y = 0, z = 0, order = 'XYZ') {
+    const e = _eulerPool.pop() || new THREE.Euler();
+    e.set(x, y, z, order);
+    return e;
+}
+export function releaseEuler(e) {
+    if (_eulerPoolSize < 32) {
+        _eulerPool.push(e);
+        _eulerPoolSize++;
+    }
+}
+
+// Quaternion pool
+const _quatPool = [];
+let _quatPoolSize = 0;
+export function getQuat(x = 0, y = 0, z = 0, w = 1) {
+    const q = _quatPool.pop() || new THREE.Quaternion();
+    q.set(x, y, z, w);
+    return q;
+}
+export function releaseQuat(q) {
+    if (_quatPoolSize < 32) {
+        _quatPool.push(q);
+        _quatPoolSize++;
+    }
+}
+
+// Generic object pool factory
+export function createObjectPool(createFn, resetFn = null, maxSize = 64) {
+    const pool = [];
+    return {
+        acquire(...args) {
+            return pool.pop() || createFn(...args);
+        },
+        release(obj) {
+            if (!obj) return;
+            if (resetFn) resetFn(obj);
+            if (pool.length < maxSize) pool.push(obj);
+        },
+        clear() { pool.length = 0; },
+        get size() { return pool.length; }
+    };
+}
+
+// Pre-allocated temp objects for hot paths (singleton pattern)
+export const Temp = {
+    vec3: () => getVec3(),
+    vec3_2: () => getVec3(),
+    vec3_3: () => getVec3(),
+    mat4: () => getMat4(),
+    mat4_2: () => getMat4(),
+    color: () => getColor(),
+    color_2: () => getColor(),
+    euler: () => getEuler(),
+    euler_2: () => getEuler(),
+    quat: () => getQuat(),
+    quat_2: () => getQuat(),
+    // Release all at frame end
+    releaseAll() {
+        // Note: In practice, we'd release at specific points, not all at once
+        // This is just a helper for cleanup
+    }
+};
