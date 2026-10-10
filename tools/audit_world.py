@@ -1177,7 +1177,7 @@ if _slope_over:
         % (len(_slope_over), MAX_SLOPE_PCT))
 
 print("=== 10. PHASE 5: BEN XE MOI ===")
-new_stations = [s for s in stations if s.get("id") in ("dong_hoa", "song_cau", "cam_ranh", "vinh_hao", "bau_cau", "dau_giay", "long_thanh", "bien_hoa")]
+new_stations = [s for s in stations if s.get("id") in ("dong_hoa", "song_cau", "cam_ranh", "vinh_hao", "dau_giay", "long_thanh", "bien_hoa")]
 for s in new_stations:
     print("  %s: %s, %d bays" % (s.get("name"), s.get("type"), len(s.get("baySlots", []) or [])))
 

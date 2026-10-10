@@ -506,7 +506,12 @@ ANCHORS = [
          uplift=6,  density=0.45, urban=0.35, arid=0.00, mountain=0.05, coastal=0.30, forest=0.45),
     dict(name="Nam_Tuy_Hoa",     lat=13.041118, lon=109.311939, size="city",   road_factor=1.08,
          uplift=4,  density=1.00, urban=1.00, arid=0.00, mountain=0.00, coastal=0.40, forest=0.15),
-    dict(name="Chi_Thanh",       lat=12.935000, lon=109.280000, size="town",   road_factor=1.12,
+    # "Chi_Thanh" KHONG dung cho vi tri nay: reverse z12/z10 = "Phu Thu, Xa
+    # Tay Hoa, Tinh Dak Lak"; "Chi Thanh" THAT o Xa Tuy An Bac - cach 41.9km.
+    # ADMIN_UNITS da co dung don vi: ("tay_hoa", "Dak Lak", "Tay Hoa", "xa").
+    # -> GIU toa do (ANCHORS = waypoint corridor, di toa do = doi duong QL1),
+    # doi ten thanh don vi THAT dang dung o vi tri do.
+    dict(name="Tay_Hoa",         lat=12.986438, lon=109.259055, size="town",   road_factor=1.12,
          uplift=10, density=0.62, urban=0.55, arid=0.00, mountain=0.15, coastal=0.45, forest=0.35),
     dict(name="Dong_Hoa",        lat=12.905000, lon=109.330000, size="town",   road_factor=1.18,
          uplift=20, density=0.60, urban=0.50, arid=0.00, mountain=0.55, coastal=0.20, forest=0.55),
@@ -520,11 +525,19 @@ ANCHORS = [
          uplift=120, density=0.08, urban=0.00, arid=0.00, mountain=0.85, coastal=0.45, forest=0.70),
     dict(name="Vung_Ro",         lat=12.714969, lon=109.394349, size="hamlet", road_factor=1.28,
          uplift=45,  density=0.18, urban=0.10, arid=0.00, mountain=0.55, coastal=0.90, forest=0.60),
-    dict(name="Van_Gia",         lat=12.520000, lon=109.330000, size="village", road_factor=1.18,
+    # Van_Gia CU (12.520000,109.330000) NAM NGOAI KHOI: Overpass coastline =
+    # 2.87km (cross<0 = ben bien), Nominatim z14/z16/z18 chi ra duoc cap tinh
+    # (khong co dia danh), di 6.4km ve phia tay van la nuoc, dat moi xuat hien
+    # o 10.6km (Phuong Dong Ninh Hoa). Va no day corridor ~18.5km ve DONG
+    # (tren duong thang Vung_Ro->Ninh_Hoa thi lon phai = 109.160).
+    # Toa do THAT: Nominatim "Van Giã" type=town (12.6996814,109.2244852),
+    # reverse = "Le Dai Hanh, Van Gia, Xa Van Ninh" -> TREN DAT, va Van Gia
+    # nam ngay tren QL1 (quan huyen tren tuyen).
+    dict(name="Van_Gia",         lat=12.699681, lon=109.224485, size="village", road_factor=1.18,
          uplift=25,  density=0.36, urban=0.25, arid=0.00, mountain=0.25, coastal=0.70, forest=0.45),
     dict(name="Ninh_Hoa",        lat=12.493438, lon=109.127087, size="town",   road_factor=1.14,
          uplift=18,  density=0.60, urban=0.55, arid=0.00, mountain=0.20, coastal=0.45, forest=0.35),
-    dict(name="Nha_Trang",       lat=12.247185, lon=109.189207, size="city",   road_factor=1.12,
+    dict(name="Nha_Trang",       lat=12.286278, lon=109.143162, size="city",   road_factor=1.12,
          uplift=16,  density=1.00, urban=1.00, arid=0.00, mountain=0.25, coastal=0.95, forest=0.25),
     dict(name="Dien_Khanh",      lat=12.259825, lon=109.100018, size="town",   road_factor=1.12,
          uplift=14,  density=0.65, urban=0.60, arid=0.00, mountain=0.15, coastal=0.20, forest=0.30),
@@ -536,7 +549,13 @@ ANCHORS = [
          uplift=30,  density=0.24, urban=0.12, arid=0.70, mountain=0.35, coastal=0.45, forest=0.20),
     dict(name="Phan_Rang",       lat=11.576983, lon=108.986539, size="city",   road_factor=1.14,
          uplift=26,  density=0.85, urban=0.85, arid=0.75, mountain=0.30, coastal=0.75, forest=0.18),
-    dict(name="Tuy_Phong",       lat=11.400000, lon=108.850000, size="village", road_factor=1.16,
+    # "Tuy_Phong" KHONG dung cho vi tri nay: reverse z12/z10 = "Xa Thuan Nam,
+    # Tinh Khanh Hoa" - diem nay nam KHANH HOA (Ninh Thuan cu), KHAC TINH voi
+    # Tuy Phong (Lam Dong/Binh Thuan cu): Huyen Tuy Phong 13.0km, Xa Tuy
+    # Phong 19.4km. ADMIN_UNITS da co: ("thuan_nam", "Khanh Hoa", "Thuan
+    # Nam", "xa") -> dung don vi THAT o day. Ten Tuy_Phong chi dung tai
+    # ANCHORS; fuel/school dung id thuong (fuel_tuy_phong) - namespace rieng.
+    dict(name="Thuan_Nam",       lat=11.400000, lon=108.850000, size="village", road_factor=1.16,
          uplift=34,  density=0.32, urban=0.20, arid=0.85, mountain=0.40, coastal=0.60, forest=0.15),
     dict(name="Ca_Na",           lat=11.359448, lon=108.877653, size="village", road_factor=1.16,
          uplift=32,  density=0.30, urban=0.20, arid=0.85, mountain=0.35, coastal=0.65, forest=0.15),
@@ -544,15 +563,42 @@ ANCHORS = [
          uplift=40,  density=0.42, urban=0.30, arid=0.90, mountain=0.45, coastal=0.55, forest=0.12),
     dict(name="Phan_Ri_Cua",     lat=11.165000, lon=108.535000, size="village", road_factor=1.18,
          uplift=38,  density=0.35, urban=0.22, arid=0.85, mountain=0.40, coastal=0.60, forest=0.12),
-    dict(name="Ham_Thuan_Bac",   lat=11.100000, lon=108.650000, size="village", road_factor=1.20,
+    # "Ham_Thuan_Bac" HAI LOI CUNG LUC:
+    # 1) TOA DO NGOAI KHOI 9.1km — Overpass coastline cross<0 = ben bien,
+    #    Nominatim z10/z14/z18 chi ra duoc cap tinh (khong co dia danh), di
+    #    5.3km ve tay moi ra dat (Xa Phan Ri Cua). No day corridor ~13km ve
+    #    DONG ra bien roi moi quay ve Phan_Thiet (t = -0.142 tren doan thang
+    #    Phan_Ri_Cua->Phan_Thiet, lech 6.9km).
+    # 2) TEN KHONG THUOC DOAN NAY: doan thang Phan_Ri_Cua->Phan_Thiet di qua
+    #    Xa Hoa Thang (t=0.20/0.35/0.50) -> PhuongMuiNe (t=0.65) -> Phu Long
+    #    (t=0.80) — khong qua Huyen Ham Thuan Bac nao ca.
+    # -> dat tren tuyen + ten DON VI THAT o day: reverse CA 2 vi tri deu =
+    #    county "Xa Hoa Thang", Tinh Lam Dong: (11.047313,108.319693) va
+    #    (11.098630,108.395157). Chon vi tri sau (mo Nominatim "xa Hoa Thang")
+    #    vi do lech QL1 that tu 14.07km xuong 10.39km. Ten nay di vao world.json
+    #    settlement + ten bus stop + tinh_lo_*.
+    dict(name="Hoa_Thang",       lat=11.098630, lon=108.395157, size="village", road_factor=1.20,
          uplift=46,  density=0.30, urban=0.18, arid=0.85, mountain=0.50, coastal=0.50, forest=0.15),
     dict(name="Phan_Thiet",      lat=10.929626, lon=108.104387, size="city",   road_factor=1.18,
          uplift=18,  density=0.90, urban=0.95, arid=0.55, mountain=0.18, coastal=0.95, forest=0.20),
-    dict(name="Ba_Bau",          lat=10.865000, lon=108.030000, size="town",   road_factor=1.16,
+    dict(name="Ba_Bau",          lat=10.934364, lon=107.977015, size="town",   road_factor=1.16,
          uplift=16,  density=0.45, urban=0.35, arid=0.45, mountain=0.20, coastal=0.40, forest=0.25),
-    dict(name="Ham_Tin",         lat=10.800000, lon=107.870000, size="village", road_factor=1.18,
+    # "Ham_Tin" khong ton tai o VN (Nominatim/Wikipedia = 0). Toa do nay reverse
+    # ra county = XÃ TAN THANH -> doi ten. TEN NAY DI VAO TEN DUONG qua
+    # _build_settlements(): "tinh_lo_%s_%s" -> truoc do sinh duong
+    # tinh_lo_Phan_Thiet_Ham_Tin ten goi khong co that.
+    dict(name="Tan_Thanh",       lat=10.800000, lon=107.870000, size="village", road_factor=1.18,
          uplift=24,  density=0.30, urban=0.18, arid=0.35, mountain=0.35, coastal=0.35, forest=0.45),
-    dict(name="Nhon_Tinh",       lat=10.800000, lon=107.580000, size="hamlet", road_factor=1.20,
+    # "Nhon_Tinh" KHONG TON TAI o VN: Nominatim "Nhơn Tỉnh" = 0 hit that
+    # (ket qua deu la Nhon / Quy Nhon / An Nhon, cach 371-1157km), Wikipedia
+    # chi tra trang Quy Nhon. Toa do reverse z14/z16/z18 = "Thon 15, Xa Tan
+    # Minh, Tinh Lam Dong"; "Xa Tan Minh" (administrative) = 10.8423076,
+    # 107.6408113 cach 8.1km -> ten DON VI THAT o vi tri nay.
+    # Ten nay THUC SU xuat hian trong world.json settlement va ten bus stop
+    # ("Trạm dừng Nhon Tinh") -> doi thanh ten that. GIU nguyen toa do
+    # (ANCHORS = anchor sat QL1 cho density blob, khong phai trung tam
+    # hanh chinh - khong di ve toa do hanh chinh).
+    dict(name="Tan_Minh",        lat=10.800000, lon=107.580000, size="hamlet", road_factor=1.20,
          uplift=30,  density=0.20, urban=0.10, arid=0.15, mountain=0.45, coastal=0.10, forest=0.70),
     dict(name="Cam_My",          lat=10.857529, lon=107.113370, size="town",   road_factor=1.17,
          uplift=24,  density=0.45, urban=0.35, arid=0.10, mountain=0.30, coastal=0.05, forest=0.55),
@@ -604,8 +650,13 @@ ADMIN_UNITS = [
     ("phu_yen",        "Đắk Lắk",  "Phú Yên",        "phường", 13.053788, 109.294803,  44.04,  61799, "gradeB", True),
     ("tan_lap",        "Đắk Lắk",  "Tân Lập",        "phường",  None,      None,       46.70,  73316, None,      True),
     ("tan_an",         "Đắk Lắk",  "Tân An",         "phường",  None,      None,       56.41,  64122, None,      True),
-    ("hoa_xuan",       "Đắk Lắk",  "Hòa Xuân",       "xã",     13.003000, 109.097000, 129.33,  22962, "gradeB", True),
-    ("song_hinh",      "Đắk Lắk",  "Sông Hinh",      "xã",     12.969000, 108.965000, 460.13,  23841, "gradeB", False),
+    # 9 don vi nay truoc do lech 6-35km (hoa_xuan 34.6, ham_thuan 22.3,
+    # ba_bau 17.1, tuyen_phong 19.4, song_hinh 10.5, van_ninh 10.3,
+    # cam_lam 6.7, vinh_hao 6.5, tan_thanh 8.2) -> sai DAI KM tren QL1.
+    # Toa do moi lay tu Nominatim va MOI CAI da reverse-geocode lai
+    # xac nhan county == ten don vi (xem temp admin_cand_verify.txt).
+    ("hoa_xuan",       "Đắk Lắk",  "Hòa Xuân",       "xã",     12.912185, 109.402363, 129.33,  22962, "gradeB", True),
+    ("song_hinh",      "Đắk Lắk",  "Sông Hinh",      "xã",     12.903208, 108.895158, 460.13,  23841, "gradeB", False),
     ("tay_hoa",       "Đắk Lắk",  "Tây Hòa",        "xã",     None,      None,       55.14,  49720, None,      False),
     ("o_loan",         "Đắk Lắk",  "Ô Loan",         "xã",     None,      None,      103.48,  40278, None,      True),
     ("phu_hoa_1",     "Đắk Lắk",  "Phú Hòa 1",      "xã",     None,      None,      142.54,  54212, None,      True),
@@ -622,9 +673,12 @@ ADMIN_UNITS = [
     ("nha_trang",      "Khánh Hòa", "Nha Trang",      "phường", 12.247185, 109.189207,  47.13, 136118, "anchor", True),
     ("tay_nha_trang",  "Khánh Hòa", "Tây Nha Trang",  "phường", None,      None,       27.89, 108065, None,      True),
     ("nam_nha_trang",  "Khánh Hòa", "Nam Nha Trang",  "phường", None,      None,       82.18, 130164, None,      True),
-    ("cam_lam",        "Khánh Hòa", "Cam Lâm",        "xã",     12.053414, 109.118664,  None,   None,  "anchor", True),
+    # truoc do neo tren motorway_junction "Cam Lâm" (cao toc Nha Trang-Cam Lam);
+    # doi sang moc "Huyen Cam Lam" (historic) - ca hai deu nam trong Xã Cam Hiệp,
+    # khac nhau 6.7km theo duong chim.
+    ("cam_lam",        "Khánh Hòa", "Cam Lâm",        "xã",     12.075645, 109.061014,  None,   None,  "anchor", True),
     ("dien_khanh",     "Khánh Hòa", "Diên Khánh",     "xã",     12.259825, 109.100018,  18.41,  45223, "anchor", True),
-    ("van_ninh",       "Khánh Hòa", "Vạn Ninh",       "xã",     12.669000, 109.220000,  None,   None,  "gradeB", True),
+    ("van_ninh",       "Khánh Hòa", "Vạn Ninh",       "xã",     12.734604, 109.152834,  None,   None,  "gradeB", True),
     ("ninh_hoa",       "Khánh Hòa", "Ninh Hòa",       "phường", 12.493438, 109.127087,  35.80,  58816, "anchor", True),
     ("ninh_huu",       "Khánh Hòa", "Ninh Hữu",       "xã",     None,      None,      124.30,  14727, None,      False),
     ("phuoc_dinh",     "Khánh Hòa", "Phước Dinh",     "xã",     None,      None,      153.97,  35301, None,      True),
@@ -634,12 +688,21 @@ ADMIN_UNITS = [
     ("thuan_nam",      "Khánh Hòa", "Thuận Nam",      "xã",     None,      None,       None,   None,  None,      True),
     ("phan_rang",      "Khánh Hòa", "Phan Rang",      "phường", 11.576983, 108.986539,   9.41,  72250, "anchor", True),
     ("dong_hai",       "Khánh Hòa", "Đông Hải",       "phường", None,      None,       11.00,  54615, None,      True),
-    ("tuyen_phong",    "Lâm Đồng", "Tuy Phong",      "xã",     11.400000, 108.850000, 444.10,   9510, "anchor", False),
-    ("vinh_hao",       "Lâm Đồng", "Vĩnh Hảo",       "xã",     11.305535, 108.721349,  None,   None,  "anchor", True),
-    ("ham_tin",        "Lâm Đồng", "Hàm Tín",        "xã",     10.800000, 107.870000,  None,   None,  "anchor", False),
-    ("ham_thuan",      "Lâm Đồng", "Hàm Thuận",      "xã",     10.898000, 107.980000, 198.36,  50680, "gradeB", True),
+    # "Huyen Tuy Phong" (historic) 11.3445083,108.7449633 NO O Xã Vĩnh Hảo
+    # -> khong phai Tuy Phong; ung vien dung la Xã Tuy Phong.
+    ("tuyen_phong",    "Lâm Đồng", "Tuy Phong",      "xã",     11.391508, 108.672259, 444.10,   9510, "anchor", False),
+    ("vinh_hao",       "Lâm Đồng", "Vĩnh Hảo",       "xã",     11.330520, 108.775056,  None,   None,  "anchor", True),
+    # truoc do id `ham_tin` ten "Hàm Tín" - khong ton tai o VN (Nominatim va
+    # Wikipedia ca hai = 0). Toa do cu 10.800,107.870 reverse ra county =
+    # Xã Tân Thành -> id/ten/toa do deu chuyen sang don vi THAT o day.
+    # id KHONG duoc tham chieu o cho khac (da grep: chi map_generator + world.json).
+    ("tan_thanh",      "Lâm Đồng", "Tân Thành",      "xã",     10.758599, 107.931991,  None,   None,  "anchor", False),
+    ("ham_thuan",      "Lâm Đồng", "Hàm Thuận",      "xã",     11.073308, 108.078508, 198.36,  50680, "gradeB", True),
     ("ham_thuan_nam",  "Lâm Đồng", "Hàm Thuận Nam",  "xã",     None,      None,      111.82,  32771, None,      True),
-    ("ba_bau",         "Lâm Đồng", "Bà Bàu",         "xã",     10.865000, 108.030000,  None,   None,  "anchor", True),
+    # "Ba Bau" la LANG (reverse z14 village=Ba Bau) trong Xa Ham Thanh,
+    # khong phai don vi hanh chinh -> dung ten + toa do XA that (Nominatim
+    # search "Xã Hàm Thạnh" type=administrative, reverse chung county khop).
+    ("ham_thanh",      "Lâm Đồng", "Hàm Thạnh",      "xã",     11.051839, 107.921161,  None,   None,  "anchor", True),
     ("phan_thiet",     "Lâm Đồng", "Phan Thiết",     "phường", 10.929626, 108.104387,   4.46,  85493, "anchor", True),
     ("mui_ne",         "Lâm Đồng", "Mũi Né",         "phường", None,      None,      118.59,  50166, None,      True),
     ("ham_thang",      "Lâm Đồng", "Hàm Thắng",      "phường", None,      None,       44.90,  54544, None,      True),
@@ -662,22 +725,105 @@ ADMIN_NEAR_MAX_KM = 25.0
 
 # Bờ biển Việt Nam (bắc -> nam). Đất nằm PHẢI tuyến khi đi hướng nam.
 # Dùng cho: mặt biển, COASTAL region, cát ven biển, khoảng cách tới biển.
+# Bo bien Viet Nam (bac -> nam). Dat nam PHAI tuyen khi di huong nam.
+# Dung cho: mat bien, COASTAL region, cat ven bien, khoang cach toi bien.
+#
+# 112 diem DAU TIEN (13.59390 -> 13.13022) lay tu OSM: Overpass
+#   way["natural"="coastline"] boi (13.05,109.15,13.55,109.50), ODbL,
+#   lay 2026-10-10; 17 way dat lien noi thanh 1 chuoi (56 dao bo rieng),
+#   dao chieu nam->bac cho dung quy tac "dat nam phai", decimate 1000m.
+#   LYM: list cu bat dau tu 13.120 nen toan bo phia BAC cua 13.120 (Song Cau,
+#   Vinh Xuan Dai, vinh De Gi) khong co bo bien -> 38km tuyen (13% chieu dai)
+#   bi tinh la duoi day bien -40km, thi trong thi 10-40km duoi day bien.
+# 59 diem cuoi (13.120 -> 10.580) giuyen nguyen han, khong sua gi.
+# 2026-10-11 (fix3): sua 2 cua window coastline theo OSM that (Overpass, ODbL, lay 2026-10-11):
+#   Vung Ro/Deo Ca (BAC, master[700:770] thay old[118:122]) va Ca Na (NAM, master[8685:9434]
+#   thay old[146:150]). 53 node QL1/Deo Ca/Ca Na bi tinh duoi bien vi coastline cu qua tay.
+#   Mih OSM decimate 300m. Verify tren toan bo node roads: 53 -> 0 loi, 0 node loi moi.
+#   Giu nguyen diem dau/cuoi va anchor phia Bac 13.120 (old[112]).
 COASTLINE = [
-    (13.120, 109.330), (13.090, 109.352), (13.055, 109.348), (13.020, 109.352),
-    (12.980, 109.368), (12.940, 109.382), (12.900, 109.372), (12.868, 109.352),
-    (12.850, 109.330), (12.836, 109.352), (12.818, 109.372), (12.790, 109.398),
-    (12.750, 109.412), (12.715, 109.410), (12.690, 109.400), (12.660, 109.372),
-    (12.620, 109.340), (12.570, 109.300), (12.520, 109.318), (12.460, 109.288),
-    (12.390, 109.252), (12.310, 109.220), (12.250, 109.212), (12.190, 109.196),
-    (12.120, 109.188), (12.060, 109.180), (12.000, 109.172), (11.940, 109.168),
-    (11.880, 109.140), (11.820, 109.100), (11.760, 109.060), (11.700, 109.030),
-    (11.640, 109.010), (11.580, 108.998), (11.520, 108.968), (11.460, 108.930),
-    (11.400, 108.880), (11.340, 108.830), (11.280, 108.790), (11.220, 108.760),
-    (11.160, 108.720), (11.100, 108.680), (11.040, 108.610), (10.990, 108.520),
-    (10.960, 108.420), (10.940, 108.300), (10.920, 108.180), (10.900, 108.100),
-    (10.880, 108.060), (10.850, 108.020), (10.820, 108.000), (10.790, 108.010),
-    (10.760, 108.050), (10.730, 108.120), (10.700, 108.220), (10.670, 108.320),
-    (10.640, 108.400), (10.610, 108.470), (10.580, 108.520),
+    (13.5939, 109.25382), (13.58683, 109.26056), (13.5805, 109.26791), (13.57513, 109.27537),
+    (13.57212, 109.28456), (13.57296, 109.2938), (13.5651, 109.28812), (13.5566, 109.28485),
+    (13.54997, 109.27847), (13.53749, 109.2778), (13.53196, 109.28525), (13.52803, 109.27695),
+    (13.53262, 109.2688), (13.54052, 109.27549), (13.54992, 109.27389), (13.55306, 109.26444),
+    (13.54917, 109.25583), (13.5401, 109.25355), (13.53162, 109.24995), (13.52238, 109.25112),
+    (13.5199, 109.26076), (13.51645, 109.27056), (13.51094, 109.27856), (13.50979, 109.28788),
+    (13.51484, 109.29561), (13.5236, 109.29309), (13.51886, 109.30098), (13.50973, 109.30127),
+    (13.50984, 109.29204), (13.50171, 109.28777), (13.49214, 109.2888), (13.48317, 109.29268),
+    (13.47447, 109.29749), (13.46729, 109.30421), (13.46403, 109.31325), (13.47128, 109.31929),
+    (13.46951, 109.3289), (13.46449, 109.32087), (13.45658, 109.31562), (13.44773, 109.31775),
+    (13.44023, 109.31234), (13.43116, 109.3118), (13.42222, 109.31009), (13.4132, 109.31097),
+    (13.4134, 109.30156), (13.40466, 109.29873), (13.41282, 109.29455), (13.4155, 109.28573),
+    (13.41505, 109.27629), (13.41428, 109.26702), (13.42254, 109.26256), (13.43156, 109.26141),
+    (13.43336, 109.27067), (13.43944, 109.27835), (13.44696, 109.28386), (13.44959, 109.2927),
+    (13.45855, 109.29116), (13.46191, 109.28254), (13.46815, 109.27566), (13.47571, 109.27012),
+    (13.4808, 109.26071), (13.48335, 109.25173), (13.49111, 109.24666), (13.48727, 109.23803),
+    (13.48217, 109.23037), (13.47343, 109.23338), (13.46554, 109.22819), (13.45651, 109.22604),
+    (13.4474, 109.22366), (13.43854, 109.22578), (13.43049, 109.23021), (13.42231, 109.22548),
+    (13.41529, 109.21957), (13.41357, 109.22864), (13.40415, 109.22877), (13.39649, 109.22331),
+    (13.39255, 109.23187), (13.39027, 109.24083), (13.38039, 109.24508), (13.37115, 109.24774),
+    (13.36303, 109.25299), (13.35688, 109.26285), (13.36272, 109.26991), (13.36408, 109.27903),
+    (13.36559, 109.28842), (13.35851, 109.29444), (13.35014, 109.2908), (13.34202, 109.29514),
+    (13.33565, 109.28768), (13.32687, 109.28284), (13.31733, 109.28364), (13.30729, 109.28733),
+    (13.29626, 109.29294), (13.28781, 109.29774), (13.27882, 109.3054), (13.27142, 109.31108),
+    (13.26256, 109.31392), (13.25308, 109.31352), (13.25073, 109.30388), (13.24123, 109.30213),
+    (13.23241, 109.30433), (13.22472, 109.29875), (13.2174, 109.29324), (13.20611, 109.29477),
+    (13.19708, 109.29816), (13.18919, 109.30348), (13.1803, 109.29768), (13.1716, 109.29488),
+    (13.16276, 109.29254), (13.15161, 109.29263), (13.14143, 109.29492), (13.13022, 109.29925),
+    (13.12, 109.33), (13.09, 109.352), (13.055, 109.348), (13.02, 109.352),
+    (12.98, 109.368), (12.94, 109.382), (12.85835, 109.40255), (12.85592, 109.40114),
+    (12.85359, 109.39922), (12.8531, 109.39624), (12.85153, 109.39349), (12.84918, 109.39198),
+    (12.84577, 109.39137), (12.84338, 109.38996), (12.84079, 109.38484), (12.83925, 109.38183),
+    (12.83804, 109.37913), (12.83667, 109.37727), (12.818, 109.372), (12.79, 109.398),
+    (12.75, 109.412), (12.715, 109.41), (12.69, 109.4), (12.66, 109.372),
+    (12.62, 109.34), (12.57, 109.3), (12.52, 109.318), (12.46, 109.288),
+    (12.39, 109.252), (12.31, 109.22), (12.25, 109.212), (12.19, 109.196),
+    (12.12, 109.188), (12.06, 109.18), (12.0, 109.172), (11.94, 109.168),
+    (11.88, 109.14), (11.82, 109.1), (11.76, 109.06), (11.7, 109.03),
+    (11.64, 109.01), (11.58, 108.998), (11.55847, 109.02657), (11.55547, 109.028),
+    (11.55309, 109.02959), (11.55095, 109.03192), (11.54999, 109.03496), (11.54768, 109.03346),
+    (11.54386, 109.03168), (11.54103, 109.03074), (11.53722, 109.02905), (11.53504, 109.0307),
+    (11.5328, 109.03231), (11.53547, 109.03019), (11.53475, 109.02667), (11.53269, 109.03028),
+    (11.53441, 109.02714), (11.53338, 109.02321), (11.53118, 109.02032), (11.52923, 109.01802),
+    (11.52605, 109.01613), (11.51982, 109.0137), (11.51647, 109.01283), (11.51336, 109.01231),
+    (11.50853, 109.0115), (11.50447, 109.0114), (11.50091, 109.0115), (11.49644, 109.01155),
+    (11.49271, 109.01173), (11.48806, 109.01227), (11.48536, 109.01269), (11.48206, 109.01315),
+    (11.47734, 109.01369), (11.47421, 109.01433), (11.46983, 109.01465), (11.46675, 109.01417),
+    (11.46263, 109.01362), (11.45953, 109.01329), (11.45586, 109.01332), (11.4528, 109.01252),
+    (11.44908, 109.01067), (11.44603, 109.00905), (11.44315, 109.00796), (11.4408, 109.00978),
+    (11.43847, 109.01179), (11.43344, 109.01277), (11.42925, 109.01313), (11.42495, 109.01333),
+    (11.4208, 109.01293), (11.4179, 109.01221), (11.41548, 109.01018), (11.41372, 109.00759),
+    (11.41037, 109.00602), (11.40674, 109.00588), (11.40363, 109.00593), (11.40091, 109.0077),
+    (11.39782, 109.00684), (11.39469, 109.00578), (11.39011, 109.00614), (11.38559, 109.00691),
+    (11.38103, 109.00854), (11.37847, 109.00954), (11.37456, 109.01099), (11.37247, 109.01297),
+    (11.37079, 109.01522), (11.37001, 109.0179), (11.36892, 109.02047), (11.3662, 109.0203),
+    (11.36326, 109.02032), (11.36058, 109.01907), (11.35756, 109.01639), (11.35589, 109.01413),
+    (11.35502, 109.00957), (11.35548, 109.00638), (11.35387, 109.00386), (11.35212, 109.00145),
+    (11.34925, 109.00137), (11.34972, 108.99756), (11.34939, 108.99429), (11.34717, 108.99241),
+    (11.34442, 108.99278), (11.34243, 108.99), (11.33868, 108.98862), (11.33583, 108.98794),
+    (11.33359, 108.98552), (11.33196, 108.98329), (11.33007, 108.98105), (11.32929, 108.97819),
+    (11.32854, 108.97515), (11.32512, 108.97295), (11.32252, 108.97062), (11.32138, 108.96803),
+    (11.31866, 108.96594), (11.31643, 108.96276), (11.31552, 108.95985), (11.31533, 108.95637),
+    (11.3149, 108.95339), (11.31335, 108.95101), (11.31438, 108.94818), (11.3131, 108.94534),
+    (11.31224, 108.94268), (11.31119, 108.93975), (11.3105, 108.93707), (11.30799, 108.93523),
+    (11.30689, 108.93262), (11.30775, 108.92952), (11.30977, 108.92737), (11.31054, 108.92439),
+    (11.30914, 108.92165), (11.30754, 108.91917), (11.31003, 108.91787), (11.31265, 108.91882),
+    (11.31321, 108.91592), (11.31456, 108.91284), (11.31721, 108.91458), (11.31949, 108.91107),
+    (11.32305, 108.90552), (11.32562, 108.90198), (11.32772, 108.90005), (11.32969, 108.89806),
+    (11.33213, 108.89594), (11.33362, 108.89307), (11.3351, 108.8901), (11.33655, 108.88769),
+    (11.33732, 108.88384), (11.33763, 108.88013), (11.3358, 108.87512), (11.33222, 108.87382),
+    (11.33329, 108.86645), (11.3323, 108.86271), (11.33373, 108.85948), (11.3347, 108.85327),
+    (11.33354, 108.84991), (11.33278, 108.84671), (11.33084, 108.84384), (11.32886, 108.84153),
+    (11.32605, 108.83998), (11.32359, 108.83847), (11.3229, 108.83485), (11.32152, 108.83155),
+    (11.32029, 108.82844), (11.3199, 108.8257), (11.31922, 108.823), (11.32068, 108.82024),
+    (11.32162, 108.81655), (11.31309, 108.81683), (11.31083, 108.81263), (11.30311, 108.81257),
+    (11.30007, 108.80994), (11.30319, 108.81229), (11.31057, 108.8107), (11.30953, 108.80565),
+    (11.30891, 108.80262), (11.30446, 108.80127), (11.29999, 108.80221), (11.28, 108.79),
+    (11.22, 108.76), (11.16, 108.72), (11.1, 108.68), (11.04, 108.61),
+    (10.99, 108.52), (10.96, 108.42), (10.94, 108.3), (10.92, 108.18),
+    (10.9, 108.1), (10.88, 108.06), (10.85, 108.02), (10.82, 108.0),
+    (10.79, 108.01), (10.76, 108.05), (10.73, 108.12), (10.7, 108.22),
+    (10.67, 108.32), (10.64, 108.4), (10.61, 108.47), (10.58, 108.52),
 ]
 
 
@@ -714,12 +860,15 @@ REAL_CT01_POINTS = [
 ]
 
 EXPRESSWAY_SECTIONS = [
-    ("CT01 Deo Ca - Vung Ro",  "Deo_Ca_North",   "Vung_Ro",     "operational"),
-    ("CT01 Vung Ro - Nha Trang", "Vung_Ro",     "Nha_Trang",   "operational"),
-    ("CT01 Nha Trang - Cam Lam", "Nha_Trang",   "Cam_Lam",     "operational"),
-    ("CT01 Cam Lam - Vinh Hao",  "Cam_Lam",     "Vinh_Hao",    "operational"),
-    ("CT01 Vinh Hao - Phan Thiet", "Vinh_Hao",  "Phan_Thiet",  "operational"),
-    ("CT01 Phan Thiet - Dau Giay", "Phan_Thiet", "Dau_Giay",    "operational"),
+    ("CT01 Deo Ca - Vung Ro",       "Deo_Ca_North",   "Vung_Ro",        "operational"),
+    ("CT01 Vung Ro - Nha Trang",    "Vung_Ro",        "Nha_Trang",      "operational"),
+    ("CT01 Nha Trang - Cam Lam",    "Nha_Trang",      "Cam_Lam",        "operational"),
+    ("CT01 Cam Lam - Vinh Hao",     "Cam_Lam",        "Vinh_Hao",       "operational"),
+    ("CT01 Vinh Hao - Phan Thiet",  "Vinh_Hao",       "Phan_Thiet",     "operational"),
+    # Thêm các anchor trung gian để tránh gap chainage tại Vinh_Hao/Long_Thanh/Suoi_Tien
+    ("CT01 Phan Thiet - Long Thanh", "Phan_Thiet",    "Long_Thanh",     "operational"),
+    ("CT01 Long Thanh - Suoi Tien",  "Long_Thanh",     "Suoi_Tien",      "operational"),
+    ("CT01 Suoi Tien - Dau Giay",    "Suoi_Tien",      "Dau_Giay",       "operational"),
 ]
 CT01_RANGE = ("Deo_Ca_North", "Dau_Giay")
 RING3_RANGE = ("Dau_Giay", "HCM_Core_South")
@@ -779,40 +928,69 @@ STATION_DEFS = [
          poi_type="MAJOR_BUS_TERMINAL",   bays=50, spawn=False, side="west", offset=55.0,
          w=340.0, d=200.0),
     # --- Phase 5: Bến xe trung gian ---
-    dict(id="song_cau",      name="Bến xe Sông Cầu",        lat=13.462100, lon=109.223600,
+    dict(id="song_cau",      name="Bến xe Sông Cầu",        lat=13.460110, lon=109.208427,
          poi_type="BUS_STATION",          bays=10, spawn=False, side="west", offset=35.0,
          w=140.0, d=100.0),
-    dict(id="dong_hoa",      name="Bến xe Đông Hòa",        lat=12.905000, lon=109.330000,
+    # --- Toa do doi chieu Nominatim/OSM (07/10/2026) ---
+    # Truoc do 5 ben nay copy toa do tu bang khac (INTERCHANGES / ADMIN_UNITS /
+    # ANCHORS) nen lech 7-17km, `bau_cau` con copy toa do ANCHORS["Ba_Bau"] va
+    # dat ten la "Bau Cau" - query "Bau Cau" khong co place name nao (chi co
+    # cau "Cau Ba Bau"), ten that la "Ba Bau". Chi doi `lat`/`lon`/`name`;
+    # giu nguyen id + bays/w/d/side/offset vi JS doc `baySlots` (khong doc
+    # lat/lon) va id con duoc doc tai `_build_facilities` + `audit_world.py`.
+    dict(id="dong_hoa",      name="Bến xe Đông Hòa",        lat=12.999679, lon=109.362157,
          poi_type="BUS_STATION",          bays=12, spawn=False, side="west", offset=40.0,
          w=160.0, d=120.0),
-    dict(id="ninh_hoa",      name="Bến xe Ninh Hòa",        lat=12.493438, lon=109.127087,
+    dict(id="ninh_hoa",      name="Bến xe Ninh Hòa",        lat=12.476838, lon=109.129042,
          poi_type="BUS_STATION",          bays=14, spawn=False, side="west", offset=40.0,
          w=180.0, d=130.0),
-    dict(id="cam_ranh",      name="Bến xe Cam Ranh",        lat=11.887931, lon=109.094847,
+    dict(id="cam_ranh",      name="Bến xe Cam Ranh",        lat=11.918344, lon=109.146673,
          poi_type="BUS_STATION",          bays=18, spawn=False, side="west", offset=40.0,
          w=200.0, d=140.0),
-    dict(id="vinh_hao",      name="Bến xe Vĩnh Hảo",        lat=11.305535, lon=108.721349,
+    # OSM node11197199499 public_transport=station tren QL1, Xa Vinh Hao.
+    # Khong co ben xe nao o Vinh Hao (4/4 query = 0); toa do cu (11.305535,
+    # 108.721349) la INTERCHANGES["IC_Vinh_Hao"] -> ben dung dung len cao toc.
+    dict(id="vinh_hao",      name="Bến xe Vĩnh Hảo",        lat=11.309292, lon=108.742025,
          poi_type="BUS_STATION",          bays=14, spawn=False, side="west", offset=35.0,
          w=170.0, d=120.0),
-    dict(id="bau_cau",       name="Bến xe Bàu Cầu",         lat=10.865000, lon=108.030000,
-         poi_type="BUS_STATION",          bays=12, spawn=False, side="west", offset=35.0,
-         w=150.0, d=110.0),
-    dict(id="phan_ri",       name="Bến xe Phan Rí",         lat=11.165000, lon=108.535000,
+    # --- BO `bau_cau` ("Bến xe Ba Bàu") - khong co that ---
+    # 1) KHONG TON TAI: 8 query ten + 6 query viewbox bounded quanh
+    #    (10.976290,107.921683) deu = 0. "Ba Bau" chi la LANG trong
+    #    Xa Ham Thanh (reverse z14: village=Ba Bau, county=Xa Ham Thanh)
+    #    - lang thi khong phai ben.
+    # 2) KHONG CO BEN NAO o do: truc Phan Thiet -> Dau Giay (103km) khong co
+    #    ben xe that. Gan nhat: "Bến Xe Khách Bình Thuận" = station
+    #    `phan_thiet`, "Bến xe khách Xuân Lộc" = station `ham_thuan`.
+    #    "Bến Xe Nam" (10.919333,108.083923, public_transport=platform) chi
+    #    cach `phan_thiet` 3.1km -> trung.
+    # 3) KHONG NOI DUOC: toa do do 15357m khoi QL1 cua corridor (do [qc] log
+    #    07/10) > 12000m ban kinh tim cong bến tai _place_stations:9227 ->
+    #    roi ve cao toc (4391m) -> STATION_ACCESS khong duoc ket vao
+    #    EXPRESSWAY (TOPO_LEGAL) -> 24 nut INTERNAL/STATION_ACCESS tro thanh
+    #    manh rieng le @(-150420,-230691) -> validate FAIL (run 07/10).
+    # Neu tim duoc ben xe THAT o vung nay thi them lai.
+    dict(id="phan_ri",       name="Bến xe Phan Rí",         lat=11.173608, lon=108.568049,
          poi_type="BUS_STATION",          bays=10, spawn=False, side="west", offset=35.0,
          w=140.0, d=100.0),
-    dict(id="ham_thuan",     name="Bến xe Hàm Thuận",       lat=10.898000, lon=107.980000,
+    # id GIU NGUYEN "ham_thuan" (con 8 comment lich su + dong 9852 doc no),
+    # nhung ten/toa do la BEN THAT: OSM node11878252553 "Ben xe khach Xuan Loc",
+    # bus=yes + public_transport=station, Hung Vuong, P. Xuan Loc. Khong co ben
+    # nao o vi tri cu (10.898, 107.980 = lang Phu Sung, Xa Ham Kiem).
+    dict(id="ham_thuan",     name="Bến xe khách Xuân Lộc",  lat=10.915376, lon=107.398470,
          poi_type="BUS_STATION",          bays=12, spawn=False, side="west", offset=35.0,
          w=150.0, d=110.0),
-    dict(id="dau_giay",      name="Bến xe Dầu Giây",        lat=10.943068, lon=107.139889,
+    dict(id="dau_giay",      name="Bến xe Dầu Giây",        lat=10.943607, lon=107.153792,
          poi_type="BUS_STATION",          bays=16, spawn=False, side="west", offset=40.0,
          w=180.0, d=130.0),
-    dict(id="long_thanh",    name="Bến xe Long Thành",      lat=10.761314, lon=107.020635,
+    # OSM "Long Thanh" type=town (toa do cu copy ANCHORS, trung point
+    # type=historic o Xa Phoc Thai, lech 7.76km khoi thi tran)
+    dict(id="long_thanh",    name="Bến xe Long Thành",      lat=10.780518, lon=106.952321,
          poi_type="BUS_STATION",          bays=14, spawn=False, side="west", offset=35.0,
          w=160.0, d=120.0),
-    dict(id="bien_hoa",      name="Bến xe Biên Hòa",        lat=10.940000, lon=106.900000,
+    dict(id="bien_hoa",      name="Bến xe Biên Hòa",        lat=10.954215, lon=106.809114,
          poi_type="MAJOR_BUS_TERMINAL",   bays=22, spawn=False, side="west", offset=45.0,
          w=220.0, d=160.0),
-    dict(id="ho_nai",        name="Bến xe Hố Nai",          lat=10.967000, lon=106.917000,
+    dict(id="ho_nai",        name="Bến xe Hố Nai",          lat=10.967040, lon=106.886525,
          poi_type="BUS_STATION",          bays=12, spawn=False, side="west", offset=40.0,
          w=150.0, d=120.0),
     dict(id="thu_duc",       name="Bến xe Thủ Đức",         lat=10.849000, lon=106.753000,
@@ -842,7 +1020,12 @@ FACILITY_DEFS = [
     ("toll_ninh_hoa", "Trạm thu phí Ninh Hòa",   12.490000, 109.130000, "TOLL"),
     ("toll_phan_rang", "Trạm thu phí Phan Rang", 11.580000, 108.990000, "TOLL"),
     ("toll_phan_ri",  "Trạm thu phí Phan Rí",    11.170000, 108.540000, "TOLL"),
-    ("toll_ham_thuan", "Trạm thu phí Hàm Thuận", 10.900000, 107.980000, "TOLL"),
+    # POI nay toan ten bia. Toa do that doi chieu Nominatim 07/10/2026:
+    # BO ("toll_ham_thuan"): toa do (10.875250,107.931386) + ten "Tram thu phi
+    # Song Phan" trung khop voi ("toll_song_phan") L930 (lech 3m) -> trung ca
+    # toa do lan ten, tao ra 2 tram thu phi song song 0.12km. Tram THAT chi co 1:
+    # Nominatim "Tram thu phi Song Phan" = (10.8752499,107.9313864), QL1, Minh
+    # Tien/Minh Hoa, Xa Ham Thuan Nam. Giu id mang dung nghia "toll_song_phan".
     ("toll_long_thanh", "Trạm thu phí Long Thành", 10.770000, 107.020000, "TOLL"),
 
     # === TRẠM NGHỈ DỌC QL1/CAO TỐC (theo thực tế) ===
@@ -861,7 +1044,7 @@ FACILITY_DEFS = [
     ("rest_vinh_hao", "Trạm nghỉ Vĩnh Hảo",          11.310000, 108.720000, "REST_AREA"),
     ("rest_phan_ri",  "Trạm nghỉ Phan Rí",           11.170000, 108.540000, "REST_AREA"),
     ("rest_ham_tan",  "Trạm nghỉ Hàm Tân",           10.780000, 107.820000, "REST_AREA"),
-    ("rest_ba_bau",   "Trạm nghỉ Bà Bàu",            10.870000, 108.030000, "REST_AREA"),
+    ("rest_ba_bau",   "Trạm nghỉ Ba Bàu",            10.870000, 108.030000, "REST_AREA"),
     ("rest_dau_giay", "Trạm nghỉ Dầu Giây",          10.940000, 107.140000, "REST_AREA"),
     ("rest_xuan_loc", "Trạm nghỉ Xuân Lộc",          10.890000, 107.370000, "REST_AREA"),
     ("rest_trang_bom", "Trạm nghỉ Trảng Bom",        10.950000, 107.060000, "REST_AREA"),
@@ -873,7 +1056,12 @@ FACILITY_DEFS = [
     ("fuel_dau_giay", "Petrolimex Dầu Giây",  10.937000, 107.142000, "FUEL_STATION"),
     ("pvoil_hhn",     "PVOIL Hoàng Hữu Nam",   10.874000, 106.820000, "FUEL_STATION"),
     ("pvoil_phan_thiet", "PVOIL Phan Thiết",  10.925000, 108.098000, "FUEL_STATION"),
-    ("fuel_tuy_phong", "Petrolimex Tuy Phong",         11.400000, 108.850000, "FUEL_STATION"),
+    # TOA DO CU (11.400000,108.850000) = copy anchor Tuy_Phong cu -> reverse ra
+    # "Xa Thuan Nam, Tinh Khanh Hoa" (13km qua tinh tinh Phan Thiet) nen ten
+    # "Petrolimex Tuy Phong" SAI cho cho no dung. Di ve co xang THAT da verify:
+    # Nominatim "Petrolimex, Quoc lo 1, Phuoc Nam, Xa Thuan Nam" (11.4971697,
+    # 108.9128123) - nam ~0.9km tu corridor QL1 nen van tim duoc node.
+    ("fuel_tuy_phong", "Petrolimex Thuận Nam",         11.497169, 108.912812, "FUEL_STATION"),
     # id phai khop TEN: PVOIL Phan Rí Cửa trước đây mang id `fuel_phan_ri`,
     # trùng với Petrolimex Phan Rí (L890) -> 2 POI cùng id trong
     # stations.json, tra cuu theo id ra sai bản. Petrolimex Hàm Tân (L892) bị
@@ -891,7 +1079,7 @@ FACILITY_DEFS = [
     ("fuel_thap_cham", "Petrolimex Tháp Chàm",        11.600000, 109.010000, "FUEL_STATION"),
     ("fuel_vinh_hao", "Petrolimex Vĩnh Hảo",          11.310000, 108.720000, "FUEL_STATION"),
     ("fuel_phan_ri",  "Petrolimex Phan Rí",           11.170000, 108.540000, "FUEL_STATION"),
-    ("fuel_ham_thuan", "Petrolimex Hàm Thuận",        10.900000, 107.980000, "FUEL_STATION"),
+    ("fuel_ham_thuan", "Cửa hàng Xăng dầu Petrolimex Số 102", 10.917513, 107.986082, "FUEL_STATION"),
     ("fuel_ham_tan",  "Petrolimex Hàm Tân",           10.780000, 107.820000, "FUEL_STATION"),
     ("fuel_long_thanh", "Petrolimex Long Thành",      10.760000, 107.020000, "FUEL_STATION"),
     ("fuel_bien_hoa", "Petrolimex Biên Hòa",          10.940000, 106.900000, "FUEL_STATION"),
@@ -914,9 +1102,14 @@ FACILITY_DEFS = [
     ("school_phan_rang",  "THPT Phan Rang",             11.576983, 108.986539, "SCHOOL"),
     ("school_thap_cham",  "THPT Tháp Chàm",             11.600000, 109.010000, "SCHOOL"),
     ("school_vinh_hao",   "THPT Vĩnh Hảo",              11.305535, 108.721349, "SCHOOL"),
-    ("school_tuy_phong",  "THPT Tuy Phong",             11.400000, 108.850000, "SCHOOL"),
+    # TOA DO CU (11.400000,108.850000) = copy anchor Tuy_Phong cu -> dat trong
+    # Xa Thuan Nam, cach truong THAT 19km. Di ve toa do that da verify:
+    # Nominatim "Truong Trung hoc pho thong Tuy Phong, Le Quy Don, Lien Huong"
+    # = (11.2281144, 108.7215225). Noi tim duoc node = corridor tai do thuoc
+    # Xa Tuy Phong -> ten "THPT Tuy Phong" khop cho cho no dung.
+    ("school_tuy_phong",  "THPT Tuy Phong",             11.228114, 108.721523, "SCHOOL"),
     ("school_phan_ri",    "THPT Phan Rí",               11.165000, 108.535000, "SCHOOL"),
-    ("school_ham_thuan",  "THPT Hàm Thuận",             10.898000, 107.980000, "SCHOOL"),
+    ("school_ham_thuan",  "Trường THPT Hàm Thuận Nam",      10.852705, 107.882636, "SCHOOL"),
     ("school_phan_thiet", "THPT Phan Thiết",            10.929626, 108.104387, "SCHOOL"),
     ("school_dau_giay",   "THPT Dầu Giây",              10.943068, 107.139889, "SCHOOL"),
     ("school_long_thanh", "THPT Long Thành",            10.761314, 107.020635, "SCHOOL"),
@@ -2858,6 +3051,13 @@ class MapGenerator:
 
     def _reserve(self, x, z, r):
         self.object_positions.append((x, z, r))
+        # Marker do CHINH ben xe dat (hang rao, cong, den, cay trong san) —
+        # validator reserved zone phai bo qua cac chi so nay, khong thi chinh
+        # canh cong ben vi pham "object xuyen san ben" (tu tham chieu).
+        if getattr(self, "_res_own_flag", False):
+            if getattr(self, "_station_own", None) is None:
+                self._station_own = set()
+            self._station_own.add(len(self.object_positions) - 1)
         self._index_object(x, z, r)
 
     # --------------------------------------------------------------------------
@@ -3090,9 +3290,15 @@ class MapGenerator:
               % (len(self.nodes), len(self.segments), self.corridor_len / 1000.0))
         print("      grading roads (max slope cho xe khách) ...")
         self._fix_internal_crossings()
+        # --- COMPREHENSIVE FIXES cho các lỗi validation phức tạp ---
+        self._comprehensive_fixes()
         self._prune_orphans()
         self._weld_close_nodes()
         self._connect_islands()
+        # CAU TREN BIEN — goi MUON (sau khi moi duong da build xong: secondary,
+        # provincial, facility access) vi water_factor() khong biet bien, va dat
+        # TRUOC _fix_bridge_heights de cao do duoc xu ly dung.
+        self._mark_bridges_over_sea()
         self._fix_bridge_heights()
         self._grade_roads()
         self._auto_tunnel_steep()
@@ -3269,6 +3475,42 @@ class MapGenerator:
         self._prune_orphans()
         self._repair_station_refs()
         self._sync_graph()
+        # --- P73 QUET DAU CUT CUOI (2026-10-08) ---
+        # `_resolve_meaningless_dead_ends` chỉ chạy MỘT lần (ở trên), tức là
+        # TRƯỚC 4 bước còn lại có khả năng sinh đầu cụt MỚI:
+        #   `_fix_internal_crossings` (chú thích đầu block này: "xoá đoạn ->
+        #   sinh đầu cụt MỚI ở 2 đầu đoạn bị xoá"), `_heal_ramp_fragments`,
+        #   `_reconnect_islands`, `_ensure_station_access`.
+        # `validate` dùng CÙNG predicate (`_dead_end_meaningful`) nên đầu cụt
+        # không ai dọn = FAIL. Đo được: "2 duong CUT VO NGHIA ... 70m LOCAL
+        # @(-38271,-164651); 70m LOCAL @(-113616,-222637)" — 70m vượt ngưỡng
+        # 60m của predicate nên không được miễn, mà `_prune_useless_stubs`
+        # (min_len=45, cắt LOCAL ở L>=120) cũng bỏ qua => khe 60–120m lọt lưới.
+        # Sửa NGUYÊN NHÂN GỐC = thứ tự, KHÔNG nở validate: dọn lại đúng predicate.
+        # AN TOÀN với lỗi P72 (cắt ngang cao tốc): `_t_junction_link` chặn
+        # `_crosses_major` (L4942) => hoặc nối hợp pháp, hoặc XOÁ segment.
+        # Xoá lá degree-1 KHÔNG làm đứt mạng (nó là node lá), và
+        # `_repair_route_refs` (dưới) chạy SAU nên ref tuyến tự sửa.
+        self._resolve_meaningless_dead_ends()
+        self._build_node_seg_index()
+        self._prune_orphans()
+        self._repair_station_refs()
+        self._sync_graph()
+        # DỐC PHẢI LÀ BƯỚC ĐỔI HÌNH HỌC CUỐI CÙNG. `_fix_final_slopes` chạy ở
+        # 3216, nhưng TÁM bước mutate graph vẫn chạy SAU nó:
+        #   `_fix_internal_crossings` 3230/3267, `_reconnect_islands` 3233/3252/
+        #   3272, `_ensure_station_access` 3240/3270, `_heal_ramp_fragments`
+        #   3251, `_purge_major_danglers` 3235, `_resolve_meaningless_dead_ends`
+        #   3237.
+        # BẰNG CHỨNG: cả 2 lần gọi trước đều KHÔNG in dòng
+        # "doc >16%: danh dau ... cau vuot" (hàm chỉ in khi `marked > 0`) =>
+        # marked=0 => thời điểm 3216 chưa đoạn nào >16%. Nhưng validate báo
+        # 33.2% => đoạn đó sinh SAU 3216 và không ai làm phẳng lại.
+        # An toàn: các hàm trên chỉ đổi cao độ node (`y`), không đổi `x/z`
+        # => không làm đứt mạng, không đẩy bến ra ngoài rect, không sinh đoạn
+        # cắt mới (validate cắt đường vẫn giữ nguyên kết quả).
+        self._fix_final_slopes()
+        self._build_node_seg_index()
         # TUYẾN CHỈ ĐƯỢC SỬA SAU KHI ĐỒ THỊ ĐÃ ỔN. Trước đây nó chạy ở hai
         # chỗ 3121/3143 — lúc đó đồ thị còn rung (trước _heal_ramp_fragments,
         # _reconnect_islands, _fix_internal_crossings, _ensure_station_access)
@@ -3723,24 +3965,48 @@ class MapGenerator:
             return
         ql_pool = [(0, nid, n["x"], n["z"]) for nid, n in self.nodes.items()
                    if n["type"] == "highway" and n.get("_src") != "ct"]
-        ct_pool = getattr(self, "_ct_nodes", [])
+        # LOẠI node Vành đai 3 khỏi ct_pool.
+        #
+        # `_add_expressway_chain` append `_ct_nodes` cho CẢ HAI lần gọi (CT01
+        # và Vành đai_3) và `_connect_ring3` chạy SAU chuỗi Vành đai 3 -> nếu
+        # không loại thì `_nearest_node_on` trả về CHÍNH node đang xét (cách 0m),
+        # `_add_link_road(nid, nid)` có L<1.0 nên `return False` mà KHÔNG in
+        # gì -> log ra "noi CT01: 0" mà không có lời giải thích.
+        # Đo được: `Vanh dai 3 links: 4 (noi CT01: 0)` trước khi sửa.
+        ring_set = set(ids)
+        ct_pool = [e for e in getattr(self, "_ct_nodes", ())
+                   if e[1] not in ring_set]
         picks = [ids[0], ids[len(ids) // 3], ids[2 * len(ids) // 3], ids[-1]]
         made = 0
+        made_ct = 0
         for nid in picks:
             n = self.nodes[nid]
-            tgt, d = self._nearest_node_on(n["x"], n["z"], ql_pool, 9000.0)
-            if tgt is not None:
-                # RAMP, không phải ARTERIAL: Vành đai 3 là cao tốc, QL1 là
-                # quốc lộ, đường nối giữa hai đường lớn là RAMP. Gán ARTERIAL
-                # sinh cặp `ARTERIAL<->EXPRESSWAY` ngoài ma trận .
-                if self._add_link_road(nid, tgt, "RAMP", "RING3_LINK_QL"):
-                    made += 1
-                continue
-            tgt, d = self._nearest_node_on(n["x"], n["z"], ct_pool, 9000.0)
+            # CT01 TRƯỚC, QL1 SAU — không phải ngược lại.
+            #
+            # `topo_validate` nhóm thành phần CAO TỐC bằng BFS chỉ đi qua
+            # EXPRESSWAY/RAMP/TUNNEL (`_hi_component`). Nút QL1 là NATIONAL
+            # nên RAMP->QL1 đứt ngay tại đó: Vành đai 3 thành một "hành lang
+            # liên tỉnh" tách rời. Bản cũ thử `ql_pool` trước và `continue`
+            # khi thành công nên KHÔNG BAO GIỜ chạm `ct_pool` -> đo được
+            # "cao toc chia thanh 3 doan rieng le" (506km @Vinh_Hao |
+            # 88km @Long_Thanh | 25km @Suoi_Tien).
+            #
+            # Nối vào CT01 bằng RAMP là hợp pháp: TOPO_LEGAL["EXPRESSWAY"]
+            # chứa "RAMP" và TOPO_LEGAL["RAMP"] chứa "EXPRESSWAY" (đối xứng).
+            tgt, d_ct = self._nearest_node_on(n["x"], n["z"], ct_pool, 9000.0)
             if tgt is not None and self._add_link_road(nid, tgt, "RAMP",
-                                                       "RING3_LINK_CT"):
+                                                       "RING3_LINK_CT01"):
                 made += 1
-        print("      Vanh dai 3 links: %d" % made)
+                made_ct += 1
+                continue
+            # RAMP, không phải ARTERIAL: Vành đai 3 là cao tốc, QL1 là
+            # quốc lộ, đường nối giữa hai đường lớn là RAMP. Gán ARTERIAL
+            # sinh cặp `ARTERIAL<->EXPRESSWAY` ngoài ma trận .
+            tgt, d_ql = self._nearest_node_on(n["x"], n["z"], ql_pool, 9000.0)
+            if tgt is not None and self._add_link_road(nid, tgt, "RAMP",
+                                                       "RING3_LINK_QL"):
+                made += 1
+        print("      Vanh dai 3 links: %d (noi CT01: %d)" % (made, made_ct))
 
     # sections/status theo chainage THẬT
     def _add_expressway_chain(self, pts, road_name, anchor_s_map, sections):
@@ -3764,9 +4030,18 @@ class MapGenerator:
             self._ct_nodes.append((p[2], nid, p[0], p[1]))
             self._last_hw_ids.append(nid)
             if prev:
-                sid = self.add_segment(prev, nid, "EXPRESSWAY", name=road_name, section=nm)
+                sid = self.add_segment(prev, nid, "EXPRESSWAY", name=road_name,
+                                       section=nm)
                 if sid:
                     self.segments[sid]["status"] = st
+                else:
+                    # GAP IM LẶNG trong day chinh cao to: `add_segment` tu choi
+                    # nhung `van` van chuyen `prev = nid` -> doan giua 2 node mat
+                    # ton tai, chu khong co segment. Day la nguon goc gia thuyet
+                    # cua "cao toc chia thanh N doan rieng le".
+                    # IN toa do de xac minh, khong doan nguyen nhan.
+                    print("      ! cao to %s: add_segment tu choi giua "
+                          "(%.0f,%.0f) -> gap" % (road_name, p[0], p[1]))
             prev = nid
 
     def _densify(self, pts, max_len):
@@ -3908,7 +4183,19 @@ class MapGenerator:
                 continue
             for nid in (seg["from"], seg["to"]):
                 n = self.nodes[nid]
-                y = self.get_elevation(n["x"], n["z"], water=False)
+                if seg.get("structure") == "bien":
+                    # BIEN — KHONG DUOC GOI get_elevation(). Tham so `water`
+                    # chi an vao dong cuoi cung `wf = ... if water else 0.0`
+                    # (nang song/ho). Nhang BIEN (`dist_to_coast <= 0`) doc
+                    # lenh TRUOC do va khong he doc `water` — no luon tra ve
+                    # SEA_FLOOR (~-15m). Duong tren cao o ven bien (y 40-66m)
+                    # ma gan truc tiep la lan xuong duoi bien: loi "lo lung"
+                    # tro thanh loi "chim", nghiem hon truoc. GIU NGUYEN cao do
+                    # duong da duoc grade — khong sua gi ca.
+                    y = n.get("y", 0.0)
+                else:
+                    # song/ho: nang duong len mat nuoc (dung nhu docstring)
+                    y = self.get_elevation(n["x"], n["z"], water=False)
                 n["y"] = y
                 n["elev"] = round(y, 3)
                 n_fixed += 1
@@ -4104,6 +4391,12 @@ class MapGenerator:
         if L < 1.0:
             # 2 node trùng nhau / quá gần: link dài 0m là vô nghĩa. Bản cũ
             # để lọt vì không chia cho L (bắt buộc phải chặn TRƯỚC khi chia).
+            #
+            # IN RA: 2 node KHÁC id mà cách <1m là một lỗ hổng topo thật
+            # (node chưa weld) — bỏ qua im lặng khiến "noi CT01: 0" xuất hiện
+            # không có lời giải thích (đo được).
+            print("      bo qua link %s: 2 node qua gan (%.2f m)"
+                  % (name, L))
             return False
         if L > MAX_LINK_LEN:
             print("      bo qua link %s: qua xa (%.1f km > %.0f km)"
@@ -4194,18 +4487,27 @@ class MapGenerator:
         ql_pool = [(0, nid, n["x"], n["z"]) for nid, n in self.nodes.items()
                    if n["type"] == "highway" and n.get("_src") != "ct"]
         ct_pool = getattr(self, "_ct_nodes", [])
+        # Tăng IC_MAX_LINK_M để giảm fallback (4.5km -> 8km)
+        ic_max_link = 8000.0
         for (ic_name, lat, lon, style) in INTERCHANGES:
             ix, iz = self.proj(lat, lon)
             ql_node, dq = self._nearest_node_on(ix, iz, ql_pool, 9000.0)
-            ct_node, d_ct = self._nearest_node_on(ix, iz, ct_pool, IC_MAX_LINK_M)
+            ct_node, d_ct = self._nearest_node_on(ix, iz, ct_pool, ic_max_link)
             if ql_node is None:
                 continue
-            if ct_node is None or d_ct > IC_MAX_LINK_M or dq > 9000.0:
-                tgt = ct_node if ct_node is not None else ql_node
-                if tgt is not None:
-                    # RAMP: đường nối từ QL1 xuống CT01 là đường vào IC.
-                    self._add_link_road(ql_node if ql_node != tgt else ql_node,
-                                        tgt, "RAMP", "LINK_" + ic_name)
+            # Nếu CT01 quá xa, vẫn cố tạo interchange nhưng chỉ kết nối QL1
+            # Sau này _connect_ring3 và secondary networks sẽ nối tiếp
+            if ct_node is None or d_ct > ic_max_link or dq > 9000.0:
+                # Vẫn tạo IC node để giữ topology, nhưng chỉ nối QL1
+                reg, _ = self.determine_region(iz, ix)
+                ic_node = self.add_node(ix, iz, reg, n_type="interchange", name=ic_name)
+                self._add_link_road(ql_node, ic_node, "RAMP", "LINK_QL_" + ic_name)
+                # Thử tìm đường địa phương gần để nối tiếp
+                local_pool = [(0, nid, n["x"], n["z"]) for nid, n in self.nodes.items()
+                              if n["type"] in ("junction", "national_road", "arterial", "crossing")]
+                local_node, dl = self._nearest_node_on(ix, iz, local_pool, 12000.0)
+                if local_node is not None:
+                    self._add_link_road(ic_node, local_node, "RAMP", "LINK_LOCAL_" + ic_name)
                 skipped += 1
                 continue
 
@@ -4299,6 +4601,51 @@ class MapGenerator:
                 made += 1
         self.bridge_segments = getattr(self, "bridge_segments", 0) + made
         print("      cau tu sinh tren duong cat song: %d" % made)
+
+    def _mark_bridges_over_sea(self):
+        """
+        DUONG DI TREN BIEN GAN BO = CAU (viaduct).
+
+        `water_factor()` chi biet SONG + HO, khong biet BIEN — nen doan QL1 /
+        CT01 / ramp di tren vinh (Dai Lanh, Ca Na) truoc day khong bi danh dau
+        bridge. Hau qua: map.js KHONG dam nen (vi 2 guard tai L1940 + L1957
+        da lo) NHUNG cung khong duyet mat cau + lan can + tru => duong van la
+        tam phang lo lung tren mat nuoc, va audit_world tinh la "duong lo
+        lung trong khong".
+
+        NGUONG CHI VEN BO: -1000m <= dist_to_coast <= -5m
+          * > -5m  : DAT (chan nhieu doan QL1 sat bo — doan do co 0 mau trong
+                     vung (-5,0) nhung van chot lai de an toan).
+          * < -1000m: KHONG DOT. Do la nhom QL1/Song Cau bi model coi la duoi
+                     day bien toi 40km (cho/benh vien/truong THPT cung bi).
+                     Gan bridge vao do = cau 39km thang ngang dai duong. Do la
+                     loi BO BIEN/DOI HINH, khong phai loi cau — can xu ly rieng.
+        """
+        made = 0
+        for sid, seg in self.segments.items():
+            if seg.get("bridge") or seg["class"] in ("TUNNEL", "INTERNAL"):
+                continue
+            a = self.nodes[seg["from"]]
+            b = self.nodes[seg["to"]]
+            if dist(a["x"], a["z"], b["x"], b["z"]) < 30.0:
+                continue
+            hit = False
+            for k in range(1, 6):
+                t = k / 6.0
+                d = self.dist_to_coast(lerp(a["x"], b["x"], t),
+                                       lerp(a["z"], b["z"], t))
+                if -1000.0 <= d <= -5.0:
+                    hit = True
+                    break
+            if hit:
+                seg["bridge"] = True
+                seg["structure"] = "bien"
+                if seg.get("type") not in ("tunnel",):
+                    seg["type"] = "bridge"
+                made += 1
+        self.bridge_segments = getattr(self, "bridge_segments", 0) + made
+        # log PHAI in ca khi made == 0 — khong duoc im lang khi fix = 0
+        print("      cau tren bien ven bo (dist_to_coast -5..-1000m): %d" % made)
 
     def _build_tunnels(self):
         """
@@ -6070,6 +6417,7 @@ class MapGenerator:
         s = 7000.0
         side = 1.0
         idx = 0
+        n_skip = 0
         while s < self.corridor_len - 7000.0:
             path = self._corridor_subpath(s, s + 260.0)
             if len(path) >= 2:
@@ -6079,14 +6427,19 @@ class MapGenerator:
                 L = math.hypot(dx, dz) or 1.0
                 ux, uz = dx / L, dz / L
                 nx, nz = -uz, ux
-                if self.dist_to_coast(px, pz) > 20.0 and \
-                        self.water_factor(px + nx * 12 * side,
-                                          pz + nz * 12 * side) < 0.2:
-                    bx = px + nx * 11.0 * side
-                    bz = pz + nz * 11.0 * side
+                # Kiểm TẠI VỊ TRÍ SẼ GHI VÀO DICT (đã làm tròn) và đúng ngưỡng
+                # validation (fail nếu water_factor > 0.15) — cùng pattern với
+                # EMERGENCY_BAY. Bản cũ đo ở offset 12m với ngưỡng 0.2 nhưng đặt
+                # điểm dừng ở 11m -> vượt cổng generation rồi rớt "dưới nước".
+                bx = round(px + nx * 11.0 * side, 2)
+                bz = round(pz + nz * 11.0 * side, 2)
+                if self.water_factor(bx, bz) > 0.15 or \
+                        self.dist_to_coast(bx, bz) <= 20.0:
+                    n_skip += 1
+                else:
                     self.bus_stops.append({
                         "id": "busstop_%03d" % idx,
-                        "x": round(bx, 2), "z": round(bz, 2),
+                        "x": bx, "z": bz,
                         "y": round(self.get_road_datum(bx, bz), 3),
                         "heading": round(math.atan2(ux, uz), 3),
                         "side": side, "s": round(s, 1),
@@ -6096,7 +6449,9 @@ class MapGenerator:
                     idx += 1
             s += rng.uniform(7600.0, 9600.0)
             side = -side
-        print("      diem dung xe buyt tren QL1: %d" % len(self.bus_stops))
+        # In LUON kể cả khi bỏ qua = 0 — không được im lặng che mất kết quả.
+        print("      diem dung xe buyt tren QL1: %d (bo qua %d vi gan mat nuoc)"
+              % (len(self.bus_stops), n_skip))
 
     def _weld_pair(self, a_id, b_id):
         """Gộp node `a_id` vào `b_id` (giữ node ít connection lại).
@@ -6238,11 +6593,31 @@ class MapGenerator:
         """
         pool = [(0, n["id"], n["x"], n["z"]) for n in self.nodes.values()]
         moved = 0
+        no_dry = 0
         for bs in getattr(self, "bus_stops", []) or []:
             tgt, d = self._nearest_node_on(bs["x"], bs["z"], pool, 4000.0)
             if tgt is None or d <= max_d:
                 continue
             tn = self.nodes[tgt]
+            # Node GẦN NHẤT có thể nằm dưới nước (bờ sông / ven biển). Đo được:
+            # 37/65 điểm dừng bị dời và busstop_043 rơi xuống sông -> validation
+            # lỗi "điểm dừng dưới nước". Phải chọn node RỒI gần nhất, không phải
+            # node gần nhất không phân biệt nước/đất.
+            if self.water_factor(tn["x"], tn["z"]) > 0.15:
+                dry_id, dry_d = None, float("inf")
+                for (_s, nid, nx, nz) in pool:
+                    if self.water_factor(nx, nz) > 0.15:
+                        continue
+                    dd = dist(bs["x"], bs["z"], nx, nz)
+                    if dd < dry_d:
+                        dry_id, dry_d = nid, dd
+                if dry_id is None or dry_d > 4000.0:
+                    # Không có node RỒI đủ gần -> GIỮ VỊ TRÍ CŨ (vị trí cũ đã
+                    # được _build_bus_stops kiểm là đất liền). Sai lệch với đường
+                    # là warning audit, không chặn export như lỗi dưới nước.
+                    no_dry += 1
+                    continue
+                tgt, d, tn = dry_id, dry_d, self.nodes[dry_id]
             bs["x"] = round(tn["x"], 2)
             bs["z"] = round(tn["z"], 2)
             bs["y"] = round(tn.get("y", bs.get("y", 0.0)), 3)
@@ -6250,6 +6625,9 @@ class MapGenerator:
         if moved:
             print("      bam lai %d diem dung vao duong (truoc do lech >%dm)"
                   % (moved, int(max_d)))
+        # In LUON kể cả = 0 — không được im lặng che mất kết quả.
+        print("      diem dung khong bam duoc vi node gan nhat duoi nuoc: %d"
+              % no_dry)
         return moved
 
     def _close_dead_ends(self, reach=320.0):
@@ -6466,7 +6844,8 @@ class MapGenerator:
         nhà, minimap vẽ 1 nét thẳng 17km. Đo được trên smoke: **4 đoạn > 8km**
         (`tinh_lo_Vung_Ro_Van_Gia` 17.1km, `tinh_lo_Nam_Tuy_Hoa_Dong_Hoa`
         14.3km, một COLLECTOR không tên 20.9km, `tinh_lo_Phan_Thiet_Ham_Tin`
-        28.1km) ⇒ `validate` chặn export.
+        28.1km) ⇒ `validate` chặn export. (Đoạn này do SETTLEMENTS đổi tên
+        `Ham_Tin` -> `Tan_Thanh` giờ tên là `tinh_lo_Phan_Thiet_Tan_Thanh`.)
 
         Node thêm vào là node HÌNH HỌC (`n_type="link"`), không phải ngã giao,
         nên dùng `allow_close_junction=True` (P38) — nếu không, luật "tách
@@ -7678,9 +8057,367 @@ class MapGenerator:
             _r["ung vien da thu"] = _r.get("ung vien da thu", 0) + 1
         _r["het ung vien"] = _r.get("het ung vien", 0) + 1
         return False
+
+    def _comprehensive_fixes(self):
+        """
+        PHASE FIXES — chạy trong `generate_topology`, sau
+        `_fix_internal_crossings`, trước grading.
+
+        CHỈ chứa fix cấp đồ thị (graph-level): 3 hàm này mutate
+        `self.segments` / `self.nodes` nên PHẢI chạy trước khi grading và
+        trước khi đặt nhà/đồ vật.
+
+        Thứ tự có chủ đích: `_ensure_highway_continuity` chạy TRƯỚC vì nó
+        thêm đoạn EXPRESSWAY — cụm ramp đang "thiếu đầu cao tốc" có thể được
+        cấp đầu chính từ đó, tránh nối ramp thừa.
+
+        KHÔNG chứa cleanup nhà/đồ vật trong sân bến hay cao tốc:
+          * `self.buildings` KHÔNG BAO GIỜ được append (storage thật nằm ở
+            `self._chunk(cx,cz)["buildings"]`) -> mọi hàm dọn `self.buildings`
+            là no-op vĩnh viễn.
+          * `_place_objects` (dòng `_seg_in_station(..., 10.0)`) và
+            `_place_buildings` (`_in_station_zone(..., 6.0)` + nhánh
+            EXPRESSWAY) đã tự guard từ lúc đặt.
+          * `self.object_positions` là marker `_reserve()` (vị trí đã chiếm)
+            chứ không phải object render; dọn nó sẽ xoá MẤU của chính bến
+            (cổng/biển/cột trong sân) và làm hỏng logic placement.
+        """
+        print("      [comprehensive_fixes] graph-level fixes ...")
+        fixes = {}
+
+        # 1. CAO TỐC LIÊN TỤC (nguồn gốc "cao toc chia thanh N doan rieng le")
+        fixes["cao_toc_noi_dut"] = self._ensure_highway_continuity()
+        # 2. RAMP: mỗi cụm phải có đầu cao tốc + đầu đường địa phương
+        fixes["ramp_thieu_dau"] = self._fix_ramp_connectivity()
+        # 3. CẦU/HẦM: 2 đầu phải nối vào đường thường
+        fixes["cau_ham_co_dau"] = self._fix_bridge_tunnel_endpoints()
+
+        total = sum(fixes.values())
+        # In ĐỦ kể cả khi = 0: log "0 fix" vẫn là số liệu kiểm chứng được,
+        # khác hẳn việc in "Tong cong N fix" cho một hàm no-op.
+        print("      [comprehensive_fixes] %s -> tong %d"
+              % (", ".join("%s=%d" % kv for kv in sorted(fixes.items())), total))
+        if total:
+            self._build_node_seg_index()
+            self._sync_graph()
+        return total
+
+    def _ramp_head_missing(self, cluster):
+        """(thiếu đầu cao tốc?, thiếu đầu đường địa phương?) của 1 cụm ramp.
+
+        Cùng luật với `topo_validate`: BFS qua cạnh RAMP, cụm phải chạm cả
+        EXPRESSWAY/TUNNEL lẫn đường địa phương.
+        """
+        HI_SIDE = ("EXPRESSWAY", "TUNNEL")
+        LOW_SIDE = ("NATIONAL", "ARTERIAL", "COLLECTOR", "PROVINCIAL_ROAD",
+                    "LOCAL", "RURAL_LOCAL", "SERVICE", "STATION_ACCESS",
+                    "RESIDENTIAL", "COMMERCIAL", "INTER_VILLAGE",
+                    "INDUSTRIAL_ACCESS", "AGRICULTURAL")
+        has_hi = has_lo = False
+        for sid in cluster:
+            sg = self.segments.get(sid)
+            if sg is None:
+                continue
+            for e in (sg["from"], sg["to"]):
+                for oid in self._segs_at(e):
+                    os_ = self.segments.get(oid)
+                    if os_ is None:
+                        continue
+                    cl = os_["class"]
+                    if cl == "RAMP":
+                        continue
+                    if cl in HI_SIDE:
+                        has_hi = True
+                    elif cl in LOW_SIDE:
+                        has_lo = True
+                if has_hi and has_lo:
+                    return False, False
+        return (not has_hi), (not has_lo)
+
+    def _ramp_clusters(self):
+        """Gom cụm ramp (BFS qua cạnh RAMP) — cùng cách phân cụm với validate."""
+        self._build_node_seg_index()
+        adj = {}
+        for sid, sg in self.segments.items():
+            if sg["class"] != "RAMP":
+                continue
+            adj.setdefault(sg["from"], []).append(sid)
+            adj.setdefault(sg["to"], []).append(sid)
+        seen, clusters = set(), []
+        for start in list(adj):
+            if start in seen:
+                continue
+            seen.add(start)
+            stack, comp = [start], set()
+            while stack:
+                cur = stack.pop()
+                for sid in adj.get(cur, ()):
+                    if sid in comp:
+                        continue
+                    comp.add(sid)
+                    sg = self.segments[sid]
+                    for e in (sg["from"], sg["to"]):
+                        if e not in seen:
+                            seen.add(e)
+                            stack.append(e)
+            if comp:
+                clusters.append(comp)
+        return clusters
+
+    def _fix_ramp_connectivity(self):
+        """Nối đầu còn thiếu của các cụm ramp.
+
+        Chỉ nối đầu THIẾU (bản cũ nối cả 2 đầu dù mới thiếu 1), pool dựng
+        MỘT LẦN thay vì trong vòng lặp, và đếm LINK ĐƯỢC `_add_link_road`
+        CHẤP NHẬN. `_add_link_road` từ chối rất nhiều (qua biển, dốc, ma
+        trận) nên đếm "cụm đã thử" sẽ báo số liệu không có thật.
+        """
+        HI_SIDE = ("EXPRESSWAY", "TUNNEL")
+        LOW_SIDE = ("NATIONAL", "ARTERIAL", "COLLECTOR", "PROVINCIAL_ROAD",
+                    "LOCAL", "RURAL_LOCAL", "SERVICE", "STATION_ACCESS",
+                    "RESIDENTIAL", "COMMERCIAL", "INTER_VILLAGE",
+                    "INDUSTRIAL_ACCESS", "AGRICULTURAL")
+        hi_pool, lo_pool = [], []
+        for nid, n in self.nodes.items():
+            seen_hi = seen_lo = False
+            for sid in self._segs_at(nid):
+                sg = self.segments.get(sid)
+                if sg is None:
+                    continue
+                cl = sg["class"]
+                if not seen_hi and cl in HI_SIDE:
+                    hi_pool.append((0, nid, n["x"], n["z"]))
+                    seen_hi = True
+                elif not seen_lo and cl in LOW_SIDE:
+                    lo_pool.append((0, nid, n["x"], n["z"]))
+                    seen_lo = True
+                if seen_hi and seen_lo:
+                    break
+
+        made = n_need = 0
+        for cluster in self._ramp_clusters():
+            need_hi, need_lo = self._ramp_head_missing(cluster)
+            if not (need_hi or need_lo):
+                continue
+            n_need += 1
+            made += self._connect_ramp_cluster_to_network(
+                cluster, need_hi, need_lo, hi_pool, lo_pool)
+        if n_need:
+            print("      ramp: %d cum thieu dau -> noi duoc %d link"
+                  % (n_need, made))
+        return made
+
+    def _connect_ramp_cluster_to_network(self, cluster, need_hi, need_lo,
+                                          hi_pool, lo_pool, max_m=2500.0):
+        """Nối đầu còn thiếu. Trả về số link THÀNH CÔNG (không phải số thử)."""
+        made = 0
+        c_nodes = set()
+        for sid in cluster:
+            sg = self.segments.get(sid)
+            if sg is None:
+                continue
+            c_nodes.add(sg["from"])
+            c_nodes.add(sg["to"])
+        c_nodes = {n for n in c_nodes if n in self.nodes}
+        if not c_nodes:
+            return 0
+        for need, pool, tag in ((need_hi, hi_pool, "RAMP_FIX_HI"),
+                                (need_lo, lo_pool, "RAMP_FIX_LO")):
+            if not need or not pool:
+                continue
+            best = None                     # (khoảng cách, node trong cụm, đích)
+            for cnid in c_nodes:
+                cn = self.nodes[cnid]
+                tgt, d = self._nearest_node_on(cn["x"], cn["z"], pool, max_m)
+                if tgt is None or tgt in c_nodes:
+                    continue
+                if best is None or d < best[0]:
+                    best = (d, cnid, tgt)
+            if best is None:
+                print("      bo qua %s: khong tim thay dau cach < %.0f m"
+                      % (tag, max_m))
+                continue
+            _d, cnid, tgt = best
+            if self._add_link_road(cnid, tgt, "RAMP", tag):
+                made += 1
+        return made
+
+    def _regular_pool(self, rebuild=False):
+        """Pool node chạm đường địa phương — dựng 1 lần, tái sử dụng.
+
+        Bản cũ quét TOAN BO `self.nodes` cho mỗi đầu cầu/hầm -> O(n) mỗi lần.
+        """
+        if not rebuild:
+            pool = getattr(self, "_regular_pool_cache", None)
+            if pool is not None:
+                return pool
+        REG = ("NATIONAL", "ARTERIAL", "COLLECTOR", "PROVINCIAL_ROAD",
+               "LOCAL", "RURAL_LOCAL", "SERVICE", "STATION_ACCESS",
+               "INTER_VILLAGE", "INDUSTRIAL_ACCESS", "RESIDENTIAL",
+               "COMMERCIAL", "AGRICULTURAL")
+        pool = []
+        for nid, n in self.nodes.items():
+            for sid in self._segs_at(nid):
+                sg = self.segments.get(sid)
+                if sg is not None and sg["class"] in REG:
+                    pool.append((0, nid, n["x"], n["z"]))
+                    break
+        self._regular_pool_cache = pool
+        return pool
+
+    def _end_has_regular(self, end):
+        """Đầu `end` có chạm đường thường không — cùng phép với
+        `topo_validate` (loại EXPRESSWAY/RAMP/TUNNEL, còn lại là đường thường)."""
+        for sid in self._segs_at(end):
+            sg = self.segments.get(sid)
+            if sg is None:
+                continue
+            if sg["class"] not in ("EXPRESSWAY", "RAMP", "TUNNEL"):
+                return True
+        return False
+
+    def _fix_bridge_tunnel_endpoints(self):
+        """Cầu/hầm: 2 đầu PHẢI nối vào đường thường (luật `topo_validate`).
+
+        `_add_link_road` có thể từ chối (quá xa / qua biển / dốc / ma trận)
+        -> chỉ đếm link được chấp nhận; phần từ chối do chính nó in ra.
+        """
+        # snapshot: `_add_link_road` thay đổi self.segments
+        snapshot = [(sid, sg) for sid, sg in self.segments.items()
+                    if sg.get("bridge") or sg["class"] == "TUNNEL"]
+        self._regular_pool(rebuild=True)
+        made = n_need = 0
+        for sid, sg in snapshot:
+            for end in (sg["from"], sg["to"]):
+                if end not in self.nodes or self._end_has_regular(end):
+                    continue
+                n_need += 1
+                en = self.nodes[end]
+                tgt, d = self._nearest_node_on(en["x"], en["z"],
+                                                self._regular_pool(), 1500.0)
+                if tgt is None:
+                    print("      bo qua BRIDGE_FIX: duong thuong gan nhat > 1.5 km")
+                    continue
+                if self._add_link_road(end, tgt, "LOCAL", "BRIDGE_FIX"):
+                    made += 1
+        if n_need:
+            print("      cau/ham: %d dau thieu duong thuong -> noi duoc %d"
+                  % (n_need, made))
+        return made
+
+    def _ensure_highway_continuity(self):
+        """Nối các thành phần CAO TỐC rời rạc vào nhau.
+
+        Đúng nhóm với `topo_validate`: BFS chỉ đi qua EXPRESSWAY/RAMP/TUNNEL
+        (biến `HI` bên validate). Bản cũ nối bằng RAMP với ngưỡng 10km — một
+        link 10km là BỊA ĐƯỜNG qua ruộng/sông, không phải "liên tục cao tốc".
+
+        Nguyên nhân thật của "cao toc chia thanh 3 doan rieng le":
+          * Vành đai 3 nối sang QL1 (NATIONAL) nên đứt khỏi CT01 trong BFS HI
+            -> sửa ở `_connect_ring3` (nối CT01 trước).
+          * các đoạn bị xoá bởi `_fix_internal_crossings` / `_drop_steep_segments`
+            để lại gap ngắn -> nối tại đây bằng EXPRESSWAY.
+
+        Trả về số cặp đã nối. Đoạn KHÔNG nối được được IN RA (khoảng cách),
+        không im lặng — im lặng là cách một lỗi 3 thành phần biến mất khỏi log
+        nhưng vẫn còn trong map.
+        """
+        HI = ("EXPRESSWAY", "RAMP", "TUNNEL")
+        # Gap tối đa cho phép. Gốc rễ của gap là đoạn ngắn bị xoá (<= MAX_SEG_LEN
+        # 900m), nên 1500m đã là rộng rãi. Trên mức này nghĩa là 2 hành lang thật
+        # sự tách nhau -> nối tiếp là bịa đường, phải BÁO chứ không được nối.
+        MAX_GAP_M = 1500.0
+
+        adj = defaultdict(set)
+        for sg in self.segments.values():
+            if sg["class"] in HI:
+                adj[sg["from"]].add(sg["to"])
+                adj[sg["to"]].add(sg["from"])
+        if not adj:
+            return 0
+
+        visited, components = set(), []
+        for start in adj:
+            if start in visited:
+                continue
+            stack, comp = [start], set()
+            visited.add(start)
+            while stack:
+                cur = stack.pop()
+                comp.add(cur)
+                for nb in adj[cur]:
+                    if nb not in visited:
+                        visited.add(nb)
+                        stack.append(nb)
+            components.append(comp)
+
+        if len(components) <= 1:
+            return 0
+
+        components.sort(key=len, reverse=True)
+        main = set(components[0])
+        joined = 0
+        welded = False
+        for comp in components[1:]:
+            # cặp node gần nhất giữa cụm đã gộp và cụm này
+            best_pair, best_d = None, float("inf")
+            for n1 in main:
+                a = self.nodes.get(n1)
+                if a is None:
+                    continue
+                for n2 in comp:
+                    b = self.nodes.get(n2)
+                    if b is None:
+                        continue
+                    d = (a["x"] - b["x"]) ** 2 + (a["z"] - b["z"]) ** 2
+                    if d < best_d:
+                        best_d, best_pair = d, (n1, n2)
+            if best_pair is None:
+                print("      ! cao toc: khong tim duoc cap node noi cho 1 thanh phan"
+                      " (%d node)" % len(comp))
+                continue
+            gap = math.sqrt(best_d)
+            if gap > MAX_GAP_M:
+                print("      ! cao toc: thanh phan %d node bi CAT (%.0f m > %.0f m)"
+                      " -> khong noi (noi se la duong gia)"
+                      % (len(comp), gap, MAX_GAP_M))
+                continue
+            if gap < 1.0:
+                # 2 dau CAO TỐC trung toa do, khac id — lo hong topo that
+                # (node chua weld). Link 0m vo nghia bi _add_link_road tu choi
+                # -> van "cao toc chia thanh N doan rieng le" du 2 doan cham
+                # nhau 0m. Gop node la SUA TOPO, khong phai bua duong: hinh hoc
+                # khong doi, doan 2 ben chot vao cung mot nut (da co weldPair
+                # dung cho truong hop nay, chi khong ai goi no tai day).
+                na = self.nodes.get(best_pair[0])
+                nb = self.nodes.get(best_pair[1])
+                if (na and nb and na["connections"] and nb["connections"]
+                        and self._weld_pair(best_pair[0], best_pair[1])):
+                    welded = True
+                    joined += 1
+                    main |= comp
+                else:
+                    print("      ! cao toc: gap %.0f m nhung khong weld duoc"
+                          " (2 node qua gan, weld bi tu choi)" % gap)
+                continue
+            if self._add_link_road(best_pair[0], best_pair[1], "EXPRESSWAY",
+                                   "HW_CONTINUITY"):
+                joined += 1
+                main |= comp
+            else:
+                print("      ! cao toc: gap %.0f m nhung _add_link_road tu choi"
+                      % gap)
+        if welded:
+            # _weld_pair khong tu dung lai index; node bi pop van nam trong
+            # edge/road grid cu -> buoc sau doc phai node da xoa. Rebuild 1 lan.
+            self._rebuild_road_index()
+        if joined:
+            print("      cao toc: noi %d doan dut" % joined)
+        return joined
+
     def _drop_steep_segments(self, max_grade=0.16, protect=("NATIONAL", "EXPRESSWAY",
-                                                            "TUNNEL", "RAMP",
-                                                            "STATION_ACCESS")):
+                                                             "TUNNEL", "RAMP",
+                                                             "STATION_ACCESS")):
         """
         Safety net: sau grading van con doan >16% (do clamp cut/fill) => xoa.
         Doan nho khong the xay duoc tren suon day thi KHONG TON TAI (bi vong
@@ -8941,9 +9678,13 @@ class MapGenerator:
             sd = sd0
             if (pl.get("w"), pl.get("d")) != (sd0["w"], sd0["d"]):
                 sd = dict(sd0, w=pl["w"], d=pl["d"])
-            self._station_complex(sd, pl["ql"], pl["x"], pl["z"],
-                                  pl["vx"], pl["vz"], pl["tx_"], pl["tz_"],
-                                  pl["rot"], access=(pl["ax"], pl["az"]))
+            self._res_own_flag = True
+            try:
+                self._station_complex(sd, pl["ql"], pl["x"], pl["z"],
+                                      pl["vx"], pl["vz"], pl["tx_"], pl["tz_"],
+                                      pl["rot"], access=(pl["ax"], pl["az"]))
+            finally:
+                self._res_own_flag = False
 
         # đảm bảo Bến xe Nam Tuy Hòa đứng đầu (RuntimeRoadGraph dùng pois[0])
         self.stations.sort(key=lambda s: 0 if s["id"] == "nam_tuy_hoa" else 1)
@@ -9435,6 +10176,17 @@ class MapGenerator:
         SERVICE thật vào road gần nhất (không nhảy random theo chunk).
         """
         self.facility_pois = []
+        # NGƯƠNG CHUNG THUYẾT VỊ TRÍ (met): toạ độ ĐẶT phải cách toạ độ THẬT
+        # tối đa chừng này. Cùng bán kính 9000m dùng cho tìm node chính ở dưới.
+        # Vượt qua = không có đường nào gần cơ sở thật, mà vẫn đưa ra thì đó là
+        # BỢI VỊ TRÍ THẬT. Bằng chứng: `toll_dai_ninh` DEFS (11.2486,108.3458)
+        # lệch đúng 3m với "Trạm Thu phí Đại Ninh" thật, nhưng vì chỉ có node
+        # EXPRESSWAY gần đó (rule 11 chặn) và node hợp lệ gần nhất nằm ở Phan
+        # Rí Cửa nên nó bị đặt cách 22.6km — tên "Đại Ninh" đứng ở Xã Lương
+        # Sơn. Thà thiếu 1 cơ sở còn hơn ghi sai vị trí. LUÔN in số lượng bên
+        # dưới kể cả khi = 0.
+        FAC_MAX_OFFSET = 9000.0
+        self.facility_skipped_far = []
         # highway_pool: EXPRESSWAY + RAMP + junction (cho tìm đường gần)
         highway_pool = [(0, nid, n["x"], n["z"]) for nid, n in self.nodes.items()
                         if n["type"] in ("highway", "ramp", "junction")]
@@ -9443,12 +10195,14 @@ class MapGenerator:
                     if any((self.segments.get(sid) or {}).get("class") == "NATIONAL"
                            for sid in n["connections"])]
         
-        # Identify ham_thuan zone early for special handling
-        ham_thuan_zone = None
-        for sz in getattr(self, "station_zones", []):
-            if sz.get("id") == "ham_thuan":
-                ham_thuan_zone = sz
-                break
+        # Vung CT01 "cuot" facility sang cao toc (xem comment ~7167/7213/7256):
+        # tram thu phi / cay xang / truong o Ha Thuan phai noi vao QL1, chu khong
+        # phai node EXPRESSWAY (highway_pool = EXPRESSWAY + RAMP + junction).
+        # Truoc day neo theo station_zones["ham_thuan"] - nhung ben da chuyen sang
+        # "Ben xe khach Xuan Loc" (khoang 64km ben kia) nen neu van neo theo ben
+        # thi vung cu se MAT xu ly nay -> bug cu tai hien. Neo theo TOA DO CO DINH
+        # (vi tri cu cua ben) de hanh vi khong doi khi ben di chuyen.
+        _ql1_force_anchor = self.proj(10.898, 107.980)
         
         for (fid, fname, lat, lon, ptype) in FACILITY_DEFS:
             fx0, fz0 = self.proj(lat, lon)
@@ -9471,12 +10225,9 @@ class MapGenerator:
                 })
                 continue
             
-            # SPECIAL HANDLING: Facilities near ham_thuan zone MUST connect to QL1
-            force_ql1 = False
-            if ham_thuan_zone:
-                hx, hz = ham_thuan_zone["x"], ham_thuan_zone["z"]
-                if dist(fx0, fz0, hx, hz) < 5000.0:  # within 5km of ham_thuan
-                    force_ql1 = True
+            # SPECIAL HANDLING: facility trong vung ham_thuan cu PHAI noi QL1
+            force_ql1 = dist(fx0, fz0, _ql1_force_anchor[0],
+                             _ql1_force_anchor[1]) < 5000.0
             
             # Choose pool based on force_ql1
             search_pool = ql1_pool if force_ql1 else highway_pool
@@ -9491,7 +10242,18 @@ class MapGenerator:
                 continue
             
             # If forced QL1, we already used ql1_pool
-            if not force_ql1:
+            #
+            # rule 11 KHÔNG áp cho TOLL / REST_AREA. Trạm thu phí và trạm nghỉ
+            # THẬT nằm ngay trên/sát cao tốc — Đại Ninh, Ma Lâm, Sông Luy, Chợ
+            # Lau đều trên CT01. Ép sang node không-cao-tốc trong 25km hất facility
+            # ra 10.9-16.9km rồi bị FAC_MAX_OFFSET skip -> MẤT cơ sở thật.
+            # Đo được: toll_dai_ninh (11.2486,108.3458) cách CT01 đúng 53m nhưng
+            # bị dời 16.9km; tổng 6/129 bị bỏ, 5 trong đó là TOLL/REST_AREA.
+            # Rule 11 vẫn giữ nguyên cho FUEL_STATION/SCHOOL/MARKET/HOSPITAL/
+            # INDUSTRIAL vì đường VÀO các chỗ đó không được tông thẳng mặt cao tốc.
+            # L11918 (validate) không tính vi phạm khi đoạn cắt CHIA SẺ endpoint
+            # với cao tốc -> access road xuất phát từ node trên CT01 là hợp lệ.
+            if not force_ql1 and ptype not in ("TOLL", "REST_AREA"):
                 # ĐƯỜNG SERVICE KHÔNG ĐÂM THẲNG VÀO MẶT CAO TỐC (rule 11/60).
                 # `_nearest_node_on` trả node gần nhất — thường là node trên thân
                 # CT01 nên 7/19 cơ sở dính lỗi. Ưu tiên node đã qua RAMP hoặc
@@ -9509,6 +10271,14 @@ class MapGenerator:
                         alt2, _ad2 = self._nearest_node_on(fx0, fz0, ql1_pool, 25000.0)
                         if alt2 is not None:
                             node = alt2
+            # Rule 11 (ở trên) ĐỔI `node` nhưng KHÔNG cập nhật `dd` -> `dd`
+            # vẫn là khoảng cách của node CŨ (dữ liệu sai nếu ai đọc nó).
+            # Tính lại từ node THẬT đang giữ, rồi mới áp ngưỡng chung thuyết.
+            node_xy = self.nodes[node]
+            dd = dist(fx0, fz0, node_xy["x"], node_xy["z"])
+            if dd > FAC_MAX_OFFSET:
+                self.facility_skipped_far.append((fid, fname, round(dd)))
+                continue
             reach = 70.0 if ptype == "TOLL" else 60.0
 
             # KIỂM TRA: Không được đặt trạm dừng nơi có road xuyên qua
@@ -9617,6 +10387,12 @@ class MapGenerator:
                 "z": round(fz, 2), "w": fw, "d": fd, "rot": round(rot, 4),
                 "bays": 0, "buses": [], "is_spawn": False,
             })
+        # LUÔN IN kể cả = 0 (không được nuốt im khi không có gì để sửa).
+        _skip = self.facility_skipped_far
+        print("      [qc] facility qua nguong %dm tu toa do that: %d/%d %s" % (
+            int(FAC_MAX_OFFSET), len(_skip), len(FACILITY_DEFS),
+            ("-> " + ", ".join("%s(%dm)" % (f[0], f[2]) for f in _skip))
+            if _skip else "(khong co)"))
         self._reserve_toll_booths()
 
     # --------------------------------------------------------------------------
@@ -10538,27 +11314,51 @@ class MapGenerator:
 
         # --- 2 nhanh trung goc (2 duong song song) ---
         # CHỈ node bậc >= 3: node bậc 2 chỉ là khúc cua một đường (hẹp ở đó là
-        # bình thường), không phải "hai đường chồng nhau". Đo được bản cũ đếm
-        # cả node bậc 2 với ngưỡng 26° nên báo 457 lỗi, trong khi
-        # `tools/audit_world.py` rule 12 (ngưỡng 9°, node thật) báo 1.
+        # bình thường), không phải "hai đường chồng nhau". Bản cũ đếm cả node
+        # bậc 2 với ngưỡng 26° nên báo 457 lỗi.
+        # 2 EXEMPTION LẤY NGUYÊN từ `tools/audit_world.py` rule 12 — công cụ
+        # audit có sẵn của project, KHÔNG phải tiêu chuẩn bịa thêm. Hai công
+        # cụ phải định nghĩa CÙNG một loại lỗi ("2 đường chồng nhau"); bản cũ
+        # validate đếm cả những thứ mà audit loại từ đầu nên 2 số lệch nhau
+        # (đo trên data 10/6: validate 200 node, cùng phép với audit ở 9° ra
+        # 36 node) và cảnh báo trở thành nhiễu.
+        #
+        #   * nhánh DÀI <25m  -> lối vào bãi, lối cụt; một nhánh 10m lệch 15°
+        #     không phải "2 đường chạy song song chồng lên nhau".
+        #   * cả 2 INTERNAL/SERVICE -> làn bê tông nội bộ trong sân bến.
+        #
+        # ĐO TRÊN DATA 10/6, ngưỡng 26°: 200 node = stub 50 + sân bến 59 +
+        # đường thật 91. NGƯỠNG KHÔNG ĐỔI (vẫn TOPO_MIN_ANGLE 20-26°) — chỉ
+        # bỏ 2 nhóm audit đã cho là không phải lỗi. TUNNEL = 0 node đo được
+        # nên không cần exemption thêm dù audit có.
         coinc = 0
         coinc_ex = []
+        # ngưỡng hiển thị cho thông báo (lim theo rank, msg in 1 số đại diện)
+        lim_msg = int(TOPO_MIN_ANGLE.get(3, 26))
         for nid in self.nodes:
             sids = [q for q in self._segs_at(nid)
                     if q in self.segments and not self.segments[q].get("bridge")]
             if len(sids) < 3:
                 continue
             angs = sorted((self._branch_angle(nid, q), q) for q in sids)
+            lim = TOPO_MIN_ANGLE.get(self._topo_rank(nid), 26.0)
             for i in range(len(angs) - 1):
                 gap = angs[i + 1][0] - angs[i][0]
-                if math.degrees(gap) < TOPO_MIN_ANGLE.get(
-                        self._topo_rank(nid), 26.0):
-                    coinc += 1
-                    if len(coinc_ex) < 5:
-                        coinc_ex.append(nid)
+                if math.degrees(gap) >= lim:
+                    continue
+                ca = self.segments[angs[i][1]].get("class")
+                cb = self.segments[angs[i + 1][1]].get("class")
+                if ca in ("INTERNAL", "SERVICE") and cb in ("INTERNAL", "SERVICE"):
+                    continue
+                if min(self._branch_len(nid, angs[i][1]),
+                       self._branch_len(nid, angs[i + 1][1])) < 25.0:
+                    continue
+                coinc += 1
+                if len(coinc_ex) < 5:
+                    coinc_ex.append(nid)
         if coinc:
             warns.append("%d node co 2 duong nho trung goc (<%d deg) %s"
-                         % (coinc, int(TOPO_MIN_ANGLE.get(3, 26)), coinc_ex))
+                         % (coinc, lim_msg, coinc_ex))
 
         # --- giao lo khong NUT THAT ---
         cross = 0
@@ -10914,6 +11714,14 @@ class MapGenerator:
             if _orph > 4:
                 # P71: kèm danh sách node + class từng mảnh, nếu không thì
                 # "roi 2 manh" không truy được ra chỗ nào cắt.
+                # CHỦ SỞ HỮU: mảnh rời thường là sân bến bị đứt (INTERNAL /
+                # STATION_ACCESS). Ghi rõ mảnh gần bến nào + có chứa access_node
+                # của bến nào -> lần chạy sau chỉ cần đọc log là ra tên bến,
+                # không phải đoán.
+                _sta = [s for s in (getattr(self, "stations", []) or [])
+                        if s.get("x") is not None]
+                _acc = {s.get("access_node"): s["id"] for s in _sta
+                        if s.get("access_node")}
                 _det = []
                 for _c in _comps[1:7]:
                     _m = sorted(_c)
@@ -10923,10 +11731,24 @@ class MapGenerator:
                     _zs = [self.nodes[n]["z"] for n in _m if n in self.nodes]
                     if not _xs:
                         continue
-                    _det.append("%dnut @(%d,%d) [%s] %s"
-                                % (len(_m), sum(_xs) / len(_xs),
-                                   sum(_zs) / len(_zs), "/".join(_cl),
-                                   ",".join(_m[:6])))
+                    _cx, _cz = sum(_xs) / len(_xs), sum(_zs) / len(_zs)
+                    _own = []
+                    for _nid, _sid in _acc.items():
+                        if _nid in _c:
+                            _own.append("access_node ben %s" % _sid)
+                    if _sta:
+                        _near = min(_sta, key=lambda s:
+                                    dist(_cx, _cz, s["x"], s["z"]))
+                        _nd = dist(_cx, _cz, _near["x"], _near["z"])
+                        # KHONG dat nguong: phai in ra ca khi manh lac o xa
+                        # ben nao de nhat, moi doan ra duoc chu so huu.
+                        _own.append("gan ben %s (%.0fm)"
+                                    % (_near["id"], _nd))
+                    _det.append("%dnut @(%d,%d) [%s] %s%s"
+                                % (len(_m), _cx, _cz, "/".join(_cl),
+                                   ",".join(_m[:6]),
+                                   (" {" + ", ".join(_own) + "}")
+                                   if _own else ""))
                 errors.append(_msg + " — duong dut that, khong duoc phep: "
                              + " | ".join(_det))
             else:
@@ -11119,7 +11941,13 @@ class MapGenerator:
         # `abs(ox-cx) < w/2` (AABB không xoay) — sân bến có `rot` khác 0 nên
         # AABB bao hơn rect thật, báo 34 lỗi giả cho object nằm ngoài vùng.
         bad = []
-        for (ox, oz, orad) in self.object_positions:
+        own = getattr(self, "_station_own", None) or ()
+        for _oi, (ox, oz, orad) in enumerate(self.object_positions):
+            if _oi in own:
+                # marker so huu cua CHINH ben xe (hang rao/cong/den/cay trong
+                # san do _station_complex dat) — tu tham chieu, khong phai doi
+                # tuong ben ngoai xuyen san. Object ngoai van bi bat binh thuong.
+                continue
             for sz in self.station_zones:
                 if not str(sz.get("id", "")).startswith(
                         ("nam_tuy", "nha_trang", "phan_", "mien_")):
@@ -11150,7 +11978,8 @@ class MapGenerator:
 
         # --- ĐỘ DỐC (xe không bay / không rung) ---
         max_grade = 0.0
-        for seg in self.segments.values():
+        worst_sid = None
+        for sid, seg in self.segments.items():
             p1, p2 = self.nodes[seg["from"]], self.nodes[seg["to"]]
             run = dist(p1["x"], p1["z"], p2["x"], p2["z"])
             if run < 1.0:
@@ -11158,9 +11987,21 @@ class MapGenerator:
             g = abs(p2["y"] - p1["y"]) / run
             if g > max_grade:
                 max_grade = g
+                worst_sid = sid
         if max_grade > 0.16:
-            errors.append("độ dốc đoạn đường quá lớn: %.1f%% (>16%%) => xe rung/bay"
-                          % (max_grade * 100))
+            # in day du (id/class/bridge/ky/toa do/cao do) de lan sau biet
+            # nguyen nhan goc ngay, khong phai doan
+            ws = self.segments[worst_sid]
+            a, b = self.nodes[ws["from"]], self.nodes[ws["to"]]
+            errors.append(
+                "độ dốc đoạn đường quá lớn: %.1f%% (>16%%) => xe rung/bay"
+                " | %s class=%s%s len=%.1fm"
+                " (%.0f,%.0f)y=%.2f -> (%.0f,%.0f)y=%.2f"
+                % (max_grade * 100, worst_sid, ws.get("class"),
+                   " BRIDGE" if ws.get("bridge") else "",
+                   dist(a["x"], a["z"], b["x"], b["z"]),
+                   a["x"], a["z"], a.get("y", 0.0),
+                   b["x"], b["z"], b.get("y", 0.0)))
         else:
             print("      max road grade: %.1f%% ✓" % (max_grade * 100))
 
@@ -11447,22 +12288,40 @@ class MapGenerator:
             if n is not None:
                 rpts.append((n["x"], n["z"]))
 
+        # chuỗi cách dọc tuyến: `_cum[i]` = mét tính từ đầu tuyến tới rpts[i].
+        # DÙNG ĐỂ RA `anchorM` — "bến nằm ở km bao nhiêu TRÊN TUYẾN".
+        _cum = [0.0]
+        for i in range(len(rpts) - 1):
+            _cum.append(_cum[-1] + math.hypot(rpts[i + 1][0] - rpts[i][0],
+                                              rpts[i + 1][1] - rpts[i][1]))
+
         def _d_route(px, pz):
-            """Khoảng cách point -> polyline tuyến (mét)."""
+            """(khoảng cách vuông góc -> tuyến, chainage dọc tuyến) — mét.
+
+            Trả về 2 giá trị vì 2 đại lượng KHÁC NHAU và từng bị trộn lẫn:
+              * khoảng cách vuông góc  -> dùng để LỌC ("bến có nằm trên tuyến
+                không?", gate `<= ETA_STATION_LINK_M`).
+              * chainage                -> dùng để BÁO CÁO (`anchorM`).
+            Bản cũ ghi thẳng khoảng cách vuông góc vào `anchorM` => cả 14 bến
+            đều ra 0.0 (bến neo ngay trên QL1) -> cột "bến ở đâu trên tuyến"
+            vô nghĩa, không ai dùng được.
+            """
             best = float("inf")
+            best_at = 0.0
             for i in range(len(rpts) - 1):
                 ax, az = rpts[i]
                 bx, bz = rpts[i + 1]
                 dx, dz = bx - ax, bz - az
                 l2 = dx * dx + dz * dz
                 if l2 <= 0.0:
-                    d2 = (px - ax) ** 2 + (pz - az) ** 2
+                    t, d2 = 0.0, (px - ax) ** 2 + (pz - az) ** 2
                 else:
                     t = clamp(((px - ax) * dx + (pz - az) * dz) / l2, 0.0, 1.0)
                     d2 = (px - (ax + dx * t)) ** 2 + (pz - (az + dz * t)) ** 2
                 if d2 < best:
                     best = d2
-            return math.sqrt(best)
+                    best_at = _cum[i] + t * math.sqrt(l2)
+            return math.sqrt(best), best_at
 
         def _bay_scale(sid):
             """Quy mô bến -> chỉ số 0..3 trong STATION_DWELL_S."""
@@ -11489,14 +12348,14 @@ class MapGenerator:
                 continue
             a = self.nodes.get(st.get("anchor_node"))
             px, pz = (a["x"], a["z"]) if a else (st["x"], st["z"])
-            d = _d_route(px, pz)
+            d, chain = _d_route(px, pz)
             if d <= ETA_STATION_LINK_M:
                 t_station += STATION_DWELL_S[_bay_scale(st["id"])]
-                st_list.append({"id": st["id"], "anchorM": round(d, 1),
+                st_list.append({"id": st["id"], "anchorM": round(chain, 1),
                                 "bays": len(st.get("baySlots") or ())})
         # ---- điểm dừng xe buýt dọc tuyến (đo: 51/54 nằm <=30m) ----
         for s in getattr(self, "bus_stops", ()):
-            if _d_route(s["x"], s["z"]) <= ETA_STOP_LINK_M:
+            if _d_route(s["x"], s["z"])[0] <= ETA_STOP_LINK_M:
                 t_stop += ETA_BUS_STOP_DWELL_S
                 n_stops += 1
 
