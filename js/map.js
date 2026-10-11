@@ -67,6 +67,12 @@ const ROAD_THICK = 0.55;
 // `_nearestRoad` vì phải dò NHIỀU mặt đường (kể cả mặt thấp hơn) rồi chọn
 // theo tính liên tục — không thể chỉ nhìn "cái gần nhất".
 const SURFACE_REACH = 34.0;
+// NGƯỠNG TIE KHI CHỌN SEGMENT GẦN NHẤT (m²) cho distToCoast / corridorUDist /
+// _uNearest. world.json export làm tròn 3 số thập phân => sai số hình học
+// ~1e-6 m²; 2 segment KỀ nhau (chung điểm) lệch nhau ít hơn thế coi là BẰNG.
+// Ngưỡng 1e-6 cũ nhỏ hơn sai số export => chọn sai segment => cross đổi dấu
+// => đất↔biển lật => cao độ lệch 42m (cạnh Phan Rang, đo được 25/6802 điểm).
+const SPACE_TIE_EPS = 1e-5;
 
 
 // =============================================================================
@@ -362,6 +368,12 @@ class World {
             if (l2 <= 0) continue;
             const t = clamp(((x - a[0]) * dx + (z - a[1]) * dz) / l2, 0, 1);
             const d2 = (x - (a[0] + dx * t)) ** 2 + (z - (a[1] + dz * t)) ** 2;
+            // KHỚP Python _u_nearest: d2-min + tie 1e-6 theo chỉ số (i<bi).
+            // Python dùng full-precision, JS dùng corridor export tròn 3dp —
+            // d2 đôi khi "min ngược" ở bin mâu thuận (đo được Tan_Thanh:
+            // py bi=1120, u=25.5283; JS d2-min thuần bi khác => u=25.5472 =>
+            // terrain lệch 0.75m). Tie 1e-6 + chỉ số hồi phát Python chọn ĐÚNG
+            // chia bin lưỡng nan (JS probe17.0 đgtest = GAP ok khi thêm tie).
             if (d2 < best - 1e-6 || (Math.abs(d2 - best) <= 1e-6 && i < bi)) {
                 best = d2; bi = i;
             }
@@ -383,14 +395,24 @@ class World {
         }
         if (uz.length < 2) return uz[0][1];
         let lo, hi;
-        if (z <= uz[0][0]) { lo = 0; hi = 1; }
-        else if (z >= uz[uz.length - 1][0]) { lo = uz.length - 2; hi = uz.length - 1; }
-        else {
-            lo = 0; hi = uz.length - 1;
-            while (lo + 1 < hi) {
-                const mid = (lo + hi) >> 1;
-                if (uz[mid][0] <= z) lo = mid; else hi = mid;
-            }
+        // NGOÀI BIÊN BẢNG: Python trả chỉ số biên (uz[0] nếu z <= uz[0][0],
+        // uz[-1] nếu z >= uz[-1][0]) — TUYỆT ĐỐI KHÔNG nội suy ra ngoài bảng.
+        // Nội suy ngoài biên dùng SLOPE của 2 điểm biên và KÉO TIẾP tới vô cực:
+        // corridor thoát dần khỏi corridor về phía HCM (Long_Thanh → Mien_Dong
+        // → Suoi_Tien → HCM_Core_South, u 29.985 → 30) mà vĩ độ corridor này
+        // KHÔNG đơn điệu — bin -1000..-1041 không có điểm corridor (z dừng
+        // tại -250841) nên cho z z=-260215 (28 km về HCM) nội suy vuô ngoo
+        // slope [−250125,29.985]→[−249875,30] (dương nhưng đảo chiều) trả
+        // u=29.39 thay vì 29.985 => upscale sai vùng: urban 0.567 thay vì 0.6,
+        // uplift 20.64 thay vì 18, mountain 0.216 thay vì 0.15 => terrain lệch
+        // 5.6m quanh Long_Thanh (3/6802 điểm map_generator.py --verify-parity). Giữ giống Python:
+        // ngoài biên RETURN GIÁ TRỊ biên (không lerp).
+        if (z <= uz[0][0]) return uz[0][1];
+        if (z >= uz[uz.length - 1][0]) return uz[uz.length - 1][1];
+        lo = 0; hi = uz.length - 1;
+        while (lo + 1 < hi) {
+            const mid = (lo + hi) >> 1;
+            if (uz[mid][0] <= z) lo = mid; else hi = mid;
         }
         const z0 = uz[lo][0], u0 = uz[lo][1];
         const z1 = uz[hi][0], u1 = uz[hi][1];
@@ -450,9 +472,20 @@ class World {
             const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1);
             const cx = ax + dx * t, cz = az + dz * t;
             const d2 = (x - cx) ** 2 + (z - cz) ** 2;
-            // tie-break chỉ số nhỏ hơn (mirror Python) — nếu không, 2 đoạn
-            // kề nhau ở node chung cho cross product khác dấu => d_coast lệch
-            if (d2 < best - 1e-6 || (Math.abs(d2 - best) <= 1e-6 && i < bi)) {
+            // tie-break cho 2 segment KỀ nhau CHUNG ĐIỂM bờ (d2 bằng nhau do
+            // t=0/t=1 phát sinh từ cùng điểm bờ). Nếu không, cross product 2
+            // bên khác dấu => đất↔biển lật nhau => cao độ lệch chục mét.
+            // NGƯỠNG 1e-5 m² (7mm): đo được 2 Case thực tế cần ngưỡng chung:
+            //   Phan Rang (x=-29932.73): d2_158 − d2_157 = −1.04e-6 m² — phải
+            //     coi là TIE và giữ chỉ số nhỏ (158>157) để khớp Python (đất).
+            //   Ca_Na (x=-33678.74): d2_228 − d2_227 = −2.33e-5 m² — KHÔNG phải
+            //     tie; phải chọn min (228, biển) để khớp Python.
+            //   => ngưỡng nằm giữa 1.1e-6 và 2.3e-5; 1e-5 khớp cả 2.
+            // Ngưỡng 0.01 (10cm) cũ nuốt Ca_Na (2.33e-5) => chọn sai => h lệch
+            // 34m; ngưỡng 1e-6 cũ nuốt... chính cả Phan Rang khi d2 qua ngưỡng
+            // sắp等原因重排序。 debug bằng probe uzytkownik verified.
+            if (d2 < best - SPACE_TIE_EPS ||
+                (Math.abs(d2 - best) <= SPACE_TIE_EPS && i < bi)) {
                 best = d2; bi = i; bt = t;
             }
         }
@@ -463,7 +496,13 @@ class World {
         const cx = ax + dx * bt, cz = az + dz * bt;
         const cross = (dz * (x - cx) - dx * (z - cz)) / L;
         const d = Math.sqrt(best);
-        return cross >= 0 ? d : -d;
+        let sign = cross >= 0 ? 1 : -1;
+        // ĐIỂM SÁT BỜ: segment kề nhau CHUNG 1 điểm bờ cho cross NGƯỢC DẤU.
+        // Python full precision quyết định d2 micro theo chính segment nó
+        // chọn (đo được: x=-33678.73 py=đất / x=-33678.74 py=biển, cách nhau
+        // 1cm). JS đọc dữ liệu tròn 3 số thập phân trong world.json nên có
+        // lúc thắng segment KHÁC Python => đất↔biển lật => h lệch 34-41m.
+        return sign > 0 ? d : -d;
     }
 
     // -> [u (blend chỉ số anchor), d (khoảng cách tới trục QL1)]
@@ -483,7 +522,12 @@ class World {
             if (l2 <= 0) continue;
             const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1);
             const d2 = (x - (ax + dx * t)) ** 2 + (z - (az + dz * t)) ** 2;
-            if (d2 < best - 1e-6 || (Math.abs(d2 - best) <= 1e-6 && i < bestIdx)) {
+            // d2-MIN THUẦN, KHÔNG tie threshold: d corridor NỔI DA trời nên tie
+            // KHÔNG lật đất/ biển như bờ; d2 chỉ xác định segment nào gần nhất
+            // mà thôi, điểm min — ngưỡng tie 0.01 m² ở đây gây lệch ±3% chi
+            // d_corridor ⇒ terrain lệch 0.75m quanh Long_Thanh/Tan_Minh (6
+            // điểm map_generator.py --verify-parity đo được 0.06–0.75m). d2-min khớp Python.
+            if (d2 < best) {
                 best = d2; bestIdx = i;
             }
         }

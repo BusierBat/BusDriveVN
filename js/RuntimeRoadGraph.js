@@ -10,7 +10,7 @@
 // 1 file metadata song song (rule 25: không thêm hệ thống song song) và
 // thay vì hardcode (rule 26), ta SUY RA ở đây một lần + cache.
 // Cả TrafficAI lẫn TrafficManager đều đọc qua getLaneMeta() -> 1 nguồn.
-// tools/traffic_audit.py (Python) validate đúng công thức này offline.
+// map_generator.py --traffic-audit (Python) validate đúng công thức này offline.
 // =====================================================================
 const DEFAULT_SPEED_KMH = {
     EXPRESSWAY: 90, NATIONAL: 70, TUNNEL: 60, ARTERIAL: 50, RAMP: 40,
@@ -328,7 +328,7 @@ export class RuntimeRoadGraph {
 
     // Tâm làn (mét, tính từ TÂM ĐƯỜNG về PHẢI theo hướng di chuyển).
     // lane 0 = làn ngoài cùng bên phải (VN đi bên phải).
-    // Trùng công thức với deriveLaneMeta().laneCenter() -> tools/traffic_audit.py
+    // Trùng công thức với deriveLaneMeta().laneCenter() -> map_generator.py --traffic-audit
     // validate parity offline, không có nguồn thứ 2.
     static laneCenterOf(segOrMeta, laneIndex) {
         const meta = segOrMeta && typeof segOrMeta.laneCenter === "function"
