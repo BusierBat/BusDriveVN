@@ -1,12 +1,11 @@
 // js/ui.js - SMART HUD, CONSOLE & RESTORED MENUS
 import { formatTime } from "./utils.js";
 
-let minimapCtx = null, speedoCtx = null;
-let minimapData = null;
-let minimapMap = null;
-let _lastMinimapX = Infinity, _lastMinimapZ = Infinity, _lastHeading = Infinity;
-
 export function createUI({ map = null, callbacks = {} } = {}) {
+    let minimapCtx = null, speedoCtx = null;
+    let minimapData = null;
+    let minimapMap = null;
+    let _lastMinimapX = Infinity, _lastMinimapZ = Infinity, _lastHeading = Infinity;
     const els = {
         hud: document.getElementById('hud'),
         fps: document.getElementById('hud-fps'),
@@ -31,11 +30,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         rngNpcDensity: document.getElementById('setting-npc-density'),
         valNpcDensity: document.getElementById('val-npc-density'),
         rngCamSens: document.getElementById('setting-cam-sens'),
-        valCamSens: document.getElementById('val-cam-sens'),
-        uvPanel: document.getElementById('uv-skin-panel'),
-        uvInput: document.getElementById('btn-choose-skin'),
-        uvStatus: document.getElementById('uv-skin-status'),
-        uvDownload: document.getElementById('uv-skin-download')
+        valCamSens: document.getElementById('val-cam-sens')
     };
 
     if (els.minimap) {
@@ -202,7 +197,6 @@ export function createUI({ map = null, callbacks = {} } = {}) {
                 camSens: parseInt(els.rngCamSens?.value || 30), 
                 fov: 70 
             }; 
-        },
-        loadSettings() { return { graphics: 'low', renderDist: 1, npcDensity: 5, camSens: 30, fov: 70 }; }
+        }
     };
 }

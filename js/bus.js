@@ -413,9 +413,11 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       spotL.intensity = 0;
       spotR.intensity = 0;
     }
+    spotL.visible = on;
+    spotR.visible = on;
   }
 
-  function setTaillights(on) { tailMaterial.emissiveIntensity = on ? 0.9 : 0; tailGlow.intensity = on ? 6 : 0; }
+  function setTaillights(on) { tailMaterial.emissiveIntensity = on ? 0.9 : 0; tailGlow.intensity = on ? 6 : 0; tailGlow.visible = on; }
   function setSignalLeft(on) { signalLeft = on; }
   function setSignalRight(on) { signalRight = on; }
   function setHazard(on) { hazard = on; }
@@ -429,7 +431,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     if (a.extMeshes) {
       a.extMeshes.forEach(mesh => {
         mesh.visible = on;
-        mesh.material.opacity = on ? 1.5 : 0;
+        mesh.material.opacity = on ? 1 : 0;
       });
     }
   }
@@ -456,7 +458,7 @@ export function loadNpcSkinList() {
   if (npcSkinPromise) return npcSkinPromise;
 
   if (location.protocol === "file:") {
-    npcSkinList = [NPC_SKIN_DIR + "bus_final.png"];
+    npcSkinList = [BUS_TEXTURE_URL];
     npcSkinPromise = Promise.resolve(npcSkinList);
     return npcSkinPromise;
   }
@@ -493,14 +495,14 @@ export function loadNpcSkinList() {
       npcSkinList = [...names].sort().map((n) => NPC_SKIN_DIR + n);
 
       if (npcSkinList.length === 0) {
-        npcSkinList = [NPC_SKIN_DIR + "bus_final.png"];
+        npcSkinList = [BUS_TEXTURE_URL];
       }
 
       return npcSkinList;
     })
     .catch((err) => {
       console.warn('️ Cannot load skin list, using default:', err);
-      npcSkinList = [NPC_SKIN_DIR + "bus_final.png"];
+      npcSkinList = [BUS_TEXTURE_URL];
       return npcSkinList;
     });
 
@@ -509,7 +511,7 @@ export function loadNpcSkinList() {
 
 export function pickNpcSkinPath() {
   if (!npcSkinList || npcSkinList.length === 0) {
-    return NPC_SKIN_DIR + "bus_final.png";
+    return BUS_TEXTURE_URL;
   }
   const randomIndex = Math.floor(Math.random() * npcSkinList.length);
   return npcSkinList[randomIndex];

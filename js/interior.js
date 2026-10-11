@@ -60,6 +60,9 @@ const matLEDWhite = new THREE.MeshStandardMaterial({
 const matAisle = new THREE.MeshStandardMaterial({ color: 0xcc6a6a, roughness: 0.6, metalness: 0.1 });
 const matDivider = new THREE.MeshStandardMaterial({ color: 0xc8c0b0, roughness: 0.9 });
 const matUpperFloor = new THREE.MeshStandardMaterial({ color: 0xd0c8b8, roughness: 0.8 });
+const matBtn = new THREE.MeshStandardMaterial({ color: 0x333344 });
+const matFloorPax = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 });
+const matScreen = new THREE.MeshStandardMaterial({ color: 0x0a0a1a, emissive: 0x224488, emissiveIntensity: 0.3 });
 
 function box(w, h, d, mat, x, y, z, group) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -101,14 +104,11 @@ function buildCabin(groups) {
 
     box(1.6, 0.3, 0.6, matDashboard, 0, 0.8, 5.3, Dashboard);
     box(1.6, 0.08, 0.5, matDashboardPanel, 0, 1.0, 5.35, Dashboard);
-    const screenMat = new THREE.MeshStandardMaterial({ color: 0x0a0a1a, emissive: 0x224488, emissiveIntensity: 0.3 });
-    box(0.5, 0.25, 0.05, screenMat, 0, 1.05, 5.6, Dashboard);
-    const clusterMat = new THREE.MeshStandardMaterial({ color: 0x0a0a14, emissive: 0x35ffd0, emissiveIntensity: 0.5 });
-    box(0.35, 0.2, 0.05, clusterMat, -0.45, 1.05, 5.6, Dashboard);
-    box(0.25, 0.15, 0.05, clusterMat, 0.45, 1.05, 5.6, Dashboard);
+    box(0.5, 0.25, 0.05, matScreen, 0, 1.05, 5.6, Dashboard);
+    box(0.35, 0.2, 0.05, matCluster, -0.45, 1.05, 5.6, Dashboard);
+    box(0.25, 0.15, 0.05, matCluster, 0.45, 1.05, 5.6, Dashboard);
     for (let i = 0; i < 4; i++) {
-        const btnMat = new THREE.MeshStandardMaterial({ color: 0x333344 });
-        box(0.04, 0.04, 0.04, btnMat, -0.3 + i * 0.15, 0.85, 5.6, Dashboard);
+        box(0.04, 0.04, 0.04, matBtn, -0.3 + i * 0.15, 0.85, 5.6, Dashboard);
     }
 
     const lever = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.25, 6), matDark);
@@ -171,7 +171,7 @@ function buildPassengerCabin(groups) {
     box(0.8, stepHeight, stepDepth, matShell, 0, stepHeight/2, CABIN_END_Z + 0.2, Aisle);
 
     // ---------- SÀN KHOANG HÀNH KHÁCH ----------
-    box(W - 0.1, 0.08, L - 0.5, new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 }), 0, PASSENGER_FLOOR_Y - 0.04, 0, Floor);
+    box(W - 0.1, 0.08, L - 0.5, matFloorPax, 0, PASSENGER_FLOOR_Y - 0.04, 0, Floor);
 
     // ---------- HÀNH LANG ----------
     const aisleWidth = 0.8;
@@ -336,39 +336,37 @@ function buildPassengerCabin(groups) {
     }
 
     // ---------- RÈM CỬA ----------
-    const curtainMat1 = new THREE.MeshStandardMaterial({ color: 0x8a7a6a, roughness: 1.0 });
-    const curtainMat2 = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 1.0 });
-    const rodMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.7 });
+    // REM CUA dung vat lieu module chung (matFabric/matFabricDark/matDark).
     for (const side of [1, -1]) {
         const xCurtain = side * (WALL_X - 0.02);
         const xAisle = side * 0.32;
         for (const z of BED_Z_POSITIONS) {
-            const curtainLow = new THREE.Mesh(new THREE.BoxGeometry(0.02, WIN_LO_TOP - WIN_LO_BOT, 0.35), curtainMat1);
+            const curtainLow = new THREE.Mesh(new THREE.BoxGeometry(0.02, WIN_LO_TOP - WIN_LO_BOT, 0.35), matFabric);
             curtainLow.position.set(xCurtain, (WIN_LO_BOT + WIN_LO_TOP) / 2, z - 0.50);
             curtainLow.updateMatrix();
             curtainLow.matrixAutoUpdate = false;
             Curtains.add(curtainLow);
-            const curtainUp = new THREE.Mesh(new THREE.BoxGeometry(0.02, WIN_HI_TOP - WIN_HI_BOT, 0.35), curtainMat2);
+            const curtainUp = new THREE.Mesh(new THREE.BoxGeometry(0.02, WIN_HI_TOP - WIN_HI_BOT, 0.35), matFabricDark);
             curtainUp.position.set(xCurtain, (WIN_HI_BOT + WIN_HI_TOP) / 2, z - 0.50);
             curtainUp.updateMatrix();
             curtainUp.matrixAutoUpdate = false;
             Curtains.add(curtainUp);
-            const aisleCurtainLow = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.85, 0.35), curtainMat1);
+            const aisleCurtainLow = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.85, 0.35), matFabric);
             aisleCurtainLow.position.set(xAisle, 1.90, z + BED_LENGTH / 2 - 0.35);
             aisleCurtainLow.updateMatrix();
             aisleCurtainLow.matrixAutoUpdate = false;
             Curtains.add(aisleCurtainLow);
-            const aisleCurtainUp = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.75, 0.35), curtainMat2);
+            const aisleCurtainUp = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.75, 0.35), matFabricDark);
             aisleCurtainUp.position.set(xAisle, 3.00, z + BED_LENGTH / 2 - 0.35);
             aisleCurtainUp.updateMatrix();
             aisleCurtainUp.matrixAutoUpdate = false;
             Curtains.add(aisleCurtainUp);
-            const rod1 = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.015, BED_LENGTH - 0.1), rodMat);
+            const rod1 = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.015, BED_LENGTH - 0.1), matDark);
             rod1.position.set(xAisle, 0.58, z);
             rod1.updateMatrix();
             rod1.matrixAutoUpdate = false;
             Curtains.add(rod1);
-            const rod2 = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.015, BED_LENGTH - 0.1), rodMat);
+            const rod2 = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.015, BED_LENGTH - 0.1), matDark);
             rod2.position.set(xAisle, 1.58, z);
             rod2.updateMatrix();
             rod2.matrixAutoUpdate = false;
@@ -426,7 +424,6 @@ export function createBusInterior() {
         matLEDBlue.emissiveIntensity = on ? 2.8 : 0;
         matLEDNude.emissiveIntensity = on ? 3.0 : 0;
         matLEDRib.emissiveIntensity = on ? 1.6 : 0;
-        matLEDWhite.emissiveIntensity = on ? 1.1 : 0;
         matCluster.emissiveIntensity = on ? 0.6 : 0.1;
 
         const centerLight = groups.Lights.getObjectByName('centerLedLight');
@@ -436,9 +433,16 @@ export function createBusInterior() {
         if (centerLight) centerLight.intensity = intensity;
         if (leftLight) leftLight.intensity = intensity * 0.7;
         if (rightLight) rightLight.intensity = intensity * 0.7;
+        // three.js bo qua light invisible (projectObject) => tat that su,
+        // khong chi intensity = 0 (van ton shader/GPU dem).
+        const vis = !!on;
+        if (centerLight) centerLight.visible = vis;
+        if (leftLight) leftLight.visible = vis;
+        if (rightLight) rightLight.visible = vis;
 
         for (const pl of lights) {
             pl.intensity = on ? pl.userData.base : 0;
+            pl.visible = vis;
         }
     }
 

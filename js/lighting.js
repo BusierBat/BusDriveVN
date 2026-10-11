@@ -469,8 +469,3 @@ export class LightingSystem {
         this._removeLightHelpers();
     }
 }
-
-// Factory function for easy creation
-export function createLightingSystem(renderer, scene, camera, options = {}) {
-    return new LightingSystem(renderer, scene, camera, options);
-}

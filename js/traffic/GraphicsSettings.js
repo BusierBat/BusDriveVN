@@ -107,7 +107,7 @@ export class GraphicsSettings {
                 preset: this.currentPreset,
                 settings: this.settings
             }));
-        } catch (e) {}
+        } catch (e) { console.warn("[graphics] save settings failed:", e); }
     }
 
     load() {
@@ -122,7 +122,7 @@ export class GraphicsSettings {
                     Object.assign(this.settings, data.settings);
                 }
             }
-        } catch (e) {}
+        } catch (e) { console.warn("[graphics] load settings failed, giu default:", e); }
     }
 
     onChange(callback) {

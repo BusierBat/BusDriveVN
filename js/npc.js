@@ -490,7 +490,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
     
     let stationManager = null;
     const parkingSlots = (map.getParkingSlots && map.getParkingSlots()) || [];
-    if (parkingSlots.length > 0) { try { stationManager = new BusStationManager(scene, map, parkingSlots, playerSpawnPos); } catch (e) {} }
+    if (parkingSlots.length > 0) { try { stationManager = new BusStationManager(scene, map, parkingSlots, playerSpawnPos); } catch (e) { console.error("[npc] BusStationManager init failed:", e); } }
     
     let playerRef = playerBus || null;
     const playerScratch = { x: 0, z: 0 };
@@ -685,7 +685,6 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
     
     return {
         group, update, dispose, getWaitingPassengers: () => waitingPassengers,
-        pickUpPassenger: (id) => { const idx = waitingPassengers.findIndex(p => p.id === id); if (idx !== -1) { waitingPassengers.splice(idx, 1); return true; } return false; },
         getMovingVehicleCount: () => (trafficManagerRef ? trafficManagerRef.getMovingCount() : spawnManager.getActiveCount()),
         setTrafficManager(tm) {
             trafficManagerRef = tm || null;

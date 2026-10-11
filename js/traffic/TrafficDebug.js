@@ -383,7 +383,3 @@ export class TrafficDebug {
         this.enabled = false;
     }
 }
-
-export function createTrafficDebug(options) {
-    return new TrafficDebug(options);
-}

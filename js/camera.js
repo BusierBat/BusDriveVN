@@ -128,6 +128,9 @@ export class CameraSystem {
   }
 
   setMode(mode) {
+    const idx = this.modes.indexOf(mode);
+    if (idx === -1) return;
+    this.currentIndex = idx;
     this.cabinYaw = 0;
     this.cabinPitch = 0;
     this.bedLookYaw = 0;
@@ -138,6 +141,7 @@ export class CameraSystem {
     if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 1.32, 5.2);
     else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 1.32, 5.2);
     else if (mode === 'cabin') this.targetPos = new THREE.Vector3(0, 1.5, 3.2);
+    else if (mode === 'outside') { /* nhanh orbit: update() dung orbitYaw/Pitch/Distance, khong dung targetPos */ }
     else if (mode.startsWith('seat_')) {
       const idx = parseInt(mode.split('_')[1]);
       const seat = PASSENGER_SEATS[idx % PASSENGER_SEATS.length];
