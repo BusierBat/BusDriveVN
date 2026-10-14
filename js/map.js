@@ -12,6 +12,8 @@
 //   getParkingSlots()               -> [{position:{x,y,z}, rotation}]
 //   getRouteWaypoints() / getPOIs()
 //   getAdminUnit(x, z)               -> đơn vị hành chính sau sáp nhập 12/6/2025
+//   getDriveableSurface(x, z, yHint) -> height query: mặt đường ĐANG LÁI + box
+//   debugSurfaceAt(x, z, yHint)      -> debug "Xe rơi ở đâu?" (seg/box/transform)
 //   updateChunks(x, z, dt?, camDir?) | setPlayerPosition(x, z, dt?, camDir?)
 //   dispose()
 // NGUỒN SỰ THẬT: tools/map_generator.py (SOURCE OF TRUTH)
@@ -1081,6 +1083,7 @@ export class MapLoader {
             }
 
             this._indexSegmentsByChunk();
+            this._buildSurfaceBoxes();
             this._buildRoadIndex();
             this._buildJunctionIndex();
             this._buildRoadGroup();
@@ -1115,6 +1118,116 @@ export class MapLoader {
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------ driveable
+    // DRIVEABLE SURFACE LAYER (P0.1 — MESH ≠ DRIVEABLE SURFACE).
+    // Mỗi road segment được DERIVE thành 1 BOX collision từ data
+    // road graph hiện có (start/end XYZ, width, heading, elevation,
+    // length). KHÔNG tạo road graph thứ hai, KHÔNG duplicate data:
+    // box chỉ là VIEW vật lý của segment đang có.
+    // Box được index theo CHUNK (cùng công thức _indexSegmentsByChunk)
+    // để đăng ký/gỡ theo chunk streaming (load visual -> load
+    // collision; unload visual -> unload collision).
+    _buildSurfaceBoxes() {
+        this._surfaceBoxes = new Map();
+        this._surfaceBoxByChunk = new Map();
+        if (!this.roadGraph) return;
+        for (const seg of this.roadGraph.segments) {
+            const p1 = this.roadGraph.getNode(seg.from);
+            const p2 = this.roadGraph.getNode(seg.to);
+            if (!p1 || !p2) continue;
+            const y1 = typeof p1.y === "number" ? p1.y : this.world.getElevation(p1.x, p1.z);
+            const y2 = typeof p2.y === "number" ? p2.y : this.world.getElevation(p2.x, p2.z);
+            const dx = p2.x - p1.x, dz = p2.z - p1.z;
+            const len = Math.hypot(dx, dz);
+            if (len < 0.05) continue;
+            const w = seg.width || 12;
+            const heading = Math.atan2(dx, dz);
+            const cx = (p1.x + p2.x) * 0.5, cz = (p1.z + p2.z) * 0.5;
+            const cy = (y1 + y2) * 0.5;
+            // AABB bảo thủ (bao phủ rotation) — dùng để index chunk
+            // và debug bounds, KHÔNG dùng để check collision (check
+            // dùng oriented box trong CollisionSystem.registerBox).
+            const cos = Math.cos(heading), sin = Math.sin(heading);
+            const ex = w * 0.5 * Math.abs(cos) + len * 0.5 * Math.abs(sin);
+            const ez = w * 0.5 * Math.abs(sin) + len * 0.5 * Math.abs(cos);
+            const box = {
+                segId: seg.id,
+                roadId: seg.name || seg.id,
+                roadType: seg.class || "NORMAL",
+                start: { x: p1.x, y: y1, z: p1.z },
+                end: { x: p2.x, y: y2, z: p2.z },
+                cx, cy, cz,
+                heading,
+                length: len,
+                width: w,
+                thickness: ROAD_THICK,
+                minX: cx - ex, maxX: cx + ex,
+                minZ: cz - ez, maxZ: cz + ez,
+                minY: Math.min(y1, y2) - ROAD_THICK,
+                maxY: Math.max(y1, y2),
+                collisionId: null
+            };
+            this._surfaceBoxes.set(seg.id, box);
+            const hw = (seg.width || 12) * 0.5 + 2;
+            const x0 = Math.floor((Math.min(p1.x, p2.x) - hw) / CHUNK_SIZE);
+            const x1 = Math.floor((Math.max(p1.x, p2.x) + hw) / CHUNK_SIZE);
+            const z0 = Math.floor((Math.min(p1.z, p2.z) - hw) / CHUNK_SIZE);
+            const z1 = Math.floor((Math.max(p1.z, p2.z) + hw) / CHUNK_SIZE);
+            for (let ccx = x0; ccx <= x1; ccx++) {
+                for (let ccz = z0; ccz <= z1; ccz++) {
+                    const k = ccx + "," + ccz;
+                    let a = this._surfaceBoxByChunk.get(k);
+                    if (!a) { a = []; this._surfaceBoxByChunk.set(k, a); }
+                    a.push(seg.id);
+                }
+            }
+        }
+    }
+
+    // Đăng ký Box collision của 1 chunk VỪA dựng — tích hợp chunk
+    // streaming. Box dùng type "road": không nằm trong types mặc
+    // định của CollisionSystem.check() nên mặt đường KHÔNG bao
+    // giờ chặn chuyển động (nó là sàn, không phải vật cản).
+    _registerChunkSurfaces(entry) {
+        const cs = window.collisionSystem;
+        const sids = this._surfaceBoxByChunk
+            ? this._surfaceBoxByChunk.get(entry.cx + "," + entry.cz) : null;
+        if (!cs || !sids || !sids.length) return;
+        const ids = [];
+        for (const sid of sids) {
+            const box = this._surfaceBoxes.get(sid);
+            if (!box || box.collisionId !== null) continue;
+            box.collisionId = cs.registerBox(
+                box.cx, box.cy, box.cz,
+                box.width * 0.5, box.length * 0.5,
+                box.maxY - box.minY,
+                box.heading,
+                "road",
+                {
+                    segId: box.segId, roadId: box.roadId,
+                    roadType: box.roadType,
+                    start: box.start, end: box.end
+                }
+            );
+            ids.push(box.collisionId);
+        }
+        if (ids.length) entry.surfaceColIds = ids;
+    }
+
+    _unregisterChunkSurfaces(entry) {
+        const cs = window.collisionSystem;
+        if (!cs || !entry.surfaceColIds) return;
+        for (const id of entry.surfaceColIds) {
+            const c = cs.colliders.get(id);
+            if (c && c.data && c.data.segId) {
+                const box = this._surfaceBoxes.get(c.data.segId);
+                if (box) box.collisionId = null;
+            }
+            cs.remove(id);
+        }
+        entry.surfaceColIds = null;
     }
 
     // ------------------------------------------------------------ materials
@@ -3561,6 +3674,9 @@ export class MapLoader {
 
     _unloadChunk(key, chunk) {
         if (!chunk) return;
+        // unload visual -> unload collision (rule 30: collision
+        // đi theo chunk, không giữ toàn map trong memory)
+        this._unregisterChunkSurfaces(chunk);
         if (chunk.group) {
             this.chunkRoot.remove(chunk.group);
             chunk.group.traverse(o => {
@@ -3682,6 +3798,9 @@ export class MapLoader {
             // _buildStations -> khong render lai o day (tranh nhan ban + z-fighting)
         }
         this.chunkRoot.add(g);
+        // load visual -> load collision (driveable surface boxes
+        // của chunk này, type "road" — không chặn chuyển động)
+        this._registerChunkSurfaces(entry);
         entry.built = true;
     }
 
@@ -3704,6 +3823,57 @@ export class MapLoader {
         return this.world.getElevation(x, z);
     }
     getHeight(x, z) { return this.getTerrainHeight(x, z); }
+
+    // HEIGHT QUERY / RAYCAST (P0.2) — trả mặt đường ĐANG LÁI cùng
+    // box collision tương ứng. `yHint` = cao độ xe đang ở: chọn
+    // mặt LIÊN TỤC theo cao độ → xe leo ramp / đi cầu vượt mà
+    // không bị nhầm với mặt đường bên dưới (road nhiều tầng xét
+    // X+Y+Z, không chỉ X/Z). Trả null = đang ngoài mặt đường
+    // (terrain).
+    getDriveableSurface(x, z, yHint = null) {
+        const s = this._surfaceAt(x, z, yHint);
+        if (!s || !s.sid) return null;
+        const box = this._surfaceBoxes ? this._surfaceBoxes.get(s.sid) : null;
+        return { y: s.y, dist: s.dist, width: s.width, sid: s.sid, seg: s.seg, box };
+    }
+
+    // DEBUG "Xe rơi ở đâu?": xác định road segment + collision box
+    // + transform (center / heading / length / width / elevation).
+    debugSurfaceAt(x, z, yHint = null) {
+        const s = this.getDriveableSurface(x, z, yHint);
+        if (!s) return null;
+        const b = s.box;
+        return {
+            segId: s.sid,
+            roadId: b ? b.roadId : (s.seg.name || s.seg.id),
+            roadType: s.seg.class,
+            collisionId: b ? b.collisionId : null,
+            surfaceY: s.y,
+            offsetFromCenter: s.dist,
+            box: b ? {
+                cx: b.cx, cy: b.cy, cz: b.cz, heading: b.heading,
+                length: b.length, width: b.width, thickness: b.thickness,
+                minY: b.minY, maxY: b.maxY
+            } : null,
+            start: b ? b.start : null,
+            end: b ? b.end : null
+        };
+    }
+
+    // Thống kê registry (perf audit): số box đã đăng ký / tổng box.
+    getSurfaceStats() {
+        let registered = 0;
+        if (this._surfaceBoxes) {
+            for (const b of this._surfaceBoxes.values()) {
+                if (b.collisionId !== null) registered++;
+            }
+        }
+        return {
+            segments: this.roadGraph ? this.roadGraph.segments.length : 0,
+            boxes: this._surfaceBoxes ? this._surfaceBoxes.size : 0,
+            registered
+        };
+    }
 
     getSpawnPoint() {
         if (this.spawn && typeof this.spawn.x === "number") {
@@ -4021,6 +4191,8 @@ export function createMap(options) {
         getPOIs: () => loader.getPOIs(),
         getAdminUnit: (x, z) => loader.getAdminUnit(x, z),
         getParkingSlots: () => loader.getParkingSlots(),
+        getDriveableSurface: (x, z, yHint) => loader.getDriveableSurface(x, z, yHint),
+        debugSurfaceAt: (x, z, yHint) => loader.debugSurfaceAt(x, z, yHint),
         updateChunks: (x, z, dt, camDir) => loader.updateChunks(x, z, dt, camDir),
         dispose: () => loader.dispose()
     };

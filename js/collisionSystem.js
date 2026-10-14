@@ -1,4 +1,12 @@
 // js/collisionSystem.js
+// Hai loại collider:
+//   circle (register) — vật thể tròn (player / NPC): check theo khoảng cách.
+//   box    (registerBox) — hộp định hướng (mặt đường DRIVEABLE SURFACE
+//     derive từ road graph): check theo tọa độ cục bộ của box.
+// Box collider dùng type "road" — KHÔNG nằm trong danh sách types mặc
+// định của check() (['static','npc'] / ['npc','static','player']) nên
+// mặt đường không bao giờ CHẶN chuyển động: nó là SÀN, không phải vật
+// cản. Vai trò của box: registry + height query + debug ("xe rơi ở đâu").
 export class CollisionSystem {
     constructor(cellSize = 50) {
         this.cellSize = cellSize;
@@ -45,7 +53,30 @@ export class CollisionSystem {
     
     register(x, z, r, type = 'static', data = null, y = 0, height = 10) {
         const id = this.nextId++;
-        const c = { id, x, y, z, r, height, type, data };
+        const c = { id, kind: 'circle', x, y, z, r, height, type, data };
+        this.colliders.set(id, c);
+        this._addToGrid(c);
+        return id;
+    }
+
+    // Hộp định hướng (driveable surface). heading = atan2(dx, dz)
+    // (góc đo từ +Z — đúng convention của road graph/map.js).
+    // `halfWidth` = nửa bề rộng (ngang), `halfLength` = nửa chiều
+    // dài (dọc trục đường), `height` = bề dày hộp theo Y.
+    // Grid dùng AABB bảo thủ (bán kính = nửa đường chéo) nên
+    // _addToGrid/_removeFromGrid KHÔNG cần biết loại collider.
+    registerBox(x, y, z, halfWidth, halfLength, height, heading = 0, type = 'static', data = null) {
+        const id = this.nextId++;
+        const cos = Math.cos(heading), sin = Math.sin(heading);
+        const ex = halfWidth * Math.abs(cos) + halfLength * Math.abs(sin);
+        const ez = halfWidth * Math.abs(sin) + halfLength * Math.abs(cos);
+        const c = {
+            id, kind: 'box', x, y, z,
+            hw: halfWidth, hl: halfLength, height,
+            heading, cos, sin,
+            r: Math.hypot(ex, ez),   // bán kính grid bảo thủ
+            type, data
+        };
         this.colliders.set(id, c);
         this._addToGrid(c);
         return id;
@@ -86,13 +117,24 @@ export class CollisionSystem {
                 if (cell) {
                     for (const c of cell) {
                         if (c.id === excludeId || !types.includes(c.type)) continue;
-                        
+
                         const dx = x - c.x;
                         const dz = z - c.z;
-                        const distSq = dx * dx + dz * dz;
-                        const radSum = r + c.r;
-                        
-                        if (distSq < radSum * radSum) {
+                        let hit;
+                        if (c.kind === 'box') {
+                            // điểm (có bán kính query r) trong hộp định hướng:
+                            // trục dọc = (sin, cos), ngang = (cos, -sin)
+                            const lAlong = dx * c.sin + dz * c.cos;
+                            const lLat = dx * c.cos - dz * c.sin;
+                            hit = Math.abs(lAlong) <= c.hl + r &&
+                                  Math.abs(lLat) <= c.hw + r;
+                        } else {
+                            const distSq = dx * dx + dz * dz;
+                            const radSum = r + c.r;
+                            hit = distSq < radSum * radSum;
+                        }
+
+                        if (hit) {
                             // 3D Y/Height Check (cho cầu/viaduct)
                             if (y !== null && c.y !== undefined && c.height !== undefined) {
                                 const yMin1 = y - height / 2;

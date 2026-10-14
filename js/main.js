@@ -507,6 +507,21 @@ function handleCommand(cmd) {
             const on = trafficDebug ? trafficDebug.toggle() : false;
             ui.toast(on ? "✓ Traffic debug: ON (nhấn F3 để tắt)" : "Traffic debug: OFF");
         }
+    } else if (parts[0] === "surface") {
+        // DEBUG: "Xe rơi ở đâu?" — road segment + collision box
+        // + transform tại vị trí xe hiện tại
+        if (!map || !bus?.group) {
+            ui.toast("✕ Chưa vào game!", true);
+        } else {
+            const info = map.debugSurfaceAt(
+                bus.group.position.x, bus.group.position.z, bus.group.position.y);
+            if (!info) ui.toast("⚫ Ngoài mặt đường — đang ở terrain", true);
+            else ui.toast(
+                `🛣 ${info.roadType} · ${info.roadId} · seg ${info.segId}` +
+                ` · box #${info.collisionId}` +
+                ` · Y=${info.surfaceY.toFixed(2)}m` +
+                ` · lệch tâm ${info.offsetFromCenter.toFixed(1)}m`);
+        }
     } else { ui.toast("✕ Lệnh không xác định!", true); }
     isConsoleOpen = false;
     ui.hideConsole();
