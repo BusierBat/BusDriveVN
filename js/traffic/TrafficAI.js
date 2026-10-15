@@ -24,6 +24,7 @@
 import * as THREE from "three";
 import { createSeededRandom, lerpAngle, clamp } from "../utils.js";
 import { deriveLaneMeta } from "../RuntimeRoadGraph.js";
+import { hypot2 } from "../utils.js";
 import { BUS_DIMENSIONS } from "../bus.js";
 
 const TWO_PI = Math.PI * 2;
@@ -219,7 +220,7 @@ export class TrafficAI {
         const b = this._getNode(this.direction === 0 ? seg.to : seg.from);
         if (!a || !b) { this._frame = null; return false; }
         const dx = b.x - a.x, dz = b.z - a.z;
-        const len = Math.hypot(dx, dz);
+        const len = hypot2(dx, dz);
         if (!(len > 0.5)) { this._frame = null; return false; }
         const ux = dx / len, uz = dz / len;
         this._frame = { seg, p0: a, p1: b, len, ux, uz, rx: -uz, rz: ux };
@@ -1058,7 +1059,7 @@ export class TrafficAI {
         const b = this._getNode(dir === 0 ? nextSeg.to : nextSeg.from);
         if (!a || !b) return false;
         const dx = b.x - a.x, dz = b.z - a.z;
-        const len = Math.hypot(dx, dz) || 1;
+        const len = hypot2(dx, dz) || 1;
         const ux = dx / len, uz = dz / len;
         const win = BUS_LEN + 14;
         for (let i = 0; i < vehs.length; i++) {
@@ -1081,7 +1082,9 @@ export class TrafficAI {
     // thông với xe, nếu không A* không ra đường.
     // ⚠ CHỈ CHẠY A* MỘT LẦN ở đây. Các ngã khác đi theo pathNodes; chỉ
     // khi hết path / path hỏng mới tính lại (N5000: A* 40ms là cấm mỗi ngã).
+    // _canRetarget (set bởi TrafficManager): false = không được retarget frame này
     setGoal(nodeId) {
+        if (this._canRetarget === false) return;
         this.goalNodeId = nodeId || null;
         this.pathNodes = [];
         this.currentPathIndex = 0;
@@ -1117,7 +1120,7 @@ export class TrafficAI {
         if (rg.pois && rg.pois.length && this.random() < 0.55) {
             const cand = [];
             for (const p of rg.pois) {
-                const d = Math.hypot(p.position.x - ox, p.position.z - oz);
+                const d = hypot2(p.position.x - ox, p.position.z - oz);
                 if (d < 350 || d > 6000) continue;
                 cand.push(p);
             }
@@ -1132,7 +1135,7 @@ export class TrafficAI {
         for (let tries = 0; tries < 8; tries++) {
             const n = rg.nodes[Math.floor(this.random() * rg.nodes.length)];
             if (!n) break;
-            const d = Math.hypot(n.x - ox, n.z - oz);
+            const d = hypot2(n.x - ox, n.z - oz);
             if (d < 400 || d > 2500) continue;
             if (!rg.neighbors(n.id).some(e => BIG.has(e.cls))) continue;
             this.setGoal(n.id);
@@ -1256,7 +1259,7 @@ export class TrafficAI {
         const pts = this._getSegmentPoints();
         if (pts) {
             const dy = pts.p1.y - pts.p0.y;
-            const dxz = Math.hypot(pts.p1.x - pts.p0.x, pts.p1.z - pts.p0.z) || 1;
+            const dxz = hypot2(pts.p1.x - pts.p0.x, pts.p1.z - pts.p0.z) || 1;
             const pitch = Math.atan2(dy, dxz) * (this.direction === 0 ? -1 : 1);
             this.vehicle.group.rotation.x = THREE.MathUtils.lerp(this.vehicle.group.rotation.x, pitch * 0.5, 0.1);
         }

@@ -1,5 +1,6 @@
 // js/passenger.js
 import * as THREE from "three";
+import { hypot2 } from "utils.js";
 import { clamp } from "./utils.js";
 const _tmpLerpTarget = new THREE.Vector3();
 let _passengerUpdateTimer = 0;
@@ -166,7 +167,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             if (p.picked) continue;
             const dx = p.x - busPos.x;
             const dz = p.z - busPos.z;
-            const dist = Math.hypot(dx, dz);
+            const dist = hypot2(dx, dz);
             const inRange = dist < PICKUP_RANGE;
             p.inRange = inRange;
             if (inRange) {

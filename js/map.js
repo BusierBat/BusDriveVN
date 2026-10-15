@@ -40,6 +40,7 @@
 // =============================================================================
 
 import * as THREE from "three";
+import { hypot2 } from "utils.js";
 import { RuntimeRoadGraph } from "./RuntimeRoadGraph.js";
 
 const DATA_PATH = "generated/maps/";
@@ -88,17 +89,30 @@ function smoothstep(e0, e1, x) {
     return t * t * (3 - 2 * t);
 }
 
+// Frame-level cache cho fbm/fbmSmall — tránh tính lại cùng (x,z) trong 1 frame
+// Cache được clear mỗi frame bởi MapLoader.updateChunks()
+let _fbmCache = { x: 0, z: 0, result: 0 };
+let _fbmSmallCache = { x: 0, z: 0, result: 0 };
+
 function fbm(x, z) {
-    return Math.sin(x * 0.000037 + z * 0.000021) * 1.00 +
+    const c = _fbmCache;
+    if (c.x === x && c.z === z) return c.result;
+    const result = Math.sin(x * 0.000037 + z * 0.000021) * 1.00 +
            Math.sin(x * 0.000091 - z * 0.000073) * 0.55 +
            Math.sin(x * 0.000210 + z * 0.000170) * 0.30 +
            Math.sin(x * 0.000470 - z * 0.000530) * 0.16 +
            Math.sin(x * 0.001130 + z * 0.000970) * 0.08;
+    c.x = x; c.z = z; c.result = result;
+    return result;
 }
 
 function fbmSmall(x, z) {
-    return Math.sin(x * 0.0113 + z * 0.0091) * 0.6 +
+    const c = _fbmSmallCache;
+    if (c.x === x && c.z === z) return c.result;
+    const result = Math.sin(x * 0.0113 + z * 0.0091) * 0.6 +
            Math.sin(x * 0.0271 - z * 0.0313) * 0.4;
+    c.x = x; c.z = z; c.result = result;
+    return result;
 }
 
 // =============================================================================
@@ -181,7 +195,7 @@ class World {
                 cx: s.x, cz: s.z, y: s.y,
                 ca: Math.cos(rot), sa: Math.sin(rot),
                 hx: hx, hz: hz, blend: blend,
-                r: Math.hypot(hx, hz) + blend
+                r: hypot2(hx, hz) + blend
             });
         }
         this._yards = out;
@@ -798,7 +812,7 @@ class MeshAccum {
             const b = bottoms[i];
             if (outOff) {
                 const dx = p[0] - mx, dz = p[2] - mz;
-                const L = Math.hypot(dx, dz) || 1;
+                const L = hypot2(dx, dz) || 1;
                 this.pos.push(p[0], p[1], p[2]);                 // 2i    trên
                 this.pos.push(p[0] + dx / L * outOff, b, p[2] + dz / L * outOff);
             } else {
@@ -1576,7 +1590,7 @@ export class MapLoader {
                 const from = (seg.from === nid) ? a : b;
                 const to = (seg.from === nid) ? b : a;
                 let dx = to.x - from.x, dz = to.z - from.z;
-                const len = Math.hypot(dx, dz);
+                const len = hypot2(dx, dz);
                 if (len < 0.5) continue;
                 dx /= len; dz /= len;
                 const hw = (seg.width || 12) * 0.5;
@@ -1716,7 +1730,7 @@ export class MapLoader {
             if (l2 < 1e-9) continue;
             let t = ((p[0] - a[0]) * ex + (p[1] - a[1]) * ez) / l2;
             t = clamp(t, 0, 1);
-            const d = Math.hypot(p[0] - (a[0] + ex * t), p[1] - (a[1] + ez * t));
+            const d = hypot2(p[0] - (a[0] + ex * t), p[1] - (a[1] + ez * t));
             if (d < bestD) { bestD = d; bestY = a[2] + (b[2] - a[2]) * t; }
         }
         return bestY;
@@ -1782,7 +1796,7 @@ export class MapLoader {
             }
             const w = seg.width || 12;
             const dx = p2.x - p1.x, dz = p2.z - p1.z;
-            const len = Math.hypot(dx, dz);
+            const len = hypot2(dx, dz);
             if (len < 0.05) continue;
             const ux = dx / len, uz = dz / len;
             const nx = -uz, nz = ux;
@@ -2007,7 +2021,7 @@ export class MapLoader {
                         if (l2 < 1e-9) continue;
                         let t = ((p[0] - a[0]) * ex + (p[1] - a[1]) * ez) / l2;
                         t = clamp(t, 0, 1);
-                        const d = Math.hypot(p[0] - (a[0] + ex * t), p[1] - (a[1] + ez * t));
+                        const d = hypot2(p[0] - (a[0] + ex * t), p[1] - (a[1] + ez * t));
                         if (d < bestD) { bestD = d; bestY = a[2] + (b[2] - a[2]) * t; }
                     }
                     return [p[0], bestY, p[1]];
@@ -2022,7 +2036,7 @@ export class MapLoader {
                     for (let k = 0; k < J.curbEdges.length; k++) {
                         const a = J.curbEdges[k][0], b2 = J.curbEdges[k][1];
                         let ex = b2[0] - a[0], ez = b2[1] - a[1];
-                        const el = Math.hypot(ex, ez);
+                        const el = hypot2(ex, ez);
                         if (el < 0.4) continue;
                         ex /= el; ez /= el;
                         const px = -ez, pz = ex;          // vuông goc ra ngoài
@@ -2137,7 +2151,7 @@ export class MapLoader {
         // tam giac o vong ngoai). Fog che het nen KHONG mat chi tiet nhin thay.
         let seg = TERRAIN_SEG;
         if (px !== undefined && pz !== undefined) {
-            const d = Math.hypot(originX - px, originZ - pz);
+            const d = hypot2(originX - px, originZ - pz);
             if (d > 3.2 * CHUNK_SIZE) seg = TERRAIN_SEG_LOD;
         }
         const geo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, seg, seg);
@@ -2262,7 +2276,7 @@ export class MapLoader {
             for (let i = 0; i < poly.length - 1; i++) {
                 const a = poly[i], b = poly[i + 1];
                 const dx = b[0] - a[0], dz = b[1] - a[1];
-                const L = Math.hypot(dx, dz);
+                const L = hypot2(dx, dz);
                 if (L < 1) continue;
                 // bỏ qua đoạn nằm ngoài chunk (có padding để nước không bị cắt)
                 if (Math.max(a[0], b[0]) < minX - half || Math.min(a[0], b[0]) > maxX + half) continue;
@@ -3634,7 +3648,7 @@ export class MapLoader {
         let dirX = 0, dirZ = -1;
         if (camDir && (camDir.x || camDir.z)) {
             dirX = camDir.x; dirZ = camDir.z;
-            const l = Math.hypot(dirX, dirZ) || 1;
+            const l = hypot2(dirX, dirZ) || 1;
             dirX /= l; dirZ /= l;
         } else {
             dirX = this._lastDir.x; dirZ = this._lastDir.z;
@@ -3670,7 +3684,7 @@ export class MapLoader {
                 const ccx = cx * CHUNK_SIZE + CHUNK_SIZE / 2;
                 const ccz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
                 const vx = ccx - playerX, vz = ccz - playerZ;
-                const d = Math.hypot(vx, vz);
+                const d = hypot2(vx, vz);
                 // distance CHỦ ĐẠO, dot chỉ tie-break nhỏ (ưu tiên phía trước)
                 const dot = Math.max(0, (vx * dirX + vz * dirZ) / (d || 1));
                 const priority = d - dot * (CHUNK_SIZE * 0.25);
@@ -3687,7 +3701,7 @@ export class MapLoader {
             const [cx, cz] = key.split(",").map(Number);
             const ccx = cx * CHUNK_SIZE + CHUNK_SIZE / 2;
             const ccz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-            if (Math.hypot(ccx - playerX, ccz - playerZ) > UNLOAD_RADIUS * CHUNK_SIZE) {
+            if (hypot2(ccx - playerX, ccz - playerZ) > UNLOAD_RADIUS * CHUNK_SIZE) {
                 this._unloadChunk(key, chunk);
             }
         }
@@ -3710,7 +3724,7 @@ export class MapLoader {
             if (built >= 1 && performance.now() - tBuild > 5) break;
             const ccx = entry.cx * CHUNK_SIZE + CHUNK_SIZE / 2;
             const ccz = entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-            if (Math.hypot(ccx - playerX, ccz - playerZ) > this.renderRadius * CHUNK_SIZE) continue;
+            if (hypot2(ccx - playerX, ccz - playerZ) > this.renderRadius * CHUNK_SIZE) continue;
             this._tryBuildChunk(entry, playerX, playerZ);
             built++;
         }
@@ -3804,7 +3818,7 @@ export class MapLoader {
         entry.group.name = `chunk_${key}`;
         this.loadedChunks.set(key, entry);
         // px,pz là TOẠ ĐỘ THẾ GIỚI (m) — trước đây truyền luôn chỉ số chunk
-        // khiến Math.hypot(..., cx, cz) lệch đơn vị (vài trăm mét), LOD sai.
+        // khiến hypot2(..., cx, cz) lệch đơn vị (vài trăm mét), LOD sai.
         // dung vi tri player thuc (xem FIX LOD CHET o updateChunks). Neu chua
         // co (goi truc tiep tu code khac) thi tam chunk la du an toan.
         const sp = this._streamPos;
@@ -3823,7 +3837,7 @@ export class MapLoader {
         if (!entry || entry.built) return;
         const ccx = entry.cx * CHUNK_SIZE + CHUNK_SIZE / 2;
         const ccz = entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-        if (Math.hypot(ccx - px, ccz - pz) > this.renderRadius * CHUNK_SIZE) return;
+        if (hypot2(ccx - px, ccz - pz) > this.renderRadius * CHUNK_SIZE) return;
 
         const g = entry.group;
         this._addChunkTerrain(entry.cx, entry.cz, g, px, pz);
@@ -3834,7 +3848,7 @@ export class MapLoader {
             // giam manh instance count -> N5000 khong bi gio.
             const ccx0 = entry.cx * CHUNK_SIZE + CHUNK_SIZE / 2;
             const ccz0 = entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-            const cd = Math.hypot(ccx0 - px, ccz0 - pz);
+            const cd = hypot2(ccx0 - px, ccz0 - pz);
             const far = cd > 1100;
             this._addChunkBuildings(entry.data.buildings, g, cd > 900);
             this._addChunkObjects(entry.data.objects, g, far);
@@ -4164,7 +4178,7 @@ export class MapLoader {
         let best = null, bestD = 1e9;
         for (const s of this.stationsData) {
             if (s.type !== "BUS_STATION" && s.type !== "MAJOR_BUS_TERMINAL") continue;
-            const dd = Math.hypot(s.x - p.x, s.z - p.z);
+            const dd = hypot2(s.x - p.x, s.z - p.z);
             if (dd < bestD) { bestD = dd; best = s; }
         }
         if (!best || bestD > 900) return out;   // chưa tới bến nào -> khong spawn

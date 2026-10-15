@@ -13,6 +13,7 @@
 //    có lều mép đường không. Dùng cho Test 1/2/12.
 // Không ảnh hưởng gameplay: bật/tắt tức thì, dispose dọn sạch object.
 // =====================================================================
+import { hypot2 } from "../utils.js";
 import * as THREE from "three";
 
 const MAX_LANE_VERTS = 12000;   // ~800 đoạn vạch
@@ -132,7 +133,7 @@ export class TrafficDebug {
     _distToPlayer(v) {
         const p = this.getPlayerPos();
         if (!p) return 0;
-        return Math.hypot(v.x - p.x, v.z - p.z);
+        return hypot2(v.x - p.x, v.z - p.z);
     }
 
     _renderPanel() {
@@ -215,7 +216,7 @@ export class TrafficDebug {
             const a = rg.getNode(seg.from), b = rg.getNode(seg.to);
             if (!a || !b) continue;
             const dx = b.x - a.x, dz = b.z - a.z;
-            const len = Math.hypot(dx, dz);
+            const len = hypot2(dx, dz);
             if (len < 1) continue;
             const ux = dx / len, uz = dz / len;
             const rx = -uz, rz = ux;                       // vector PHẢI của chiều from->to
@@ -269,7 +270,7 @@ export class TrafficDebug {
         const p = this.getPlayerPos();
         let best = null, bestD = Infinity;
         for (const a of list) {
-            const d = p ? Math.hypot(a.collider.x - p.x, a.collider.z - p.z) : 0;
+            const d = p ? hypot2(a.collider.x - p.x, a.collider.z - p.z) : 0;
             if (d < bestD) { bestD = d; best = a; }
         }
         return best;
@@ -327,7 +328,7 @@ export class TrafficDebug {
             const b = rg.getNode(ai.direction === 0 ? seg.to : seg.from);
             if (!a || !b) continue;
             const dx = b.x - a.x, dz = b.z - a.z;
-            const len = Math.hypot(dx, dz);
+            const len = hypot2(dx, dz);
             if (len < 1) continue;
             const ux = dx / len, uz = dz / len;
             const rx = -uz, rz = ux;

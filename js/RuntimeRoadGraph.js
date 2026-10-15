@@ -1,3 +1,4 @@
+import { hypot2 } from "utils.js";
 // js/RuntimeRoadGraph.js
 // SOURCE OF TRUTH của road network (rule 56): world render, minimap, NPC
 // routing, audit đều đọc từ đây. KHÔNG có bản song song.
@@ -195,7 +196,7 @@ export class RuntimeRoadGraph {
         for (const s of this.segments) {
             const a = this._nodeMap.get(s.from), b = this._nodeMap.get(s.to);
             if (!a || !b) continue;
-            const len = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+            const len = hypot2(b.x - a.x, b.z - a.z) || 1;
             const cls = s.class || "";
             const f = cls === "EXPRESSWAY" || cls === "RAMP" ? 0.75
                 : cls === "NATIONAL" ? 0.85
@@ -251,7 +252,7 @@ export class RuntimeRoadGraph {
         if (!this._adj.has(fromId) || !this._adj.has(toId)) return null;
         const goal = this._nodeMap.get(toId);
         if (!goal) return null;
-        const h = (n) => Math.hypot(n.x - goal.x, n.z - goal.z);
+        const h = (n) => hypot2(n.x - goal.x, n.z - goal.z);
         const gScore = new Map([[fromId, 0]]);
         const came = new Map();
         const open = new Set([fromId]);

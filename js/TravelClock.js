@@ -1,3 +1,4 @@
+import { hypot2 } from "utils.js";
 // js/TravelClock.js
 // =====================================================================
 // GIỜ TRONG GAME SUY RA TỪ LÁI XE THẬT — KHÔNG HARD-CODE LỊCH TRÌNH.
@@ -253,7 +254,7 @@ export class TravelClock {
         // ---------------- 1. DISTANCE ----------------
         let stepM = 0;
         if (this._last) {
-            stepM = Math.hypot(x - this._last.x, z - this._last.z);
+            stepM = hypot2(x - this._last.x, z - this._last.z);
             // rung tay ga/số lùi làm bước nhỏ -> coi như đứng yên
             if (stepM < 0.02) stepM = 0;
             this.distanceM += stepM;

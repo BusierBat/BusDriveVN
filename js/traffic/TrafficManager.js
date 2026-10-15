@@ -17,6 +17,7 @@
 import { createNpcBus, pickNpcSkinPath, pickLedColor, loadNpcSkinList } from "../bus.js";
 import { TrafficAI, AI_STATE } from "./TrafficAI.js";
 import { getGraphicsSettings } from "./GraphicsSettings.js";
+import { hypot2 } from "../utils.js";
 import { createSeededRandom, clamp } from "../utils.js";
 
 const BUS_LEN_APPROX = 12.8;   // xe NPC dùng chung mesh bus (bus.js BUS_DIMENSIONS)
@@ -89,7 +90,12 @@ export class TrafficManager {
         // Dùng cho TrafficAI._scan để chỉ quét xe trong bán kính LOOKAHEAD
         this._vehicleGrid = new Map();
         this._vehicleGridCellSize = 100; // 100m cells
-        
+
+        // Throttle A* retarget: A* trên graph ~10k nodes có thể tốn 10-40ms.
+        // Nếu nhiều xe cùng retarget cùng lúc (sau spawn) → frame spike.
+        // Giới hạn: tối đa 1 retarget mỗi 0.5s, các xe khác chờ frame sau.
+        this._retargetThrottle = 0; // timestamp (ms) lần retarget cuối
+
         this._nextAiId = 1;
         this._onSettingsChanged();
     }
@@ -117,7 +123,7 @@ export class TrafficManager {
         const f = this.roadGraph.getNode(s.from);
         const t = this.roadGraph.getNode(s.to);
         if (!f || !t) return false;
-        return Math.hypot(t.x - f.x, t.z - f.z) > 12;
+        return hypot2(t.x - f.x, t.z - f.z) > 12;
     }
 
     _densityOf(s) {
@@ -176,7 +182,7 @@ export class TrafficManager {
             const x = p0.x + (p1.x - p0.x) * progress;
             const z = p0.z + (p1.z - p0.z) * progress;
 
-            const distPlayer = Math.hypot(x - px, z - pz);
+            const distPlayer = hypot2(x - px, z - pz);
             // Lệch tối đa giữa tâm đường và vị trí THẬT sau placeOnSegment
             // (xe nằm ở làn, không ở centerline) -> cổng spawn phải trừ hao
             // chừng đó, nếu không xe vẫn lọt vào vùng cấm theo toạ độ thật.
@@ -231,7 +237,7 @@ export class TrafficManager {
             const seg = this.roadGraph.getSegment(segId);
             const f = seg ? this.roadGraph.getNode(seg.from) : null;
             const t = seg ? this.roadGraph.getNode(seg.to) : null;
-            const len = (f && t) ? Math.hypot(t.x - f.x, t.z - f.z) : 100;
+            const len = (f && t) ? hypot2(t.x - f.x, t.z - f.z) : 100;
             for (const o of sameSeg) {
                 if (o.direction !== dir) continue;
                 if (Math.abs(o.progress - progress) * len < BUS_LEN_APPROX * 1.7) return false;
@@ -241,7 +247,7 @@ export class TrafficManager {
         const nearby = this._getNearbyVehicles(x, z, 20);
         for (let i = 0; i < nearby.length; i++) {
             const o = nearby[i];
-            const d = Math.hypot(o.collider.x - x, o.collider.z - z);
+            const d = hypot2(o.collider.x - x, o.collider.z - z);
             if (d < 18) return false;
         }
         return true;
@@ -263,11 +269,11 @@ export class TrafficManager {
     // vị trí. Một registry chung => mỗi slot đúng 1 xe, cả hai API giữ nguyên.
     isBayFree(x, z, r = 7) {
         const busy = this._bayBusy || [];
-        for (const b of busy) if (Math.hypot(b.x - x, b.z - z) < r) return false;
+        for (const b of busy) if (hypot2(b.x - x, b.z - z) < r) return false;
         // Dùng spatial grid O(1)
         const nearby = this._getNearbyVehicles(x, z, r + 5);
         for (const v of nearby) {
-            if (Math.hypot(v.collider.x - x, v.collider.z - z) < r) return false;
+            if (hypot2(v.collider.x - x, v.collider.z - z) < r) return false;
         }
         return true;
     }
@@ -339,7 +345,7 @@ export class TrafficManager {
         a.collider.x = x; a.collider.z = z; a.collider.y = g.position.y;
         a.heading = g.rotation.y;
         if (this._prevPlayer.valid) {
-            const d = Math.hypot(x - this._prevPlayer.x, z - this._prevPlayer.z);
+            const d = hypot2(x - this._prevPlayer.x, z - this._prevPlayer.z);
             const dt = Math.max(0.016, Math.min(deltaTime, 0.1));
             const inst = d / dt;
             const smoothed = (inst > 60 || inst < 0) ? 0 : inst;   // chống spike khi reset/spawn
@@ -382,7 +388,7 @@ export class TrafficManager {
             const ai = this.aiVehicles[i];
             if (ai.isStatic) continue;
 
-            const dist = Math.hypot(ai.collider.x - playerPos.x, ai.collider.z - playerPos.z);
+            const dist = hypot2(ai.collider.x - playerPos.x, ai.collider.z - playerPos.z);
 
             // --- despawn (dead-band: spawn max 340 < despawn >= 520) ---
             if (dist > this.despawnDistance) {
@@ -397,6 +403,17 @@ export class TrafficManager {
             else if (lvl === 'MID') { if (dist < 150) next = 'NEAR'; else if (dist > 320) next = 'FAR'; }
             else { if (dist < 300) next = 'MID'; }
             if (next !== lvl) ai.setAILevel(next);
+
+            // Throttle A* retarget: chỉ cho phép 1 xe retarget mỗi 0.5s
+            // Xe không được retarget sẽ giữ goal cũ (hoặc không goal) — an toàn
+            // vì _handleJunction có fallback nextSegmentToward khi không có path
+            const now = performance.now();
+            if (now - this._retargetThrottle > 500) {
+                this._retargetThrottle = now;
+                ai._canRetarget = true;
+            } else {
+                ai._canRetarget = false;
+            }
 
             // Lấy chỉ xe gần cho _scan (tối ưu O(1) thay vì O(N))
             // Thêm playerActor để AI nhận diện xe người chơi

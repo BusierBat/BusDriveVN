@@ -2,6 +2,7 @@
 import * as THREE from "three";
 import { clamp, randomFloat, pick, createSeededRandom, disposeObject3D } from "./utils.js";
 import { createNpcBus, pickNpcSkinPath, pickLedColor, loadNpcSkinList } from "./bus.js";
+import { hypot2 } from "utils.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 const TWO_PI = Math.PI * 2;
@@ -377,7 +378,7 @@ export class BusStationManager {
         let selectedSlots = availableSlots.slice(0, this.maxStaticBuses);
         if (this.playerSpawnPos) {
             const spawnX = this.playerSpawnPos.x, spawnZ = this.playerSpawnPos.z;
-            selectedSlots = selectedSlots.filter(slot => Math.hypot(slot.position.x - spawnX, slot.position.z - spawnZ) > 20);
+            selectedSlots = selectedSlots.filter(slot => hypot2(slot.position.x - spawnX, slot.position.z - spawnZ) > 20);
         }
         for (const slot of selectedSlots) { this.spawnQueue.push(slot); }
         // KHÔNG xả hàng ngay tại đây: lúc constructor chạy thì main.js chưa
@@ -436,12 +437,12 @@ export class TrafficSpawnManager {
             if (edge.type === 'bus_station_road' && this.random() > 0.1) continue;
             const path = edge.points; const progress = this.random(); const pos = this._getPosOnPath(path, progress);
             if (playerPos) {
-                const dx = pos.x - playerPos.x, dz = pos.z - playerPos.z, distToPlayer = Math.hypot(dx, dz);
+                const dx = pos.x - playerPos.x, dz = pos.z - playerPos.z, distToPlayer = hypot2(dx, dz);
                 if (distToPlayer < 150) continue;
                 if (playerHeading) { const forwardX = Math.sin(playerHeading), forwardZ = Math.cos(playerHeading); if (dx * forwardX + dz * forwardZ > 0 && distToPlayer < 300) continue; }
             }
             let overlap = false;
-            for (let i = 0; i < this.activeVehicles.length; i++) { if (Math.hypot(pos.x - this.activeVehicles[i].vehicle.group.position.x, pos.z - this.activeVehicles[i].vehicle.group.position.z) < 25) { overlap = true; break; } }
+            for (let i = 0; i < this.activeVehicles.length; i++) { if (hypot2(pos.x - this.activeVehicles[i].vehicle.group.position.x, pos.z - this.activeVehicles[i].vehicle.group.position.z) < 25) { overlap = true; break; } }
             if (overlap) continue;
             vehicle.group.position.set(pos.x, pos.y, pos.z); vehicle.group.rotation.y = Math.atan2(path[1].x - path[0].x, path[1].z - path[0].z);
             this.activeVehicles.push({ vehicle, edge, progress, speed: 10 + this.random() * 10 }); return true;
@@ -453,7 +454,7 @@ export class TrafficSpawnManager {
         const toRemove = [];
         for (let i = 0; i < this.activeVehicles.length; i++) {
             const v = this.activeVehicles[i]; if (!v || !v.vehicle) { toRemove.push(i); continue; }
-            if (playerPos) { const dist = Math.hypot(v.vehicle.group.position.x - playerPos.x, v.vehicle.group.position.z - playerPos.z); if (dist > this.despawnDistance) { toRemove.push(i); continue; } }
+            if (playerPos) { const dist = hypot2(v.vehicle.group.position.x - playerPos.x, v.vehicle.group.position.z - playerPos.z); if (dist > this.despawnDistance) { toRemove.push(i); continue; } }
             v.progress += (v.speed * dt) / (this.edgePaths.find(e => e === v.edge)?.total || 1000); if (v.progress >= 1) v.progress = 0;
             const pos = this._getPosOnPath(v.edge.points, v.progress); v.vehicle.group.position.x = pos.x; v.vehicle.group.position.z = pos.z;
         }
@@ -478,7 +479,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
         const t = graph.getNode(s.to);
         return f && t ? { from: s.from, to: s.to, points: [{x:f.x, y:f.y, z:f.z}, {x:t.x, y:t.y, z:t.z}], width: 24, type: s.roadType, twoWay: s.twoWay } : null;
     }).filter(Boolean);
-    const edgePaths = edges.map((e) => { const cum = new Float32Array(e.points.length); let total = 0; for (let i = 1; i < e.points.length; i++) { total += Math.hypot(e.points[i].x - e.points[i-1].x, e.points[i].z - e.points[i-1].z); cum[i] = total; } return { cum, total: total || 1 }; });
+    const edgePaths = edges.map((e) => { const cum = new Float32Array(e.points.length); let total = 0; for (let i = 1; i < e.points.length; i++) { total += hypot2(e.points[i].x - e.points[i-1].x, e.points[i].z - e.points[i-1].z); cum[i] = total; } return { cum, total: total || 1 }; });
     // GỘP HỆ THỐNG SONG SONG: TrafficSpawnManager từng tự spawn 15 xe chạy
     // nhưng KHÔNG CÓ AI (bản sao của TrafficManager -> 2 nguồn xe cùng lúc).
     // Giờ TrafficManager là NGUỒN DUY NHẤT của xe đang chạy; manager này
@@ -513,7 +514,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
             const p2 = waypoints[i];
             const dx = p2.x - p1.x;
             const dz = p2.z - p1.z;
-            const len = Math.hypot(dx, dz);
+            const len = hypot2(dx, dz);
             if (len === 0) continue;
             const rx = dz / len;
             const rz = -dx / len;
@@ -561,7 +562,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
         const sz = pz + Math.cos(angle) * dist;
         // Trùng vị trí với ped đang active → bỏ qua
         for (const p of activePeds) {
-            if (Math.hypot(p.group.position.x - sx, p.group.position.z - sz) < 6) return false;
+            if (hypot2(p.group.position.x - sx, p.group.position.z - sz) < 6) return false;
         }
 
         const npc = pedPool.pop() || createHumanoidNPC(seed + (pedIdCounter++));
@@ -615,7 +616,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
             pedSpawnAccum = 0;
             // Despawn xa
             for (let i = activePeds.length - 1; i >= 0; i--) {
-                const d = Math.hypot(activePeds[i].group.position.x - px, activePeds[i].group.position.z - pz);
+                const d = hypot2(activePeds[i].group.position.x - px, activePeds[i].group.position.z - pz);
                 if (d > PED_DESPAWN_RADIUS) { despawnPedestrian(activePeds[i]); activePeds.splice(i, 1); }
             }
             // Spawn gần
@@ -624,7 +625,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
 
         // Cập nhật từng ped
         for (const npc of activePeds) {
-            const d = Math.hypot(npc.group.position.x - px, npc.group.position.z - pz);
+            const d = hypot2(npc.group.position.x - px, npc.group.position.z - pz);
             // LOD: 0 near (<40m) → full anim, 1 mid (<90m) → anim giảm, 2 far → anim rất chậm
             npc.lod = d < 40 ? 0 : d < 90 ? 1 : 2;
 

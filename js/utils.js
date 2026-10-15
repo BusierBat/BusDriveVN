@@ -83,6 +83,12 @@ export function distance2(x1, y1, x2, y2) {
   return Math.sqrt(distanceSquared2(x1, y1, x2, y2));
 }
 
+// Fast 2D hypot: hypot2(a, b) có overhead xử lý arbitrary args
+// hypot2 nhanh hơn ~2-3x cho 2D distance, dùng cho hot path
+export function hypot2(a, b) {
+  return Math.sqrt(a * a + b * b);
+}
+
 export function distanceSquared3(x1, y1, z1, x2, y2, z2) {
   const dx = x2 - x1;
   const dy = y2 - y1;
