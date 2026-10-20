@@ -1,6 +1,6 @@
-// js/passenger.js
+﻿// js/passenger.js
 import * as THREE from "three";
-import { hypot2 } from "utils.js";
+import { hypot2 } from "./utils.js";
 import { clamp } from "./utils.js";
 const _tmpLerpTarget = new THREE.Vector3();
 let _passengerUpdateTimer = 0;

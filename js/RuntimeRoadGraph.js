@@ -1,4 +1,4 @@
-import { hypot2 } from "utils.js";
+﻿import { hypot2 } from "./utils.js";
 // js/RuntimeRoadGraph.js
 // SOURCE OF TRUTH của road network (rule 56): world render, minimap, NPC
 // routing, audit đều đọc từ đây. KHÔNG có bản song song.

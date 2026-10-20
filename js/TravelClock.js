@@ -1,4 +1,4 @@
-import { hypot2 } from "utils.js";
+﻿import { hypot2 } from "./utils.js";
 // js/TravelClock.js
 // =====================================================================
 // GIỜ TRONG GAME SUY RA TỪ LÁI XE THẬT — KHÔNG HARD-CODE LỊCH TRÌNH.

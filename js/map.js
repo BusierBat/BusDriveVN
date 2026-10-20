@@ -1,4 +1,4 @@
-// js/map.js — BUSDRIVEVN WORLD RUNTIME
+﻿// js/map.js — BUSDRIVEVN WORLD RUNTIME
 // =============================================================================
 // Vai trò: load + stream + render world 3D (terrain thật, road network, bến xe,
 //          building, vật thể dọc đường) và cung cấp API contract cho game.
@@ -40,7 +40,7 @@
 // =============================================================================
 
 import * as THREE from "three";
-import { hypot2 } from "utils.js";
+import { hypot2 } from "./utils.js";
 import { RuntimeRoadGraph } from "./RuntimeRoadGraph.js";
 
 const DATA_PATH = "generated/maps/";
@@ -412,14 +412,14 @@ class World {
         return n ? sum / n : 0;
     }
 
-    // u = nội suy theo bảng bin-median; bin mâu thuận -> nearest-point
+    // P85: u theo DIEM corridor gan nhat (lien tuc) — bang z chi la fallback khi
+    // khong co x. Bin mau thuan (corridor 2 nhanh cung z) khong the bieu dien
+    // bang median: do p85, bin -920 co 2 diem u=23.904/28.964 -> median 28.964
+    // => noi suy cho u=26.41 giua 2 diem cach 3m => terrain cliff 13m.
     _uAtZ(z, x) {
+        if (x !== undefined) return this._uNearest(x, z);
         const uz = this._uz;
         if (!uz || uz.length === 0) return 0;
-        const kb = Math.floor(z / 250);   // KHỚP Python int(math.floor(z/250))
-        if (x !== undefined && this._uzAmbig && this._uzAmbig.has(kb)) {
-            return this._uNearest(x, z);
-        }
         if (uz.length < 2) return uz[0][1];
         let lo, hi;
         // NGOÀI BIÊN BẢNG: Python trả chỉ số biên (uz[0] nếu z <= uz[0][0],
@@ -558,10 +558,16 @@ class World {
                 best = d2; bestIdx = i;
             }
         }
-        // ⚠ PHẢI truyền cả x: bin u(z) mâu thuận (corridor đi 2 nhánh cùng z —
-        // khu Phan Thiet/Dau Giay) chỉ quyết định được bằng NEAREST-POINT.
-        // Thiếu x => u sai ~8 don => terrain lech 89m => XE bay/chim.
-        return [this._uAtZ(z, x), Math.sqrt(best)];
+        // P85: u lay TU CHINH doan gan nhat (cung 1 luot _accNear voi d) — mirror
+        // Python corridor_u_dist. Bang z bin-median khong bieu dien duoc corridor
+        // di 2 lan qua cung z (QL.1 vong o Phan Thiet/Dau Giay): o bin mau thuan
+        // median la cua nhanh KHAC => noi suy cho u=26.41 giua 2 diem cach 3m
+        // => terrain cliff 13m. Gan nhat diem la lien tuc.
+        let su = 0, nu = 0;
+        for (let j = bestIdx - 1; j <= bestIdx + 1; j++) {
+            if (j >= 0 && j < poly.length) { su += poly[j][2]; nu++; }
+        }
+        return [nu ? su / nu : 0, Math.sqrt(best)];
     }
 
     // blend liên tục dọc corridor -> REGION KHÔNG PHẢI Ô VUÔNG (rule 19/20)

@@ -1,8 +1,8 @@
-// js/npc.js
+﻿// js/npc.js
 import * as THREE from "three";
 import { clamp, randomFloat, pick, createSeededRandom, disposeObject3D } from "./utils.js";
 import { createNpcBus, pickNpcSkinPath, pickLedColor, loadNpcSkinList } from "./bus.js";
-import { hypot2 } from "utils.js";
+import { hypot2 } from "./utils.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 const TWO_PI = Math.PI * 2;
