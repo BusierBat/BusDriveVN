@@ -52,6 +52,12 @@ const RENDER_RADIUS_MAX = 5;   // <= fog far (1450m)
 const RENDER_RADIUS_MIN = 3;
 const UNLOAD_RADIUS = 9;
 const MAX_LOAD_PER_TICK = 2;   // Giảm từ 4 -> 2 để spread load, tránh frame spike
+// NGAN SACH DỰNG HÌNH CHUNK MOI FRAME (ms) — fix "dong bang vai giay khi dang
+// lai". Do duoc: 1 chunk day du = 901-1258ms (may thu), va truoc day
+// _loadChunk goi _tryBuildChunk NGAY trong microtask sau fetch -> 1-2 chunk
+// moi tick = block main thread 1-2.5s moi lan vao vung moi. Gio dang chia
+// thanh 4 giai doan va moi frame chi tieu toan nhat BUILD_BUDGET_MS.
+const BUILD_BUDGET_MS = 8;
 const STREAM_INTERVAL = 0.25;  // Tăng từ 0.2 -> 0.25s (4Hz) giảm CPU overhead
 const TERRAIN_SEG = 32;        // 32x32 quad / chunk terrain (vong gan)
 const TERRAIN_SEG_LOD = 16;    // vong xa (bi fog che)
@@ -219,6 +225,13 @@ class World {
             const out = Math.max(Math.abs(lx) - g.hx, Math.abs(lz) - g.hz);
             if (out >= g.blend) continue;
             const t = out <= 0 ? 1 : 1 - smoothstep(0, g.blend, out);
+            // Safety: limit yard blend if station y differs too much from natural terrain
+            // Natural terrain at this point (rough estimate without yard)
+            const naturalY = this.seaLevel + 2.2; // rough baseline
+            if (Math.abs(g.y - naturalY) > 15) {
+                // Station y is likely wrong - limit blend strength
+                return { t: t * 0.3, y: g.y };
+            }
             return { t: t, y: g.y };
         }
         return null;
@@ -630,9 +643,17 @@ class World {
             const hw = lerp(h, bed, clamp(wf * 1.35, 0, 1));
             // dằn bến ĐÈ LÊN cả lòng sông/hồ: bến thật đắp đất lên chứ không
             // bị sông đào lại. Không có dòng này `song_cau` vẫn chìm 13m.
-            return { h: yf ? lerp(hw, yf.y, yf.t) : hw, d: dCoast, p };
+            let finalH = yf ? lerp(hw, yf.y, yf.t) : hw;
+            // Clamp to reasonable range to prevent floating/sinking objects
+            // Cap 200 cũ SKÁT terrain thật (núi 239-254m bị ép 200 => verify-parity
+            // lệch 39m vs Python không cap). Nâng đủ dư cho dải đèo/m nun región.
+            finalH = clamp(finalH, this.seaFloor, 600);
+            return { h: finalH, d: dCoast, p };
         }
-        return { h: yf ? lerp(h, yf.y, yf.t) : h, d: dCoast, p };
+        let finalH = yf ? lerp(h, yf.y, yf.t) : h;
+        // Clamp to reasonable range to prevent floating/sinking objects (xem trên)
+        finalH = clamp(finalH, this.seaFloor, 600);
+        return { h: finalH, d: dCoast, p };
     }
 }
 
@@ -799,6 +820,11 @@ class MeshAccum {
     // (m). Đường thật có **đối đất** (nền đắp nghiêng), không có tường đứng
     // 3m; váy thẳng đứng giữa hai đường song song tạo "hẻm tối" — đo được
     // 3.3× số tam giác mặt đường là mảng tối chồng lên nhau trong ảnh.
+    // `outOff` = GIỚI HẠN độ lệch ra ngoài (m). Độ lệch THẬT tính theo TỪNG
+    // đỉnh = chiều sâu váy tại đỉnh đó (taluy 45°), chặn trên bởi `outOff`.
+    // Vì sao: bản trước dùng MỘT `outOff` cho cả 4 đỉnh, nên đoạn nửa đắp 8m
+    // nửa đào 0.3m bị đẩy cả hai bên ra 8m — bên đào (váy 0.3m) thành doi đất
+    // rộng 8m vô nghĩa. Taluy thật rộng đúng bằng chiều cao nền đắp.
     skirt(points, bottoms, withBottom, outOff) {
         const n = points.length;
         if (n < 3) return;
@@ -810,11 +836,14 @@ class MeshAccum {
         for (let i = 0; i < n; i++) {
             const p = points[i];
             const b = bottoms[i];
-            if (outOff) {
+            const off = outOff
+                ? Math.min(Math.max(0, p[1] - b), outOff)
+                : 0;
+            if (off > 0.02) {
                 const dx = p[0] - mx, dz = p[2] - mz;
                 const L = hypot2(dx, dz) || 1;
                 this.pos.push(p[0], p[1], p[2]);                 // 2i    trên
-                this.pos.push(p[0] + dx / L * outOff, b, p[2] + dz / L * outOff);
+                this.pos.push(p[0] + dx / L * off, b, p[2] + dz / L * off);
             } else {
                 this.pos.push(p[0], p[1], p[2]);        // 2i    trên
                 this.pos.push(p[0], bottoms[i], p[2]);  // 2i+1  dưới
@@ -1050,6 +1079,7 @@ export class MapLoader {
         this.loadedChunks = new Map();
         this.inProgress = new Set();
         this.loadQueue = [];
+        this._buildQueue = [];   // hang cho dang chunk (fix dong bang build dong bo)
         this._timer = 0;
         this._lastDir = { x: 0, z: -1 };
         this._segByChunk = new Map();
@@ -1074,6 +1104,10 @@ export class MapLoader {
         this._waterGeo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE);
         this._sharedMats = new Set([...Object.values(this._mats), this._terrainMat]);
         this._sharedGeos = new Set([...Object.values(this._geos), this._waterGeo]);
+
+        // Frustum culling
+        this._frustum = new THREE.Frustum();
+        this._projScreenMatrix = new THREE.Matrix4();
 
         // TU DIEU CHINH CHAT LUONG THEO FPS: máy yếu (N5000) tự co tầm nhìn,
         // máy mạnh tự mở rộng. KHÔNG bỏ nội dung: chỉ giảm tầm nhìn khi cần.
@@ -1144,14 +1178,72 @@ export class MapLoader {
             this._buildSurfaceBoxes();
             this._buildRoadIndex();
             this._buildJunctionIndex();
+            this._buildRoadCollisionBoxes();
             this._buildRoadGroup();
             this._buildStations();
             this._buildAdminIndex();
+            // WARMUP (xem _warmupBuilders): dựng thử chunk spawn trong màn hình
+            // loading — chuyển chi phí "lạnh" (fetch sector + V8 compile 4 hàm
+            // build lớn; đo call đầu LẠNH 142ms vs 37ms khi ấm) ra khỏi những
+            // giây đầu vào game.
+            await this._warmupBuilders();
             return true;
         } catch (error) {
             console.error("[map] loadInitialData failed:", error);
             return false;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // WARMUP — dựng thử 1 chunk thật (chunk spawn) vào group VỨT ĐI, chạy
+    // trong màn hình loading. Mục đích kép:
+    //  (1) V8 compile trước các hàm build khổng lồ (_addChunkRoadsBuild,
+    //      _terrainBuild, _addChunkBuildings, _addChunkObjects) — đo được
+    //      call đầu LẠNH 142ms vs 37ms khi đã ấm; phần chênh chính là
+    //      bytecode compile, thứ chỉ trả 1 lần mỗi session.
+    //  (2) Preload sector chứa spawn vào LRU cache — frame đầu vào game
+    //      không phải fetch + parse JSON ngay giữa lúc đang render.
+    // KHÔNG dispose geometry ở đây: nhà/cây/bến dùng CHUNG `_geos` (dispose
+    // sẽ phá cả map) và geometry chưa render thì chưa lên GPU — GC dọn đủ.
+    // Best-effort: mọi lỗi nuốt hết, tuyệt đối không phá load.
+    async _warmupBuilders() {
+        const t0 = performance.now();
+        const g = new THREE.Group();
+        try {
+            const sp = this.spawn || {};
+            const sx = typeof sp.x === "number" ? sp.x : 0;
+            const sz = typeof sp.z === "number" ? sp.z : 0;
+            const scx = Math.floor(sx / CHUNK_SIZE), scz = Math.floor(sz / CHUNK_SIZE);
+            // 1) terrain đúng như lúc vào game (_terrainCreate/_terrainBuild)
+            const terr = this._terrainCreate(scx, scz, g, sx, sz);
+            if (terr) this._terrainBuild(terr, Infinity);
+            // 2) roads: chọn chunk NHỎ quanh spawn — compile đủ hàm, exec rẻ
+            let warmKey = null, warmN = Infinity;
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const k = (scx + dx) + "," + (scz + dz);
+                    const arr = this._segByChunk.get(k);
+                    if (arr && arr.length && arr.length < warmN) { warmN = arr.length; warmKey = k; }
+                }
+            }
+            if (warmKey) {
+                const [rcx, rcz] = warmKey.split(",").map(Number);
+                const rst = this._addChunkRoadsCreate(rcx, rcz, g);
+                if (rst) this._addChunkRoadsBuild(rst, Infinity);
+            }
+            // 3) sector chunk spawn: preload cache + warm buildings/objects
+            //    bằng DATA THẬT (ownerEntry=null nên KHÔNG đăng ký collider)
+            if (this.sectorSize) {
+                const sec = await this._fetchSector(
+                    Math.floor(scx / this.sectorSize), Math.floor(scz / this.sectorSize));
+                const data = sec && sec[scx + "_" + scz];
+                if (data) {
+                    this._addChunkBuildings(data.buildings || [], g, false, null);
+                    this._addChunkObjects(data.objects || [], g, false, null);
+                }
+            }
+        } catch (e) { /* best-effort */ }
+        console.log(`[map] warmup builders ${(performance.now() - t0).toFixed(0)}ms`);
     }
 
     // index segment theo chunk (để render/unload theo chunk -> culling tự nhiên)
@@ -1413,6 +1505,54 @@ export class MapLoader {
         }
     }
 
+    // =========================================================================
+    // ROAD COLLISION BOXES — tạo box collision cho mỗi road segment
+    // =========================================================================
+    _buildRoadCollisionBoxes() {
+        if (!this.roadGraph || !window.collisionSystem) return;
+        
+        window.collisionSystem.clearRoadBoxes();
+        
+        for (const seg of this.roadGraph.segments) {
+            const p1 = this.roadGraph.getNode(seg.from);
+            const p2 = this.roadGraph.getNode(seg.to);
+            if (!p1 || !p2) continue;
+            
+            const dx = p2.x - p1.x;
+            const dz = p2.z - p1.z;
+            const len = Math.hypot(dx, dz);
+            if (len < 0.5) continue;
+            
+            const ux = dx / len;
+            const uz = dz / len;
+            const rotationY = Math.atan2(dz, dx); // atan2(dz, dx) so local X aligns with segment direction
+            
+            const hw = (seg.width || 12) * 0.5;
+            const hl = len * 0.5;
+            
+            // Road thickness - elevated roads (bridges, highways) need full thickness
+            // Regular roads can be thinner since terrain matches
+            const isElevated = seg.bridge || seg.class === "EXPRESSWAY" || seg.class === "RAMP" || seg.class === "TUNNEL";
+            const hh = isElevated ? 0.55 : 0.3; // half height
+            
+            const cy = (p1.y + p2.y) * 0.5;
+            const cx = (p1.x + p2.x) * 0.5;
+            const cz = (p1.z + p2.z) * 0.5;
+            
+            // Register the road box with segment data for accurate Y interpolation
+            window.collisionSystem.registerRoadBox(
+                seg.id,
+                cx, cz, cy,
+                hw, hl, hh,
+                rotationY,
+                seg.class,
+                { p1: { x: p1.x, y: p1.y, z: p1.z }, p2: { x: p2.x, y: p2.y, z: p2.z } }
+            );
+        }
+        
+        console.log(`[map] Created ${window.collisionSystem.roadBoxes.size} road collision boxes`);
+    }
+
     // -> null | { y, dist, width }  (y = chiều cao mặt đường tại điểm đó)
     _nearestRoad(x, z) {
         if (!this._roadIdx || !this.roadGraph) return null;
@@ -1562,6 +1702,7 @@ export class MapLoader {
     _buildJunctionIndex() {
         this._junctions = new Map();
         this._junctionByChunk = new Map();
+        this._bendDecorr = new Map();   // trim bend chỉ cho VẠCH/vỉa hè (không cắt mặt)
         if (!this.roadGraph || !this._nodeSegs || !this.world) return;
 
         const HIER = {
@@ -1575,7 +1716,9 @@ export class MapLoader {
         const nodeY = (n) => (typeof n.y === "number" ? n.y : this.world.getElevation(n.x, n.z));
 
         for (const [nid, arr] of this._nodeSegs) {
-            if (!arr || arr.length < 3) continue;
+            // bậc 2 = khúc cua — vào để vá miếng HỞ góc ngoài (xem `_addBendFill`),
+            // vẫn không dựng sàn giao lỡ (gate `branches.length < 3` dưới).
+            if (!arr || arr.length < 2) continue;
             const n = this.roadGraph.getNode(nid);
             if (!n) continue;
 
@@ -1583,7 +1726,15 @@ export class MapLoader {
             for (const e of arr) {
                 const seg = this.roadGraph.getSegment(e.id);
                 if (!seg) continue;
-                if (seg.bridge || seg.class === "TUNNEL") continue;  // cầu/hầm giữ nguyên
+                // Bug "z-fighting đầu cầu": trước đây cầu/hầm bị LOẠI khỏi
+                // branches ("cầu giữ nguyên") — node 3 nhánh có 1 nhánh cầu còn
+                // đúng 2 nhánh -> rớt khỏi floor (branches<3) mà bend-fill cũng
+                // không chạy (arr.length≠2) -> KHÔNG trim -> quad mặt đường nối
+                // vào node chồng quad deck (cùng node.y) z-fighting. Giờ CẦU/
+                // HẦM vào branches bình thường: hull + trim hậu quad cả deck
+                // (deck vẫn dùng node.y cùng hệ trong `_addChunkRoads`, nên
+                // transition tự nhiên không đổi vật lý/collision).
+                const isDeck = !!(seg.bridge || seg.class === "TUNNEL");
                 const a = this.roadGraph.getNode(seg.from);
                 const b = this.roadGraph.getNode(seg.to);
                 if (!a || !b) continue;
@@ -1598,10 +1749,22 @@ export class MapLoader {
                     id: seg.id, len, dx, dz, hw,
                     y0: nodeY(from), y1: nodeY(to),
                     cls: seg.class, hier: HIER[seg.class] || 4,
+                    isDeck,
+                    atNodeFirst: seg.from === nid,   // node ở đầu p1 của segment?
                     trim: hw
                 });
             }
-            if (branches.length < 3) continue;
+            if (branches.length < 3) {
+                // KHÚC CUA NHỌN (bậc 2, đúng 2 đoạn): 2 quad đường hở nhau
+                // 1 miếng ở GÓC NGOÀI (rộng ~hw1×hw2/sin(góc) — tới ~12×12m
+                // trên đường lớn, 3.5×3.5m trên phố) + chồng nhau ở góc
+                // trong. Vá ĐÚNG miếng thiếu (không cắt lùi quad gốc => giữ
+                // nguyên quy tắc hiển thị bề rộng/hình dạng đường).
+                if (branches.length === 2 && arr.length === 2) {
+                    this._addBendFill(nid, n, branches, HIER);
+                }
+                continue;
+            }
 
             const ny = nodeY(n);
 
@@ -1659,12 +1822,18 @@ export class MapLoader {
                 poly: trimmed, bucket, urban,
                 trimBySeg: new Map(),
                 stopLines: [],
+                crossWalks: [],
                 curbEdges: urban ? this._cornerEdges(trimmed, branches, n) : []
             };
             for (const b of branches) J.trimBySeg.set(b.id, b.trim);
 
-            // VẠCH DỪNG (rule 12/13): nhánh YEU hon duong uu tien tai giao lo
-            // phai co vach dung, vi du ngã ba duong nho vao QL.
+            // VẠCH DỪNG + VẠCH SANG ĐƯỜNG NGƯỜI ĐI BỘ (QCVN 41):
+            // nhánh yếu hơn ưu tiên dừng trước giao lộ; band zebra nằm
+            // [trim+1.2 .. trim+3.2] (sọc dọc trục đường, dài 2.0m, rộng
+            // 0.55m, cách 1.1m — đếm sọc theo bề rộng nhánh); vạch dừng
+            // chuyển ra trim+4.4 — xe dừng NGOÀI vạch, người qua đường
+            // luôn nằm giữa vạch dừng và miệng giao lộ (old: dừng tại
+            // trim+1.4, chà đạp lên người / bị sàn giao che).
             for (const b of branches) {
                 if (b.hier <= bestHier) continue;             // duong uu tien: khong dung
                 // phai co nhanh uu tien lech >= 55 do moi lai dung xe o giao lo that
@@ -1675,34 +1844,36 @@ export class MapLoader {
                     if (Math.acos(clamp(d, -1, 1)) * 57.29578 >= 55) { hasMajor = true; break; }
                 }
                 if (!hasMajor) continue;
-                const t = Math.min(b.trim + 1.4, b.len * 0.9);
+                const st = Math.min(b.trim + 4.4, b.len * 0.9);
                 J.stopLines.push({
-                    x: n.x + b.dx * t, z: n.z + b.dz * t,
-                    y: b.y0 + (b.y1 - b.y0) * (t / b.len),
+                    x: n.x + b.dx * st, z: n.z + b.dz * st,
+                    y: b.y0 + (b.y1 - b.y0) * (st / b.len),
                     rot: Math.atan2(b.dx, b.dz),
-                    hw: b.hw * 0.92
+                    hw: b.hw * 0.92,
+                    dx: b.dx, dz: b.dz
+                });
+                // zebra chỉ ở nơi có người đi bộ thực sự (node URBAN — QL1
+                // đô thị kiểu Tuy Hòa/Nha Trang có zebra thật; QL1 ngoài đô
+                // thị thì dừng). Không đặt trên cao tốc/ramp/hầm/nội bộ/hẻm:
+                // cấm bộ hành hoặc không có người qua đường bất kể region.
+                const noZebra = n.region !== "URBAN" ||
+                    b.cls === "RAMP" || b.cls === "TUNNEL" || b.cls === "EXPRESSWAY" ||
+                    b.cls === "INTERNAL" || b.cls === "ALLEY";
+                if (noZebra || b.trim + 3.4 > b.len * 0.9) continue;
+                const usableW = b.hw * 2 * 0.92;
+                const count = Math.max(3, Math.min(11,
+                    Math.floor((usableW - 0.9) / 1.1) + 1));
+                const mid = b.trim + 2.2;
+                J.crossWalks.push({
+                    x: n.x + b.dx * mid, z: n.z + b.dz * mid,
+                    y: b.y0 + (b.y1 - b.y0) * (mid / b.len),
+                    rot: Math.atan2(b.dx, b.dz),
+                    hw: b.hw * 0.92, count
                 });
             }
 
             this._junctions.set(nid, J);
-            // gan giao lo vao cac chunk ma no cham vao (theo bounds cua polygon)
-            let mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
-            for (const v of trimmed) {
-                if (v[0] < mnx) mnx = v[0];
-                if (v[0] > mxx) mxx = v[0];
-                if (v[1] < mnz) mnz = v[1];
-                if (v[1] > mxz) mxz = v[1];
-            }
-            const c0x = Math.floor(mnx / CHUNK_SIZE), c1x = Math.floor(mxx / CHUNK_SIZE);
-            const c0z = Math.floor(mnz / CHUNK_SIZE), c1z = Math.floor(mxz / CHUNK_SIZE);
-            for (let cx = c0x; cx <= c1x; cx++) {
-                for (let cz = c0z; cz <= c1z; cz++) {
-                    const k = cx + "," + cz;
-                    let a = this._junctionByChunk.get(k);
-                    if (!a) { a = []; this._junctionByChunk.set(k, a); }
-                    a.push(nid);
-                }
-            }
+            this._registerJunctionChunk(nid, trimmed);
         }
         // truy cap nhanh: 2 dau tieu/cuoi cua 1 doan co cat hay khong
         this._segTrim = new Map();
@@ -1714,9 +1885,147 @@ export class MapLoader {
         }
     }
 
+    // Đăng ký 1 đa giác (sàn giao lỡ / miếng vá góc cua) vào MỌI chunk mà
+    // bounds của nó chạm — để `_addChunkRoads` vẽ đúng chunk.
+    _registerJunctionChunk(nid, poly) {
+        let mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
+        for (const v of poly) {
+            if (v[0] < mnx) mnx = v[0];
+            if (v[0] > mxx) mxx = v[0];
+            if (v[1] < mnz) mnz = v[1];
+            if (v[1] > mxz) mxz = v[1];
+        }
+        const c0x = Math.floor(mnx / CHUNK_SIZE), c1x = Math.floor(mxx / CHUNK_SIZE);
+        const c0z = Math.floor(mnz / CHUNK_SIZE), c1z = Math.floor(mxz / CHUNK_SIZE);
+        for (let cx = c0x; cx <= c1x; cx++) {
+            for (let cz = c0z; cz <= c1z; cz++) {
+                const k = cx + "," + cz;
+                let a = this._junctionByChunk.get(k);
+                if (!a) { a = []; this._junctionByChunk.set(k, a); }
+                a.push(nid);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // VÁ GÓC CUA NHỌN (node bậc 2). Hai quad đường gặp nhau tại 1 node:
+    //   - góc TRONG: 2 quad chồng nhau (z-fighting) — để nguyên như cũ;
+    //   - góc NGOÀI: HỞ đúng 1 tứ giác [B, P2, X, P1] — B = node,
+    //     P1/P2 = góc miệng NGOÀI của 2 nhánh, X = giao 2 đường mép ngoài.
+    // Tứ giác này KHÔNG chồng lên quad nào (biên trùng khít mép quad sẵn có)
+    // nên chỉ cần vẽ thêm, không cắt lùi gì => không đổi bề rộng/hình dạng
+    // đường, không đụng vạch dừng/vỉa hè (chỉ dựng cho giao lỡ >= 3 nhánh).
+    // ---------------------------------------------------------------------
+    _addBendFill(nid, n, branches, hier) {
+        const BEND_MIN = 20 * Math.PI / 180;   // dưới 20°: miếng hở < 0.4m
+        const BEND_MAX = 165 * Math.PI / 180;  // gần quay đầu: để nguyên
+        const A = branches[0], B = branches[1];
+        if (A.id === B.id) return false;
+        const dot = A.dx * B.dx + A.dz * B.dz;
+        const turn = Math.acos(clamp(-dot, -1, 1));
+        if (turn < BEND_MIN || turn > BEND_MAX) return false;
+
+        // Pháp tuyến PHÍA NGOÀI cua của mỗi nhánh = pháp tuyến ngược hướng
+        // với nhánh kia (nhánh kia nằm phía trong).
+        let n1x = -A.dz, n1z = A.dx;
+        if (n1x * B.dx + n1z * B.dz > 0) { n1x = -n1x; n1z = -n1z; }
+        let n2x = -B.dz, n2z = B.dx;
+        if (n2x * A.dx + n2z * A.dz > 0) { n2x = -n2x; n2z = -n2z; }
+        // MIẾNG VÁ = NOTCH THẬT: giao 6 nửa mặt phẳng quanh nút —
+        //   alongA ≤ 0, alongB ≤ 0 (sau 2 đường cắt ngang đầu nhánh) và
+        //   |latA| ≤ A.hw, |latB| ≤ B.hw (trong 2 dải đường).
+        // Quad cũ [B, P1, X, P2] (X = giao 2 mép ngoài) BỊ BOWTIE — tự cắt,
+        // đè lên lòng đường — khi 2 nhánh lệch width + turn ~40-50° (đo
+        // 11/759 nút, có nút 12/16 điểm mẫu nằm trong rect đường). Giao
+        // nửa mặt phẳng luôn ra đa giác LỒI nằm ngoài lòng cả 2 rect (chỉ
+        // chạm đúng mép chỗ hở), đúng cho mọi cặp width/góc; 90° ra đúng
+        // hình vuông góc như quad cũ.
+        const HALVES = [           // f(p) = f0 + fx*x + fz*z >= 0
+            [-A.dx, -A.dz, A.dx * n.x + A.dz * n.z],        // alongA <= 0
+            [-B.dx, -B.dz, B.dx * n.x + B.dz * n.z],        // alongB <= 0
+            [-n1x, -n1z, A.hw + n1x * n.x + n1z * n.z],     // latA(n1) <= hw
+            [n1x, n1z, A.hw - n1x * n.x - n1z * n.z],       // latA(n1) >= -hw
+            [-n2x, -n2z, B.hw + n2x * n.x + n2z * n.z],     // latB(n2) <= hw
+            [n2x, n2z, B.hw - n2x * n.x - n2z * n.z]        // latB(n2) >= -hw
+        ];
+        const half = A.hw + B.hw + 40;
+        let q = [
+            [n.x - half, n.z - half], [n.x + half, n.z - half],
+            [n.x + half, n.z + half], [n.x - half, n.z + half]
+        ];
+        for (const [fx, fz, f0] of HALVES) {
+            const out = [];
+            for (let i = 0; i < q.length; i++) {
+                const p = q[i], r = q[(i + 1) % q.length];
+                const fp = f0 + fx * p[0] + fz * p[1];
+                const fr = f0 + fx * r[0] + fz * r[1];
+                if (fp >= 0) out.push(p);
+                if ((fp >= 0) !== (fr >= 0)) {
+                    const tt = fp / (fp - fr);
+                    out.push([p[0] + (r[0] - p[0]) * tt,
+                              p[1] + (r[1] - p[1]) * tt]);
+                }
+            }
+            q = out;
+        }
+        if (q.length < 3) return false;
+        // diện tích miếng vá < 1m² => vô hình, bỏ (đỡ tam giác rác)
+        let area2 = 0;
+        for (let i = 0; i < q.length; i++) {
+            const a = q[i], b = q[(i + 1) % q.length];
+            area2 += a[0] * b[1] - b[0] * a[1];
+        }
+        if (Math.abs(area2) * 0.5 < 1.0) return false;
+
+        // TRIM BEND cho vật phụ (vạch, vỉa hè): hai segment LÙI đầu gắn node
+        // một đoạn ngắn để vạch/vỉa hè không lao xuyên qua node bend mà ends
+        // trước miệng patch. Map riêng `_bendDecorr` — KHÔNG lẫn vào _segTrim:
+        // bend có KHÔNG floor, patch chỉ vá GÓC NGOÀI; nếu cắt luôn quad mặt
+        // đường thì góc còn lại (không được patch phủ) sẽ hở — tình trạng đo
+        // được khi thử cắt theo _segTrim trước đây.
+        const bendTrim = Math.min(A.hw, B.hw) * 0.55;
+        const lyr = Math.min(bendTrim, Math.min(A.len, B.len) * 0.3);
+        // merge-max: cùng 1 segment có thể đi qua 2 node bend liên tiếp (cả
+        // 2 đầu đều là bend) — không ghi đè trim của đầu còn lại.
+        const put = (id, br) => {
+            const na = br.atNodeFirst ? [lyr, 0] : [0, lyr];
+            const prev = this._bendDecorr.get(id);
+            this._bendDecorr.set(id, prev
+                ? [Math.max(prev[0], na[0]), Math.max(prev[1], na[1])] : na);
+        };
+        put(A.id, A);
+        put(B.id, B);
+
+        const ny = (typeof n.y === "number" ? n.y : this.world.getElevation(n.x, n.z));
+        let bestHier = 9, bucket = "MINOR";
+        for (const b of branches) {
+            const h = hier[b.cls] || 4;
+            if (h < bestHier) { bestHier = h; bucket = this._roadBucket(b.cls); }
+        }
+        const poly = q.map((p) => [p[0], p[1], ny]);
+        this._junctions.set(nid, {
+            id: nid, x: n.x, z: n.z, y: ny,
+            poly, bucket, urban: false,
+            bendFill: true,        // dấu nhận diện (test/debug) — không cắt lùi
+            trimBySeg: new Map(),   // KHÔNG cắt lùi quad gốc
+            stopLines: [],
+            crossWalks: [],
+            curbEdges: []
+        });
+        this._registerJunctionChunk(nid, poly);
+        return true;
+    }
+
     // khoang cat lui 2 dau cua doan (0 neu khong cham giao lo)
     _trimOf(segId) {
         const t = this._segTrim ? this._segTrim.get(segId) : null;
+        return t || [0, 0];
+    }
+
+    // Trim bend cho VẠCH/vỉa hè (xem _addBendFill): tách khỏi _segTrim vì
+    // quad MẶT đường ở bend KHÔNG được cắt — patch chỉ vá góc ngoài.
+    _bendDecorrTrimOf(segId) {
+        const t = this._bendDecorr ? this._bendDecorr.get(segId) : null;
         return t || [0, 0];
     }
 
@@ -1763,20 +2072,38 @@ export class MapLoader {
     }
 
     // build road geometry của 1 chunk (gộp theo class + median + shoulder + line)
+    // Bọc SYNC (giữ API cũ cho _tryBuildChunk): create + build hết, không deadline.
     _addChunkRoads(cx, cz, parent) {
+        const st = this._addChunkRoadsCreate(cx, cz, parent);
+        if (st) this._addChunkRoadsBuild(st, Infinity);
+    }
+
+    // TÁCH LÁT (đúng mẫu _terrainCreate/_terrainBuild): đo thật
+    // (Node bench, chunk 119 segment) = 142ms trong MỘT lần gọi — long task,
+    // đứng cả game lẫn tab trình duyệt vì main thread bị chặn. _addChunkRoadsBuild
+    // dừng đúng deadline giữa 2 segment/junction/bucket, frame sau chạy tiếp từ
+    // st.i/st.j/st.k — tổng hình xuất ra y hệt, chỉ khác là chia đều frame.
+    _addChunkRoadsCreate(cx, cz, parent) {
         const key = cx + "," + cz;
         const sids = this._segByChunk.get(key);
-        if (!sids || sids.length === 0) return;
+        if (!sids || sids.length === 0) return null;
+        return { cx, cz, parent, key, sids, acc: new Map(), i: 0, j: 0, k: 0, buckets: null };
+    }
+
+    _addChunkRoadsBuild(st, deadline) {
+        const cx = st.cx, cz = st.cz, parent = st.parent, key = st.key;
+        const sids = st.sids;
         const minX = cx * CHUNK_SIZE, maxX = minX + CHUNK_SIZE;
         const minZ = cz * CHUNK_SIZE, maxZ = minZ + CHUNK_SIZE;
-        const acc = new Map();
+        const acc = st.acc;
         const getAcc = (k) => {
             let a = acc.get(k);
             if (!a) { a = new MeshAccum(); acc.set(k, a); }
             return a;
         };
 
-        for (const sid of sids) {
+        for (; st.i < sids.length; st.i++) {
+            const sid = sids[st.i];
             const seg = this.roadGraph.getSegment(sid);
             if (!seg) continue;
             const p1 = this.roadGraph.getNode(seg.from);
@@ -1836,7 +2163,10 @@ export class MapLoader {
             // người ta thấy đường trong thực tế, và cũng là thứ khiến xe
             // trông như đang lơ lửng trên một dải texture.
             // Cầu vượt thì CỐ Ý nổi: đáy = y - ROAD_THICK + mặt đáy.
-            const floating = !!seg.bridge;
+            const floating = !!seg.bridge ||
+                Math.abs(y1 - this.world.getElevation(p1.x, p1.z)) > 12.0 ||
+                Math.abs(y2 - this.world.getElevation(p2.x, p2.z)) > 12.0;
+            const needsPier = !!seg.pier || floating && !seg.bridge;
             const bottoms = new Array(pts.length);
             let deep = 0, shallow = 0;
             for (let i = 0; i < pts.length; i++) {
@@ -1857,14 +2187,14 @@ export class MapLoader {
             if (!floating && shallow >= pts.length) {
                 // duong sat dat: khong ve gi
             } else {
-                // DOI DAT 45 DO (`outOff = deep`) + CUNG VAT LIEU voi mat
-                // duong. Ban P51 dung `min(deep, hw*0.9)` nen doan duong chi
-                // lech 0.3m van co doi dat rong 5.4m — ve nhu co ban le. Va
-                // vat lieu `shoulder` (nau xam) khac mat duong nen doi dat
-                // nhu "tam ben khac" leo vao. Do duoc trong anh aerial.
+                // TALUY 45 DO THEO TUNG DINH: `skirt` giờ lấy độ lệch = chiều
+                // sâu váy tại đỉnh đó (chặn trên bởi tham số thứ 4), nên bên
+                // đắp 8m nghiêng 8m còn bên đào 0.3m chỉ nghiêng 0.3m — đúng
+                // hình học nền đắp thật. Chặn trên 12m: cao hơn nữa thì đó là
+                // cầu cạn (đã đánh `bridge` ⇒ `floating`, không vẽ taluy).
                 const gSide = getAcc(this._roadBucket(seg.class) + "__BODY__");
                 gSide.skirt(pts, bottoms, floating || deep > 1.2,
-                            floating ? 0 : deep);
+                            floating ? 0 : 12.0);
             }
 
             // median + shoulder cho cao tốc + ramp
@@ -1895,19 +2225,33 @@ export class MapLoader {
                 }
             }
 
+            // TRIM THỨC PHỤ (dùng cho vỉa hè + vạch bên dưới): floor-trim
+            // (giao lỡ >= 3 nhánh) gộp MAX với bend-trim (node bend 2 nhánh —
+            // vạch/vỉa hè không lao qua node bend; quad MẶT đường KHÔNG cắt
+            // bend — `_segTrim`/`_bendDecorr`).
+            const [tA_, tB_] = this._trimOf(seg.id);
+            const [bA_, bB_] = this._bendDecorrTrimOf(seg.id);
+            const trA = Math.max(tA_, bA_), trB = Math.max(tB_, bB_);
+
             // VỈA HÈ ở vùng đô thị + khu dân cư + khu công nghiệp — chi tiết phố VN
             const hasSidewalk = (p1.region === "URBAN" || p2.region === "URBAN" ||
                                  seg.class === "COMMERCIAL" || seg.class === "RESIDENTIAL" ||
                                  seg.class === "INDUSTRIAL_ACCESS");
             if (hasSidewalk && w >= 7) {
+                // sidewalk + lane line dùng chung bó trim: cắt theo bend để
+                // vỉa hè không vát qua node bend chạm vào patch góc ngoài.
+                const c1x = trA > 0 ? p1x + ux * (trA * 0.9) : p1x;
+                const c1z = trA > 0 ? p1z + uz * (trA * 0.9) : p1z;
+                const c2x = trB > 0 ? p2x - ux * (trB * 0.9) : p2x;
+                const c2z = trB > 0 ? p2z - uz * (trB * 0.9) : p2z;
                 const sw = 3.0;
                 for (const s of [-1, 1]) {
                     const off = s * (hw + sw * 0.5);
                     const c = [
-                        [p1x + nx * (off - sw * 0.5), p1z + nz * (off - sw * 0.5)],
-                        [p2x + nx * (off - sw * 0.5), p2z + nz * (off - sw * 0.5)],
-                        [p2x + nx * (off + sw * 0.5), p2z + nz * (off + sw * 0.5)],
-                        [p1x + nx * (off + sw * 0.5), p1z + nz * (off + sw * 0.5)]
+                        [c1x + nx * (off - sw * 0.5), c1z + nz * (off - sw * 0.5)],
+                        [c2x + nx * (off - sw * 0.5), c2z + nz * (off - sw * 0.5)],
+                        [c2x + nx * (off + sw * 0.5), c2z + nz * (off + sw * 0.5)],
+                        [c1x + nx * (off + sw * 0.5), c1z + nz * (off + sw * 0.5)]
                     ];
                     const cp = clipRect(c, minX, maxX, minZ, maxZ);
                     if (cp.length >= 3) {
@@ -1927,19 +2271,68 @@ export class MapLoader {
                                    seg.class === "COLLECTOR" || seg.class === "PROVINCIAL_ROAD" ||
                                    seg.class === "INDUSTRIAL_ACCESS" || seg.class === "COMMERCIAL" ||
                                    seg.class === "INTER_VILLAGE";
-            if (hasLaneMarking && w >= 9) {
-                const lw = 0.22;
+            // PHÂN LOẠI VẠCH theo hình dạng mặt đường THẬT (không máy móc):
+            //  - NATIONAL (QL1 15m): 2 chiều + lề -> vạch LIỀN giữa duy nhất.
+            //  - EXPRESSWAY (24m): mặt 1 đoạn có DẢI PHÂN CÁCH giữa (median 1.6m
+            //    + lề khẩn 2.6m mỗi bên, được vẽ ở block median phía trên với
+            //    CÙNG bộ hằng số) -> KHÔNG vẽ vạch giữa (median đã chiếm chỗ),
+            //    chỉ vạch ĐỨT chia 2 làn CÙNG CHIỀU tại mỗi phía median.
+            //  - ARTERIAL (phố chính 14m): 2 chiều + 2 làn mỗi chiều -> vạch
+            //    liền giữa + vạch ĐỨT tại ±w/4.
+            const dualCarriageway = seg.class === "EXPRESSWAY";
+            const cityFourLane = seg.class === "ARTERIAL" && w >= 11;
+
+            function wlinePoly(offset, x0, x1) {
+                // dải vạch dọc đoạn từ mét x0..x1 (tính theo trục, x0 từ p1),
+                // lệch `offset` từ trục; trả poly hoặc null khi bị clip hết.
                 const c = [
-                    [p1x + nx * lw, p1z + nz * lw], [p2x + nx * lw, p2z + nz * lw],
-                    [p2x - nx * lw, p2z - nz * lw], [p1x - nx * lw, p1z - nz * lw]
+                    [p1x + nx * (offset + lw) + dx * x0, p1z + nz * (offset + lw) + dz * x0],
+                    [p2x + nx * (offset + lw) + dx * (x1 - len), p2z + nz * (offset + lw) + dz * (x1 - len)],
+                    [p2x + nx * (offset - lw) + dx * (x1 - len), p2z + nz * (offset - lw) + dz * (x1 - len)],
+                    [p1x + nx * (offset - lw) + dx * x0, p1z + nz * (offset - lw) + dz * x0]
                 ];
                 const cp = clipRect(c, minX, maxX, minZ, maxZ);
-                if (cp.length >= 3) {
-                    const v = cp.map(([px, pz]) => {
-                        const t = clamp(((px - p1x) * dx + (pz - p1z) * dz) / (len * len), 0, 1);
-                        return [px, lerp(y1, y2, t) + 0.03, pz];
-                    });
-                    getAcc("__LINE__").poly(v);
+                if (cp.length < 3) return null;
+                return cp.map(([px, pz]) => {
+                    const t = clamp(((px - p1x) * dx + (pz - p1z) * dz) / (len * len), 0, 1);
+                    return [px, lerp(y1, y2, t) + 0.03, pz];
+                });
+            }
+
+            const lw = 0.22;
+            // lùi theo trims hai đầu (vạch không chạy xuống sàn giao lỡ);
+            // trA/trB đã gộp floor-trim + bend-trim ở block VỈA HÈ phía trên
+            const dzs0 = Math.max(0, trA * 0.9);
+            const dzs1 = Math.min(len, len - trB * 0.9);
+            let laneDividerOffsets = null;
+            if (dualCarriageway) {
+                // trùng hằng số với block median phía trên (EXPRESSWAY: mw 1.6 / sw 2.6)
+                const medianW = 1.6, shoulderW = 2.6;
+                const laneW = Math.max(2.8, (w - medianW - shoulderW * 2) / 4);
+                laneDividerOffsets = [medianW / 2 + laneW, -(medianW / 2 + laneW)];
+            } else if (cityFourLane) {
+                laneDividerOffsets = [w * 0.25, -w * 0.25];
+            }
+            if (hasLaneMarking && w >= 9 && !dualCarriageway && dzs1 > dzs0 + 2) {
+                const c = wlinePoly(0, dzs0, dzs1);
+                if (c) getAcc("__LINE__").poly(c);
+            }
+            if (laneDividerOffsets && dzs1 > dzs0 + 3) {
+                // vạch đứt (dash 3.2 / gap 5.2) — hợp loai QCVN-ish, gọn draw
+                // call (toàn bộ dash gộp chung 1 acc "__LDASH__" = 1 mesh/mảnh
+                // chunk). Hai side lệch nhau nửa chu kỳ (đúng thói quen vạch VN).
+                const dash = 3.2, gap = 5.2, period = dash + gap;
+                let sideIdx = 0;
+                for (const off of laneDividerOffsets) {
+                    let dd = dzs0 + (sideIdx === 1 ? dash * 0.5 : 0);
+                    let k = 0;
+                    while (dd < dzs1 - 1.5 && k < 600) {
+                        const x0 = dd, x1 = Math.min(dd + dash, dzs1);
+                        const c = wlinePoly(off, x0, x1);
+                        if (c) getAcc("__LDASH__").poly(c);
+                        dd += period; k++;
+                    }
+                    sideIdx++;
                 }
             }
 
@@ -1966,15 +2359,63 @@ export class MapLoader {
                     rail.matrixAutoUpdate = false;
                     parent.add(rail);
                 }
-                if (seg.pier) {
-                    const pier = new THREE.Mesh(this._geos.unitBox, this._mats.concrete);
-                    pier.scale.set(w * 0.5, 10, w * 0.5);
-                    pier.position.set((p1x + p2x) / 2, my - 6, (p1z + p2z) / 2);
-                    pier.updateMatrix();
-                    pier.matrixAutoUpdate = false;
-                    parent.add(pier);
-                }
             }
+
+            // TRỤ: cho cầu do generator đánh dấu (seg.pier) VÀ cho đoạn thường
+            // nhưng cao >12m so với terrain (đường trên cao thực sự) — nếu
+            // không có trụ, đoạn đó trông như đường treo.
+            if (seg.pier || needsPier) {
+                    // P80: TRỤ PHẢI DÀI TỚI MẶT ĐẤT. Bản trước dùng chiều cao
+                    // CỐ ĐỊNH 10m đặt ở `my - 6`, nên cầu cạn cao 36-45m
+                    // (IC_TL720, IC_QL55, tỉnh lộ bắc thung lũng) vẫn hở
+                    // 26-35m dưới đáy trụ — nhìn như đường treo giữa không
+                    // trung. Đo trên data p79: 67 node clearance >8m, cao
+                    // nhất 45.1m. Giờ đo mặt đất ngay dưới và kéo trụ tới đó.
+                    // RẢI NHIỀU TRỤ: nhịp cầu cạn thật 30-50m. Một trụ giữa
+                    // đoạn 403m (chuỗi s_9207..s_9229) trông như cột chống
+                    // giữa trời. Số trụ theo chiều dài, chặn trên 8 để đoạn
+                    // dài không sinh hàng chục box.
+                    const nPier = clamp(Math.round(len / 42), 1, 8);
+                    const spanX = p2x - p1x, spanZ = p2z - p1z;
+                    // GOM vào accumulator của chunk (1 mesh/chunk) thay vì 1
+                    // mesh/trụ: 51 cầu × tới 8 trụ = ~400 draw call, quá nặng
+                    // cho máy yếu. Trụ là box nên dựng bằng quad cũng rẻ.
+                    const gPier = getAcc("__PIER__");
+                    const hwP = w * 0.25;              // nửa cạnh trụ
+                    for (let k = 1; k <= nPier; k++) {
+                        const tk = k / (nPier + 1);
+                        // dùng ĐÚNG đoạn đã cắt lùi (`p1x..p2x`), không dùng
+                        // vector gốc `dx/dz` — nếu không trụ cuối có thể lòi
+                        // ra ngoài đầu cầu khi hai đầu bị trim nhiều.
+                        const px = p1x + spanX * tk, pz = p1z + spanZ * tk;
+                        // CHỈ vẽ trụ thuộc chunk NÀY. Segment vắt qua 2 chunk
+                        // được `_addChunkRoadsBuild` gọi ở cả 2 (mỗi chunk clip
+                        // phần mặt đường của mình), nhưng trụ thì không clip —
+                        // thiếu guard sẽ double-draw + z-fighting ở biên chunk.
+                        if (px < minX || px > maxX || pz < minZ || pz > maxZ) continue;
+                        const py = y1 + (y2 - y1) * tk;
+                        const gnd = this.world.getElevation(px, pz);
+                        const top = py - 0.75;          // đáy dầm cầu
+                        const bot = Math.min(gnd - 0.3, top - 1.0);
+                        if (top - bot < 0.5) continue;
+                        // 4 mặt bên của trụ (bỏ mặt trên/dưới: bị dầm che /
+                        // nằm dưới đất). Thứ tự đỉnh phải cho normal HƯỚNG RA
+                        // NGOÀI (kiểm bằng cross product), nếu không trụ bị
+                        // tối do normal quay vào trong.
+                        const c00 = [px - hwP, top, pz - hwP];
+                        const c10 = [px + hwP, top, pz - hwP];
+                        const c11 = [px + hwP, top, pz + hwP];
+                        const c01 = [px - hwP, top, pz + hwP];
+                        const d00 = [c00[0], bot, c00[2]];
+                        const d10 = [c10[0], bot, c10[2]];
+                        const d11 = [c11[0], bot, c11[2]];
+                        const d01 = [c01[0], bot, c01[2]];
+                        gPier.quad(c00, c10, d10, d00);   // -Z
+                        gPier.quad(c10, c11, d11, d10);   // +X
+                        gPier.quad(c11, c01, d01, d11);   // +Z
+                        gPier.quad(c01, c00, d00, d01);   // -X
+                    }
+                }
 
             // hầm: vỏ hầm (Box side=BackSide) + 2 cổng hầm
             if (seg.class === "TUNNEL") {
@@ -1998,6 +2439,8 @@ export class MapLoader {
                     parent.add(g);
                 }
             }
+            // dừng đúng ngân sách giữa 2 segment: frame sau chạy tiếp từ st.i
+            if (performance.now() >= deadline) { st.i++; return false; }
         }
 
         // ---- SÂN GIAO LỠ (rule 12/13) ---------------------------------
@@ -2006,8 +2449,8 @@ export class MapLoader {
         // nhánh ưu tiên nên mặt giao lỡ đồng nhất với đường chính.
         const jids = this._junctionByChunk ? this._junctionByChunk.get(key) : null;
         if (jids) {
-            for (let i = 0; i < jids.length; i++) {
-                const J = this._junctions.get(jids[i]);
+            for (; st.j < jids.length; st.j++) {
+                const J = this._junctions.get(jids[st.j]);
                 if (!J) continue;
                 const cp = clipRect(J.poly.map(v => [v[0], v[1]]), minX, maxX, minZ, maxZ);
                 if (cp.length < 3) continue;
@@ -2024,7 +2467,7 @@ export class MapLoader {
                         const d = hypot2(p[0] - (a[0] + ex * t), p[1] - (a[1] + ez * t));
                         if (d < bestD) { bestD = d; bestY = a[2] + (b[2] - a[2]) * t; }
                     }
-                    return [p[0], bestY, p[1]];
+                    return [p[0], bestY + this._roadLift(), p[1]];
                 }));
 
                 // VỈA HÈ GÓC TẠI GIAO LỠ (rule 12: curb / sidewalk)
@@ -2048,43 +2491,82 @@ export class MapLoader {
                         ];
                         const sc2 = clipRect(c, minX, maxX, minZ, maxZ);
                         if (sc2.length < 3) continue;
-                        cacc.poly(sc2.map(p => [p[0], this._junctionEdgeY(J, p) + 0.14, p[1]]));
+                        cacc.poly(sc2.map(p => [p[0], this._junctionEdgeY(J, p) + 0.14 + this._roadLift(), p[1]]));
                     }
                 }
 
-                // VẠCH DỪNG (rule 12): nhánh nhỏ phải dừng trước miệng giao lỡ
+                // VẠCH DỪNG (rule 12): nhánh nhỏ phải dừng trước miệng giao lỡ.
+                // QUAD THẬT: 2 đỉnh dọc theo cạnh cắt (vuông góc trục đường),
+                // 2 đỉnh còn lại định chiều dày theo trục đường. Bản cũ dựng
+                // sn=(-cos,-sin) với rot=atan2(dx,dz) => sn=-dz,-dx KHÔNG vuông
+                // góc với (dx,dz) (chỉ đúng khi dx*dz=0), và cả 4 đỉnh cùng nằm
+                // trên 1 đường thẳng => quad diện tích 0 => không bao giờ hiện.
                 for (let k = 0; k < J.stopLines.length; k++) {
                     const sl = J.stopLines[k];
-                    if (sl.x < minX - 4 || sl.x > maxX + 4 || sl.z < minZ - 4 || sl.z > maxZ + 4) continue;
-                    const sn = [-Math.cos(sl.rot), -Math.sin(sl.rot)];   // vuông góc hướng đi
+                    if (sl.x < minX - sl.hw - 4 || sl.x > maxX + sl.hw + 4 ||
+                        sl.z < minZ - sl.hw - 4 || sl.z > maxZ + sl.hw + 4) continue;
+                    const px = -sl.dz, pz = sl.dx;      // vuông góc trục đường
                     const t = 0.42;
                     const c = [
-                        [sl.x + sn[0] * sl.hw, sl.z + sn[1] * sl.hw],
-                        [sl.x - sn[0] * sl.hw, sl.z - sn[1] * sl.hw],
-                        [sl.x - sn[0] * (sl.hw - t), sl.z - sn[1] * (sl.hw - t)],
-                        [sl.x + sn[0] * (sl.hw - t), sl.z + sn[1] * (sl.hw - t)]
+                        [sl.x + px * sl.hw, sl.z + pz * sl.hw],
+                        [sl.x - px * sl.hw, sl.z - pz * sl.hw],
+                        [sl.x - px * sl.hw - sl.dx * t, sl.z - pz * sl.hw - sl.dz * t],
+                        [sl.x + px * sl.hw - sl.dx * t, sl.z + pz * sl.hw - sl.dz * t]
                     ];
                     const sc = clipRect(c, minX, maxX, minZ, maxZ);
                     if (sc.length < 3) continue;
-                    getAcc("__STOPLINE__").poly(sc.map(p => [p[0], sl.y + 0.035, p[1]]));
+                    getAcc("__STOPLINE__").poly(sc.map(p => [p[0], sl.y + this._roadLift() + 0.035, p[1]]));
                 }
+
+                // VẠCH SANG ĐƯỜNG NGƯỜI ĐI BỘ: sọc dọc trục đường (QCVN 41),
+                // dài 2.0m dọc trục, rộng 0.55m, cách 1.1m, trung tâm tại
+                // trim+2.2 — nằm TRƯỚC vạch dừng (trim+4.4).
+                for (let k = 0; k < J.crossWalks.length; k++) {
+                    const cw = J.crossWalks[k];
+                    if (cw.x < minX - cw.hw - 4 || cw.x > maxX + cw.hw + 4 ||
+                        cw.z < minZ - cw.hw - 4 || cw.z > maxZ + cw.hw + 4) continue;
+                    const px = -cw.dz, pz = cw.dx;      // vuông góc trục đường
+                    for (let i = 0; i < cw.count; i++) {
+                        const off = (i - (cw.count - 1) / 2) * 1.1;
+                        const sx = cw.x + px * off, sz = cw.z + pz * off;
+                        const c = [
+                            [sx + px * 0.275 + cw.dx * 1.0, sz + pz * 0.275 + cw.dz * 1.0],
+                            [sx - px * 0.275 + cw.dx * 1.0, sz - pz * 0.275 + cw.dz * 1.0],
+                            [sx - px * 0.275 - cw.dx * 1.0, sz - pz * 0.275 - cw.dz * 1.0],
+                            [sx + px * 0.275 - cw.dx * 1.0, sz + pz * 0.275 - cw.dz * 1.0]
+                        ];
+                        const sc = clipRect(c, minX, maxX, minZ, maxZ);
+                        if (sc.length < 3) continue;
+                        getAcc("__XWALK__").poly(sc.map(p => [p[0], cw.y + this._roadLift() + 0.045, p[1]]));
+                    }
+                }
+                // dừng đúng ngân sách giữa 2 junction: frame sau chạy tiếp từ st.j
+                if (performance.now() >= deadline) { st.j++; return false; }
             }
         }
 
-        for (const [cls, a] of acc) {
+        // ---- MESH TỪ ACCUMULATOR (cắt lát tiếp: build geometry từng bucket) --
+        if (st.buckets === null) st.buckets = [...acc.entries()];
+        for (; st.k < st.buckets.length; st.k++) {
+            const [cls, a] = st.buckets[st.k];
             if (a.empty) continue;
             let mat;
             if (cls === "__MEDIAN__") mat = this._mats.median;
             else if (cls === "__SHOULDER__") mat = this._mats.shoulder;
             else if (cls === "__LINE__") mat = this._mats.laneLine;
+            else if (cls === "__LDASH__") mat = this._mats.laneLine;
             else if (cls === "__SIDEWALK__") mat = this._mats.sidewalk;
             else if (cls === "__STOPLINE__") mat = this._mats.laneLine;
+            else if (cls === "__XWALK__") mat = this._mats.laneLine;
+            else if (cls === "__PIER__") mat = this._mats.concrete;
             else if (cls.slice(-8) === "__BODY__")
                 mat = this._matByClass(cls.slice(0, -8));
             else if (cls.indexOf("__JUNCTION__") === 0) mat = this._matByClass(cls.slice(12));
             else mat = this._matByClass(cls);
             parent.add(a.build(mat, `road_${cls}`));
+            if (performance.now() >= deadline) { st.k++; return false; }
         }
+        return true;
     }
 
     // -------------------------------------------------------------- terrain
@@ -2095,18 +2577,43 @@ export class MapLoader {
     // 8m khớp ĐÚNG lưới terrain (33x33/chunk) rồi ép terrain bám theo mặt
     // đường trong băng hẹp — đường nằm trên nền đắp/cắt như thật.
     // KHÔNG áp cho cầu/hầm (nước/đèo phải giữ nguyên).
-    _buildRoadBench(cx, cz) {
+    // BENCH NỀN ĐƯỜNG (grid 33×33): phần CẤP PHÁT state — rẻ. Phần NẶNG là
+    // vòng duyệt segment bên dưới (đo được 13.15ms cho chunk 119 segment) nên
+    // nó được tách ra chạy theo deadline qua _buildRoadBenchStep — drain tự
+    // resume giữa 2 segment, giống hệt cách cắt của _addChunkRoadsBuild.
+    _buildRoadBenchCreate(cx, cz) {
         if (!this.roadGraph || !this._segByChunk) return null;
         const sids = this._segByChunk.get(cx + "," + cz);
         if (!sids || !sids.length) return null;
         const N = 33, step = CHUNK_SIZE / (N - 1);
         const x0 = cx * CHUNK_SIZE;
         const z0 = cz * CHUNK_SIZE;
-        const Y = new Float32Array(N * N).fill(NaN);
-        const D = new Float32Array(N * N).fill(Infinity);
-        const HW = new Float32Array(N * N);
-        let hit = false;
-        for (const sid of sids) {
+        return {
+            sids, N, step, x0, z0,
+            Y: new Float32Array(N * N).fill(NaN),
+            D: new Float32Array(N * N).fill(Infinity),
+            HW: new Float32Array(N * N),
+            i: 0, hit: false, result: null,
+        };
+    }
+
+    // Bọc SYNC — giữ nguyên hành vi cũ cho caller 5 tham số của _terrainCreate
+    // (warmup, _addChunkTerrain): chạy hết + trả result y như trước.
+    _buildRoadBench(cx, cz) {
+        const st = this._buildRoadBenchCreate(cx, cz);
+        if (!st) return null;
+        this._buildRoadBenchStep(st, Infinity);
+        return st.result;
+    }
+
+    // Chạy tiếp 1 chunk: true = xong (st.result sẵn sàng), false = hết deadline
+    // giữa 2 segment — gọi lại để chạy tiếp đúng chỗ (st.i đã tiến trước khi về).
+    _buildRoadBenchStep(st, deadline) {
+        const N = st.N, step = st.step, x0 = st.x0, z0 = st.z0;
+        const Y = st.Y, D = st.D, HW = st.HW;
+        const sids = st.sids;
+        for (; st.i < sids.length; st.i++) {
+            const sid = sids[st.i];
             const seg = this.roadGraph.getSegment(sid);
             if (!seg || seg.bridge || seg.class === "TUNNEL") continue;
             const p1 = this.roadGraph.getNode(seg.from);
@@ -2137,14 +2644,27 @@ export class MapLoader {
                     const d = Math.sqrt(ex * ex + ez * ez);
                     if (d > reach) continue;
                     const k = j * N + i;
-                    if (d < D[k]) { D[k] = d; Y[k] = lerp(y1, y2, t); HW[k] = hw; hit = true; }
+                    if (d < D[k]) { D[k] = d; Y[k] = lerp(y1, y2, t); HW[k] = hw; st.hit = true; }
                 }
             }
+            // Hết ngân sách -> tiến con trỏ rồi về; frame sau chạy tiếp segment kế.
+            if (performance.now() >= deadline) { st.i++; return false; }
         }
-        return hit ? { Y, D, HW, N, step, x0, z0 } : null;
+        st.result = st.hit ? { Y, D, HW, N, step, x0, z0 } : null;
+        return true;
     }
 
-    _addChunkTerrain(cx, cz, parent, px, pz) {
+    // --- Terrain dựng theo slice theo deadline (xem _drainChunkBuilds stage 0) ---
+    // TRƯỚC: cả vòng elevation + màu + normals chạy một lần = 100–223ms mỗi chunk;
+    // lái nhanh vào vùng mới (vượt ~100km/h) nhiều chunk vào queue liên tục ->
+    // dồn thành "treo vài giây lần đầu". GIỜ: _terrainCreate chỉ cấp phát (rẻ),
+    // _terrainBuild làm từng đoạn rồi kiểm deadline, hết ngân sách thì frame sau
+    // chạy tiếp đúng chỗ dở. _addChunkTerrain (API cũ, _tryBuildChunk dùng) =
+    // create + build(Infinity) — dựng đủ một lần như trước.
+    // `deferBench` (drain dùng): KHÔNG chạy bench nền đường ngay một cục — trả
+    // state `benchSt` để _buildRoadBenchStep chạy theo deadline rồi gán `bench`.
+    // Caller 5 tham số (warmup/_addChunkTerrain) giữ y nguyên hành vi cũ.
+    _terrainCreate(cx, cz, parent, px, pz, deferBench = false) {
         const originX = cx * CHUNK_SIZE + CHUNK_SIZE / 2;
         const originZ = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
         // LOD terrain: chunk gần dùng lưới 32, chunk xa dùng 16 (tiết kiệm ~60%
@@ -2155,11 +2675,35 @@ export class MapLoader {
             if (d > 3.2 * CHUNK_SIZE) seg = TERRAIN_SEG_LOD;
         }
         const geo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, seg, seg);
-        const pos = geo.attributes.position;
-        let hasSea = false;
-        const sea = this.world.seaLevel;
-        // 1 vòng duy nhất: height + màu (dùng chung kết quả quét corridor/bờ)
-        const colors = new Float32Array(pos.count * 3);
+        const st = {
+            cx, cz, parent, originX, originZ, geo,
+            pos: geo.attributes.position,
+            colors: new Float32Array(geo.attributes.position.count * 3),
+            bench: null,
+            benchSt: null,
+            benchDone: true,
+            sea: this.world.seaLevel,
+            hasSea: false, i: 0,
+        };
+        if (deferBench) {
+            st.benchSt = this._buildRoadBenchCreate(cx, cz);
+            st.benchDone = !st.benchSt;   // không có segment -> coi như xong (bench = null)
+        } else {
+            st.bench = this._buildRoadBench(cx, cz);
+        }
+        return st;
+    }
+
+    // Chạy tiếp việc dựng terrain 1 chunk: true = xong (mesh + nước + sông đã
+    // gắn vào parent), false = hết deadline giữa chừng (gọi lại để chạy tiếp).
+    _terrainBuild(st, deadline) {
+        const pos = st.pos;
+        const originX = st.originX;
+        const originZ = st.originZ;
+        const geo = st.geo;
+        const colors = st.colors;
+        const sea = st.sea;
+        const bench = st.bench;
         const cSand = new THREE.Color(0xd8c78f);
         const cGrass = new THREE.Color(0x6db84f);   // xanh lá albedo chuẩn (RGB: 109, 184, 79)
         const cGrass2 = new THREE.Color(0x5aa842);  // xanh đậm hơn chút (RGB: 90, 168, 66)
@@ -2167,9 +2711,13 @@ export class MapLoader {
         const cDry2 = new THREE.Color(0xa89a5c);   // cỏ khô vàng
         const cRock = new THREE.Color(0x7d766a);
         const cDirt = new THREE.Color(0x8a6b46);
-        const bench = this._buildRoadBench(cx, cz);
         const tmp = new THREE.Color();
-        for (let i = 0; i < pos.count; i++) {
+        // 1 vòng: height + màu (dùng chung kết quả quét corridor/bờ) — cắt lát
+        // theo deadline: mỗi 32 đỉnh mới kiểm 1 lần, quá hạn -> false, frame sau
+        // chạy tiếp đúng st.i (vòng chỉ têu ngân sách chung chứ không vượt).
+        for (; st.i < pos.count; st.i++) {
+            const i = st.i;
+            if ((i & 31) === 0 && performance.now() >= deadline) return false;
             const wx = pos.getX(i) + originX;
             const wz = originZ - pos.getY(i);   // TRƯỚC rotateX(-PI/2): local Y -> -world Z
             const info = this.world.getElevationInfo(wx, wz);
@@ -2194,8 +2742,13 @@ export class MapLoader {
                     }
                 }
             }
+            // rotateX(-PI/2) anh xa (x,y,z_local) -> (x, z_local, -y): world Y = z_local.
+            // Vi the PHAI la +h. Dau -h (uncommitted) lam terrain render o Y = -h
+            // trong duong van o +node.y -> khe hloat = node.y + h ~ 2*h: gan spawn
+            // (h~2.8m) gap ~6m, len doi (h~74m) gap ~150m -> "duong bay len cao
+            // dan tren toan map". Cau van dung vi deck cung dung node.y + roadLift.
             pos.setZ(i, h);
-            if (info.h < sea) hasSea = true;
+            if (info.h < sea) st.hasSea = true;
             if (info.h < sea + 0.4) tmp.copy(cSand);
             else if (info.h > 180) tmp.copy(cRock);
             else if (info.p && info.p.arid > 0.55) {
@@ -2228,10 +2781,10 @@ export class MapLoader {
         mesh.position.set(originX, 0, originZ);     // rule 37: đúng world position
         mesh.matrixAutoUpdate = false;
         mesh.updateMatrix();
-        mesh.name = `terrain_${cx}_${cz}`;
-        parent.add(mesh);
+        mesh.name = `terrain_${st.cx}_${st.cz}`;
+        st.parent.add(mesh);
 
-        if (hasSea) {
+        if (st.hasSea) {
             // 1 mesh/chunk, 8x8 luoi: mau theo DO SAU (nen manh -> xanh sau)
             const wg = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, 8, 8);
             const wp = wg.attributes.position;
@@ -2255,11 +2808,17 @@ export class MapLoader {
             w.position.set(originX, sea, originZ);
             w.matrixAutoUpdate = false;
             w.updateMatrix();
-            w.name = `water_${cx}_${cz}`;
-            parent.add(w);
+            w.name = `water_${st.cx}_${st.cz}`;
+            st.parent.add(w);
         }
 
-        this._addChunkRivers(cx, cz, parent, sea);
+        this._addChunkRivers(st.cx, st.cz, st.parent, sea);
+        return true;
+    }
+
+    // API cũ (đồng bộ, dựng đủ một lần) — _tryBuildChunk và đường dẫn fallback.
+    _addChunkTerrain(cx, cz, parent, px, pz) {
+        this._terrainBuild(this._terrainCreate(cx, cz, parent, px, pz), Infinity);
     }
 
     // Mặt nước sông/hồ trong chunk (nước đứng y = seaLevel + 0.15)
@@ -2321,8 +2880,13 @@ export class MapLoader {
     // 100 kiểu nhà.
     // Draw call/chunk: 2 thân (bodies/trim) + 2 mái = 4 (trước: 3 thân +
     // 3 chi tiết = 6). Màu mỗi instance đi qua instanceColor.
-    _addChunkBuildings(buildings, parent, far = false) {
+    _addChunkBuildings(buildings, parent, far = false, ownerEntry = null) {
         if (!buildings || buildings.length === 0) return;
+        // Bug 8 (va chạm môi trường): thân nhà = OBB tĩnh trong collisionSystem.
+        // Colliders được lưu theo `ownerEntry._colIds` để `_unloadChunk` remove
+        // đúng bội (tránh collider "ma" chặn xe sau khichunk load/unload lặp).
+        const _cs = window.collisionSystem;
+        if (ownerEntry && _cs && !ownerEntry._colIds) ownerEntry._colIds = [];
         // BỎ nhà trạm thu phí: generator xuất TOLL/TOLL_LANE vào chunk, nhưng
         // _addTollPlaza(POI) đã dựng trọn trạm (mái + 3 làn + gạt + nhà).
         // Vẽ cả hai => chồng hình/z-fighting. Giữ 1 nguồn duy nhất.
@@ -2384,6 +2948,18 @@ export class MapLoader {
             bodies.setColorAt(bi, col);
             bi++;
 
+            // Bug 8: khối thân -> OBB tĩnh (hl = dọc hướng tiến, hw = bề ngang —
+            // cùng hệ trục SAT của xe; y/height theo khối chính)
+            if (_cs && ownerEntry) {
+                const _brot = (typeof th === "number") ? th : 0;
+                const _hl = d * 0.5, _hw = w * 0.5;
+                ownerEntry._colIds.push(_cs.register(
+                    b.x, b.z, Math.hypot(_hl, _hw), 'static',
+                    { hl: _hl, hw: _hw, rot: _brot },
+                    b.y + lift + h1 * 0.5, h1
+                ));
+            }
+
             // tầng trên lùi vào (nhà 2 lầu lùi, nhà 3 tầng lùi)
             if (sb2) {
                 const uw = w * 0.86, ud = d * 0.84;
@@ -2404,14 +2980,24 @@ export class MapLoader {
                 const wh = h * (fl & H_STILT ? 0.68 : 0.78);
                 const lx = mx * (w - ww) * 0.5;
                 const lz = -(d * 0.5 + wd * 0.5);
-                v3.set(b.x + cy * lx + sy * lz, b.y + lift + wh * 0.5,
-                    b.z - sy * lx + cy * lz);
+                const wcx = b.x + cy * lx + sy * lz;
+                const wcz = b.z - sy * lx + cy * lz;
+                v3.set(wcx, b.y + lift + wh * 0.5,
+                    wcz);
                 s3.set(ww, wh, wd);
                 m4.compose(v3, q, s3);
                 bodies.setMatrixAt(bi, m4);
                 col.setHex(b.color || b.facade || 0xe6e2d8);
                 bodies.setColorAt(bi, col);
                 bi++;
+                // Bug 8: cánh L cũng cản xe — lưu như khối của cùng entry.
+                if (_cs && ownerEntry) {
+                    ownerEntry._colIds.push(_cs.register(
+                        wcx, wcz, Math.hypot(ww * 0.5, wd * 0.5), 'static',
+                        { hl: wd * 0.5, hw: ww * 0.5, rot: (typeof th === "number") ? th : 0 },
+                        b.y + lift + wh * 0.5, wh
+                    ));
+                }
             }
 
             // --- mái
@@ -2678,8 +3264,17 @@ export class MapLoader {
     }
 
     // --------------------------------------------------------------- objects
-    _addChunkObjects(objects, parent, lowDetail) {
+    _addChunkObjects(objects, parent, lowDetail, ownerEntry = null) {
         if (!objects || objects.length === 0) return;
+        // Bug 8 (va chạm môi trường): CÂY/CỘT ĐÈN/CỘT ĐIỆN = collider tròn
+        // (data rỗng -> mtvForHit dùng c.r như hl=hw), GUARDRAIL = hộp dài.
+        // id lưu trên ownerEntry để unload chunk phải remove sạch.
+        const _cs = window.collisionSystem;
+        if (ownerEntry && _cs && !ownerEntry._colIds) ownerEntry._colIds = [];
+        const _reg = (x, z, r, y, h, box) => {
+            if (!_cs || !ownerEntry) return;
+            ownerEntry._colIds.push(_cs.register(x, z, r, 'static', box || null, y, h));
+        };
         const buckets = new Map();
         const push = (k, geo, mat, x, y, z, sx, sy, sz, ry) => {
             let b = buckets.get(k);
@@ -2695,20 +3290,25 @@ export class MapLoader {
                 case "TREE":
                     push("trunk", G.trunk, M.trunk, x, y + 1.9, z, 1, 3.8, 1, 0);
                     push("leaf", G.canopy, M.leaves, x, y + 5.0, z, 2.5, 2.1, 2.5, o.rot || 0);
+                    _reg(x, z, 0.7, y + 4.0, 8.0);
                     break;
                 case "PINE_TREE":
                     push("pine", G.pine, M.leaves, x, y + 4.5, z, 2.1, 8.0, 2.1, o.rot || 0);
+                    _reg(x, z, 0.75, y + 4.0, 8.0);
                     break;
                 case "PALM_TREE":
                     push("ptrunk", G.palmTrunk, M.trunk, x, y + 4.0, z, 1, 8.0, 1, 0);
                     push("pleaf", G.palmLeaf, M.palmLeaf, x, y + 8.2, z, 3.0, 1.6, 3.0, o.rot || 0);
+                    _reg(x, z, 0.6, y + 4.0, 8.0);
                     break;
                 case "CASUARINA":
                     push("trunk", G.trunk, M.trunk, x, y + 2.6, z, 1.1, 5.2, 1.1, 0);
                     push("crown", G.canopy, M.leaves, x, y + 6.0, z, 2.2, 3.0, 2.2, 0);
+                    _reg(x, z, 0.75, y + 2.6, 5.2);
                     break;
                 case "BAMBOO":
                     push("bamboo", G.bamboo, M.bamboo, x, y + 2.4, z, 1, 4.8, 1, 0);
+                    _reg(x, z, 0.55, y + 2.4, 4.8);
                     break;
                 case "CACTUS":
                     push("cactus", G.cactus, M.cactus, x, y + 0.9, z, 1, 1.2, 1, 0);
@@ -2720,6 +3320,7 @@ export class MapLoader {
                     const rot = o.rot || 0;
                     const ax = Math.sin(rot), az = Math.cos(rot);
                     push("sl_pole", G.pole, M.pole, x, y + 4.5, z, 0.8, 9.0, 0.8, 0);
+                    _reg(x, z, 0.45, y + 4.5, 9.0);
                     // cánh đèn hướng về lòng đường (offset khỏi cột, không cắm chồng)
                     push("sl_arm", G.poleArm, M.pole,
                          x + ax * 1.15, y + 8.75, z + az * 1.15, 2.5, 1, 1, rot);
@@ -2728,21 +3329,14 @@ export class MapLoader {
                          x + ax * 2.25, y + 8.5, z + az * 2.25, 0.72, 0.26, 0.46, rot);
                     break;
                 }
-                case "CROSSWALK": {
-                    const rot = o.rot || 0;
-                    const ux = Math.sin(rot), uz = Math.cos(rot);
-                    for (let s = -3; s <= 3; s++) {
-                        const off = s * 1.1;
-                        push("cw", G.unitBox, M.paintWhite,
-                             x - uz * off, y + 0.12, z + ux * off,
-                             0.55, 0.06, 4.2, rot);
-                    }
-                    break;
-                }
                 case "GUARDRAIL": {
                     // 1 doan lan can 8.2m (generator dat moi 8m) -> lien mach
                     push("rail", G.unitBox, M.metal,
                          x, y + 0.28, z, 0.16, 0.42, 8.2, o.rot || 0);
+                    // Bug 8: hộp dài 8.2m dọc trục (hl) — xe trượt dọc lan can
+                    // chứ không xuyên qua (SAT MTV cùng hệ với quad đường).
+                    _reg(x, z, Math.hypot(4.1, 0.08), y + 0.28, 0.84,
+                         { hl: 4.1, hw: 0.08, rot: o.rot || 0 });
                     break;
                 }
                 case "EMERGENCY_BAY": {
@@ -2792,6 +3386,7 @@ export class MapLoader {
                 case "POLE": {
                     push("pole", G.pole, M.pole, x, y + 4.5, z, 1, 9.0, 1, 0);
                     push("arm", G.poleArm, M.pole, x, y + 8.4, z, 2.4, 1, 1, o.rot || 0);
+                    _reg(x, z, 0.5, y + 4.5, 9.0);
                     break;
                 }
                 case "RICE_FIELD":
@@ -3639,12 +4234,19 @@ export class MapLoader {
     }
 
     // ------------------------------------------------------------- streaming
-    updateChunks(playerX, playerZ, dt = 1 / 60, camDir = null) {
+    updateChunks(playerX, playerZ, dt = 1 / 60, camDir = null, camera = null) {
         if (!this.world) return;
         // vị trí player để getParkingSlots() chọn đúng bến đang tới (rule 40/42)
         if (!this._playerPos) this._playerPos = { x: playerX, z: playerZ };
         else { this._playerPos.x = playerX; this._playerPos.z = playerZ; }
         this._cullPOIs(playerX, playerZ);
+        
+        // Update frustum for culling
+        if (camera) {
+            this._projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+            this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
+        }
+        
         let dirX = 0, dirZ = -1;
         if (camDir && (camDir.x || camDir.z)) {
             dirX = camDir.x; dirZ = camDir.z;
@@ -3656,6 +4258,11 @@ export class MapLoader {
         this._lastDir.x = dirX; this._lastDir.z = dirZ;
 
         this._adaptQuality(dt);
+
+        // DỰNG HÌNH THEO NGÂN SÁCH — chay MOI FRAME (truoc day chi chay khi
+        // _timer vuot STREAM_INTERVAL = 0.25s, nen 1 chunk 1.25s van block
+        // het frame do "luon build >= 1 chunk"). Xem _drainChunkBuilds.
+        this._drainChunkBuilds(playerX, playerZ, BUILD_BUDGET_MS);
 
         this._timer += dt;
         if (this._timer < STREAM_INTERVAL) return;
@@ -3713,28 +4320,44 @@ export class MapLoader {
             count++;
         }
 
-        // LOD: dựng hình các chunk đã tải data mà mới vào tầm nhìn.
-        // NGUYEN TAC: dựng theo NGÂN SÁCH THỜI GIAN (8ms/khung) thay vì số
-        // chunk cố định -> lúc vào bến (giai đoạn tải 100+ chunk) vẫn dựng
-        // nhanh mà không hitch khung hình trên N5000.
-        const tBuild = performance.now();
-        let built = 0;
-        for (const [key, entry] of this.loadedChunks) {
-            if (entry.built) continue;
-            if (built >= 1 && performance.now() - tBuild > 5) break;
+        // LOD: dua cac chunk da tai data ma moi vao tam nhin vao HANG DUNG.
+        // Khong dung trong day nua: viec dung duoc chia giai doan va co ngan
+        // sach 8ms/frame o _drainChunkBuilds (goi MOI FRAME o tren). Day chi
+        // quet de dua vao hang (O(n) nhe, khong tao geometry nao).
+        // (Vong cu co `if (built >= 1 && ...) break;` nghia la LUON build >= 1
+        //  chunk moi 0.25s du no mat 1.25s -> chinh la cai khung hinh bi cat.)
+        for (const [, entry] of this.loadedChunks) {
+            if (entry.built || entry.building) continue;
             const ccx = entry.cx * CHUNK_SIZE + CHUNK_SIZE / 2;
             const ccz = entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-            if (hypot2(ccx - playerX, ccz - playerZ) > this.renderRadius * CHUNK_SIZE) continue;
-            this._tryBuildChunk(entry, playerX, playerZ);
-            built++;
+            if (Math.hypot(ccx - playerX, ccz - playerZ) > this.renderRadius * CHUNK_SIZE) continue;
+            this._queueChunkBuild(entry, playerX, playerZ);
+        }
+
+        // Frustum culling for rendered chunks - hide chunks outside view
+        if (this._frustum) {
+            for (const [key, entry] of this.loadedChunks) {
+                if (!entry.built || !entry.group.boundingBox) continue;
+                const visible = this._frustum.intersectsBox(entry.group.boundingBox);
+                if (entry.group.visible !== visible) {
+                    entry.group.visible = visible;
+                }
+            }
         }
     }
 
     _unloadChunk(key, chunk) {
         if (!chunk) return;
-        // unload visual -> unload collision (rule 30: collision
-        // đi theo chunk, không giữ toàn map trong memory)
-        this._unregisterChunkSurfaces(chunk);
+        // Bug 8: gỡ collider tĩnh (nhà/cây/cột) của chunk unload — nếu không,
+        // collider còn kẹt trong collisionSystem: xạ hàng vô hình chặn xe khi
+        // lái quay lại vùng đã tải (collider "ma") + phình Map mỗi lần lặp.
+        const colIds = chunk._colIds;
+        if (colIds && colIds.length && window.collisionSystem) {
+            for (let i = 0; i < colIds.length; i++) {
+                window.collisionSystem.remove(colIds[i]);
+            }
+            chunk._colIds = null;
+        }
         if (chunk.group) {
             this.chunkRoot.remove(chunk.group);
             chunk.group.traverse(o => {
@@ -3817,17 +4440,132 @@ export class MapLoader {
         const entry = { cx, cz, data, group: new THREE.Group(), built: false };
         entry.group.name = `chunk_${key}`;
         this.loadedChunks.set(key, entry);
-        // px,pz là TOẠ ĐỘ THẾ GIỚI (m) — trước đây truyền luôn chỉ số chunk
-        // khiến hypot2(..., cx, cz) lệch đơn vị (vài trăm mét), LOD sai.
-        // dung vi tri player thuc (xem FIX LOD CHET o updateChunks). Neu chua
-        // co (goi truc tiep tu code khac) thi tam chunk la du an toan.
+        // px,pz la TOA DO THE GIOI (m) — truoc day truyen luon chi so chunk
+        // lam Math.hypot(..., cx, cz) lech don vi, LOD sai.
+        // FIX DONG BANG: truoc day goi _tryBuildChunk NGAY sau fetch -> chunk
+        // 901-1258ms chay sync trong microtask, 2 chunk/tick = 1-2.5s khong
+        // the xu ly gi khac (khong the nhan phim, khong the render). Gio chi
+        // dua vao hang, _drainChunkBuilds() se dung theo ngan sach 8ms/frame.
         const sp = this._streamPos;
         if (sp) {
-            this._tryBuildChunk(entry, sp.x, sp.z);
+            this._queueChunkBuild(entry, sp.x, sp.z);
         } else {
-            this._tryBuildChunk(entry,
+            this._queueChunkBuild(entry,
                 entry.cx * CHUNK_SIZE + CHUNK_SIZE / 2,
                 entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2);
+        }
+    }
+
+    // ---- DỰNG HÌNH CHUNK THEO GIAI ĐOẠN (fix "đóng băng vài giây khi đang lái") ----
+    // SỐ ĐO GỐC: 1 chunk đầy đủ tốn 901-1258ms và trước đây chạy SYNCHRONOUS
+    // ngay trong microtask sau fetch (tối đa 2 chunk/tick) -> main thread bị
+    // chặn 1-2.5s mỗi lần lái vào vùng bản đồ mới. Đây là nguyên nhân gốc của
+    // "toàn bộ gameplay đóng băng vài giây".
+    // Chia chunk làm 4 giai đoạn: terrain -> đường -> nhà+cảnh quan -> gắn
+    // vào scene + bounding box. _drainChunkBuilds() chạy MỖI FRAME và chỉ tốn
+    // <= BUILD_BUDGET_MS (8ms): xe vẫn lái mượt, chunk hiện dần ~1-3s.
+    // An toàn vì Y xe lấy từ DATA (getTerrainHeight/road boxes), KHÔNG lấy từ
+    // mesh -> xe không bao giờ rơi xuống mặt đất chưa dựng (chunk mới luôn
+    // nằm >= ~256m phía trước theo LOAD_RADIUS).
+    _queueChunkBuild(entry, px, pz) {
+        if (!entry || entry.built || entry.building) return;
+        entry.building = true;
+        this._buildQueue.push({
+            entry,
+            stage: 0,
+            px: (typeof px === 'number') ? px : 0,
+            pz: (typeof pz === 'number') ? pz : 0,
+        });
+    }
+
+    _drainChunkBuilds(px, pz, budgetMs) {
+        if (!this._buildQueue || !this._buildQueue.length) return;
+        const t0 = performance.now();
+        let attachedThisCall = 0;   // tối đa 1 chunk attach/frame (spread GPU upload)
+        // Ưu tiên chunk GAN player nhất -> vùng sắp chạy qua luôn được dựng trước
+        this._buildQueue.sort((a, b) => {
+            const ax = a.entry.cx * CHUNK_SIZE + CHUNK_SIZE / 2 - px;
+            const az = a.entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2 - pz;
+            const bx = b.entry.cx * CHUNK_SIZE + CHUNK_SIZE / 2 - px;
+            const bz = b.entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2 - pz;
+            return (ax * ax + az * az) - (bx * bx + bz * bz);
+        });
+        for (let i = 0; i < this._buildQueue.length; i++) {
+            const task = this._buildQueue[i];
+            // Ngân sách đã cạn -> KHÔNG khởi động việc mới (nhánh attach bên
+            // dưới dùng `continue`, né check cuối vòng — từng khiến terrain
+            // create one-shot của chunk kế tiếp chạy với ngân sách đã cháy).
+            if (performance.now() - t0 >= budgetMs) return;
+            const e = task.entry;
+            // chunk da bi unload (khong con trong loadedChunks) -> bo task
+            if (e.built || !this.loadedChunks.has(e.cx + "," + e.cz)) {
+                e.building = false;
+                this._buildQueue.splice(i, 1); i--;
+                continue;
+            }
+            const ccx = e.cx * CHUNK_SIZE + CHUNK_SIZE / 2;
+            const ccz = e.cz * CHUNK_SIZE + CHUNK_SIZE / 2;
+            const dist = Math.hypot(ccx - px, ccz - pz);
+            if (dist > this.renderRadius * CHUNK_SIZE) {
+                // qua XA tam nhin: giu lai (den khi gan hon se duoc dung), nhung
+                // neu qua UNLOAD_RADIUS thi huy luon cho nhe hang
+                if (dist > UNLOAD_RADIUS * CHUNK_SIZE) {
+                    e.building = false;
+                    this._buildQueue.splice(i, 1); i--;
+                }
+                continue;
+            }
+            const g = e.group;
+            if (task.stage === 0) {
+                // Terrain tách slice theo deadline (xem _terrainBuild): mỗi frame
+                // chỉ tiêu <= budgetMs, không còn nhánh 100-223ms/chunk — mảnh
+                // lớn của "treo vài giây lần đầu vượt 100km/h".
+                // Bench nền đường cũng cắt lát (xem _buildRoadBenchStep): chunk
+                // 119 segment đo được 13.15ms một cục -> giờ dừng giữa 2 segment.
+                if (!task.terr) task.terr = this._terrainCreate(e.cx, e.cz, g, px, pz, true);
+                const terr = task.terr;
+                if (!terr.benchDone) {
+                    if (!this._buildRoadBenchStep(terr.benchSt, t0 + budgetMs)) return;
+                    terr.bench = terr.benchSt.result;
+                    terr.benchSt = null;
+                    terr.benchDone = true;
+                }
+                if (!this._terrainBuild(terr, t0 + budgetMs)) return;
+                task.terr = null;
+                task.stage = 1;
+            } else if (task.stage === 1) {
+                // ROADS cắt lát (xem _addChunkRoadsBuild): chunk 119 segment
+                // từng phang thẳng 142ms trong 1 frame -> giờ dừng đúng budget
+                // giữa 2 segment, frame sau chạy tiếp.
+                if (task.roads === undefined) task.roads = this._addChunkRoadsCreate(e.cx, e.cz, g);
+                if (task.roads && !this._addChunkRoadsBuild(task.roads, t0 + budgetMs)) return;
+                task.roads = null;
+                task.stage = 2;
+            } else if (task.stage === 2) {
+                if (e.data) {
+                    // FAR-LOD giong _tryBuildChunk: >1100m bo cay/cot/ruong,
+                    // >900m bo chi tiet nho cua nha
+                    this._addChunkBuildings(e.data.buildings, g, dist > 900, e);
+                }
+                task.stage = 3;
+            } else if (task.stage === 3) {
+                if (e.data) this._addChunkObjects(e.data.objects, g, dist > 1100, e);
+                task.stage = 4;
+            } else {
+                // Giai doan cuoi: gan vao scene + bounding box cho frustum culling.
+                // Tối đa 1 chunk attach/frame: LAN GPU upload (first-draw) của
+                // chunk mới được chia đều ra các frame thay vì dồn cùng 1 render.
+                if (attachedThisCall >= 1) return;
+                this.chunkRoot.add(g);
+                g.updateMatrixWorld(true);
+                e.group.boundingBox = new THREE.Box3().setFromObject(g);
+                e.built = true;
+                e.building = false;
+                attachedThisCall++;
+                this._buildQueue.splice(i, 1); i--;
+                continue;
+            }
+            if (performance.now() - t0 >= budgetMs) return;   // hết ngân sách -> frame sau
         }
     }
 
@@ -3850,15 +4588,16 @@ export class MapLoader {
             const ccz0 = entry.cz * CHUNK_SIZE + CHUNK_SIZE / 2;
             const cd = hypot2(ccx0 - px, ccz0 - pz);
             const far = cd > 1100;
-            this._addChunkBuildings(entry.data.buildings, g, cd > 900);
-            this._addChunkObjects(entry.data.objects, g, far);
+            this._addChunkBuildings(entry.data.buildings, g, cd > 900, entry);
+            this._addChunkObjects(entry.data.objects, g, far, entry);
             // facilities (tram xang/nghi) da render toan cuc 1 lan trong
             // _buildStations -> khong render lai o day (tranh nhan ban + z-fighting)
         }
         this.chunkRoot.add(g);
-        // load visual -> load collision (driveable surface boxes
-        // của chunk này, type "road" — không chặn chuyển động)
-        this._registerChunkSurfaces(entry);
+        // Compute bounding box for frustum culling
+        entry.group.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(entry.group);
+        entry.group.boundingBox = box;
         entry.built = true;
     }
 
@@ -3876,6 +4615,15 @@ export class MapLoader {
     // để xe leo được ramp / chạy được cầu / không chui xuống đường dưới.
     getTerrainHeight(x, z, yHint = null) {
         if (!this.world) return 10;
+        
+        // First check collision system for road boxes (most accurate for elevated roads)
+        if (window.collisionSystem) {
+            const roadY = window.collisionSystem.getRoadSurfaceY(x, z, yHint);
+            if (roadY !== null) {
+                return roadY - BUS_AXLE;
+            }
+        }
+        
         const road = this._surfaceAt(x, z, yHint);
         if (road) return road.y - BUS_AXLE;
         return this.world.getElevation(x, z);
@@ -3977,7 +4725,10 @@ export class MapLoader {
             const f = nodeMap.get(s.from), t = nodeMap.get(s.to);
             if (!f || !t) continue;
             if (Math.abs(f.x - t.x) + Math.abs(f.z - t.z) < 18) continue;  // đoạn quá ngắn
-            segs.push({ from: { x: f.x, z: f.z }, to: { x: t.x, z: t.z } });
+            // Giữ lại `class` để ui.js vẽ lớp QL/ct01 (EXPRESSWAY/NATIONAL/
+            // ARTERIAL) dày hơn — trước đây ném `class` đi nên nhánh đó
+            // trong ui.js là dead code 100%.
+            segs.push({ from: { x: f.x, z: f.z }, to: { x: t.x, z: t.z }, class: s.class });
         }
         // KHÔNG lấy mẫu/bỏ bớt (rule 34: minimap phải phản ánh đúng world).
         // Việc lọc theo khoảng cách làm ở getMinimapNear() bên dưới.
@@ -4045,17 +4796,31 @@ export class MapLoader {
                 }
             }
         }
-        // tuyến chính: chỉ giữ đoạn trong bán kính
+        // tuyến chính: lấy đoạn route từ vị trí player trở đi (phía trước)
+        // thay vì chỉ lọc theo khoảng cách - đảm bảo thấy đường phía trước
         const rt = full.route || [];
         const rseg = [];
-        for (let i = 0; i < rt.length - 1; i++) {
-            const a = rt[i], b = rt[i + 1];
-            const ddx = b.x - a.x, ddz = b.z - a.z;
-            const l2 = ddx * ddx + ddz * ddz || 1;
-            let t = ((x - a.x) * ddx + (z - a.z) * ddz) / l2;
-            t = clamp(t, 0, 1);
-            const ex = x - (a.x + ddx * t), ez = z - (a.z + ddz * t);
-            if (ex * ex + ez * ez <= r2) rseg.push(a, b);
+        if (rt.length >= 2) {
+            // Tìm điểm trên route gần player nhất
+            let bestIdx = 0;
+            let bestDist = Infinity;
+            for (let i = 0; i < rt.length; i++) {
+                const dx = rt[i].x - x, dz = rt[i].z - z;
+                const d2 = dx * dx + dz * dz;
+                if (d2 < bestDist) {
+                    bestDist = d2;
+                    bestIdx = i;
+                }
+            }
+            // Lấy đoạn route từ bestIdx trở đi, giới hạn bởi radius * 2 (xa hơn để thấy xa)
+            const routeRadius = radius * 2;
+            const routeRadius2 = routeRadius * routeRadius;
+            for (let i = bestIdx; i < rt.length - 1; i++) {
+                const a = rt[i], b = rt[i + 1];
+                const dx = a.x - x, dz = a.z - z;
+                if (dx * dx + dz * dz > routeRadius2) break;
+                rseg.push(a, b);
+            }
         }
         // POI trong bán kính (rule 34: minimap phải có bến / trạm)
         const pois = (full.pois || []).filter(p => {
@@ -4249,8 +5014,9 @@ export function createMap(options) {
         getPOIs: () => loader.getPOIs(),
         getAdminUnit: (x, z) => loader.getAdminUnit(x, z),
         getParkingSlots: () => loader.getParkingSlots(),
-        getDriveableSurface: (x, z, yHint) => loader.getDriveableSurface(x, z, yHint),
-        debugSurfaceAt: (x, z, yHint) => loader.debugSurfaceAt(x, z, yHint),
+        // Dữ liệu bến nguyên vẹn (structures/fence/hall cho passenger spawn
+        // tại bến) — dùng bởi npc.js; dữ liệu cũ đã có trong loader.stationsData.
+        getStationsData: () => loader.stationsData,
         updateChunks: (x, z, dt, camDir) => loader.updateChunks(x, z, dt, camDir),
         dispose: () => loader.dispose()
     };

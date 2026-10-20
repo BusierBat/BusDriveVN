@@ -168,8 +168,29 @@ export class ShadowSystem {
     // Cập nhật sun direction từ TimeSystem
     updateSunDirection(direction, intensity) {
         if (this.sunLight) {
-            this.sunLight.position.copy(direction).multiplyScalar(-1).normalize();
+            // BUG FIX (CUNG BUG voi updateMoonDirection ben duoi): truoc do la
+            //   position.copy(direction).multiplyScalar(-1).normalize()
+            // -> vi tri anh sang cung dinh tai DO DAI 1 DON VI, trong khi target la vi tri
+            //    player (nghin don vi). Huong sang thuc te = position - target bi CHI PHOI BOI
+            //    VI TRI PLAYER, hoan toan doc lap voi huong mat troi that.
+            // Do thuc te (do duoc truoc khi sua):
+            //   gio | getSunDirection().y (dung) | effDir.y (bi loi)
+            //    8h |                 +0.5768   |      -0.0021
+            //   12h |                 +0.9855   |      -0.0023
+            //   16h |                 +0.5050   |      -0.0021
+            //   effDirLen ~ 2078 (khong phai 1) va luc trua vi tri den = (0, -0.99, -0)
+            //   -> nam DUOI MAT DAT, anh sang ngang/co hoi xuong moi luc.
+            //   Hau qua render luc 12h trua: troi [112,187,219] nhung mat duong [8,17,20],
+            //   duong chan troi [1,2,3], than xe [8,17,20] -> toan canh chi con ambient.
+            //   Vi tri den cach target 2078 don vi cung vuot shadow.camera.far (300)
+            //   -> player luon ngoai shadow camera -> KHONG BANG NAO DUOC VE.
+            // DAU QUAN TRONG: getSunDirection() la vector HUONG LEN TOI MAT TROI (y > 0),
+            // cung nhu getMoonDirection(), nen phai DAT DEN O PHIA TREN player.
+            const SUN_DIST = 180; // < shadow.camera.far (300), > near (10)
+            this.sunLight.position.copy(direction).multiplyScalar(SUN_DIST).add(this.playerPosition);
             this.sunLight.target.position.copy(this.playerPosition);
+            // Three.js chi lay light.target khi target nam trong scene.
+            if (this.sunLight.target.parent !== this.scene) this.scene.add(this.sunLight.target);
             this.sunLight.intensity = intensity;
             this._updateCascades();
         }
@@ -178,8 +199,25 @@ export class ShadowSystem {
     // Cập nhật moon direction
     updateMoonDirection(direction, intensity) {
         if (this.moonLight) {
-            this.moonLight.position.copy(direction).multiplyScalar(-1).normalize();
+            // BUG FIX: truoc do la `position.copy(direction).multiplyScalar(-1).normalize()`,
+            // nghia la vi tri anh sang CUNG DINH tai (0,0,0) voi do dai 1 don vi, trong khi
+            // target la vi tri player (van so nghin don vi). Hau qua:
+            //   1) shadow camera (near 10 / far 300) khong bao gio bao phu duoc player
+            //      -> toan bo xe roi vao shadow -> moonlight khong an gi.
+            //      (Do thuc te: tang intensity len 20 van khong doi gi so voi 0.05.)
+            //   2) Huong sang bi xac dinh boi vi tri player, khong con la huong trang that.
+            // Dat anh sang TUONG DOI VOI PLAYER, cung huong sang nhu truoc, nam trong tam
+            // shadow camera thi moi ve duoc shadow.
+            // DAU QUAN TRONG: getMoonDirection() la vector HUONG LEN TOI MAT TRANG (day chung
+            // la y > 0 khi trang tren doi), nen phai DAT DEN O PHIA TREN player: pos = player
+            // + dir * DIST. Dung (-) se dat den DUOI DAT va khong mat nao duoc chieu sang
+            // (do thuc te: intensity 8 tu duoi dat van khong doi gi so voi 0).
+            const MOON_DIST = 180; // < shadow.camera.far (300), > near (10)
+            this.moonLight.position.copy(direction).multiplyScalar(MOON_DIST).add(this.playerPosition);
             this.moonLight.target.position.copy(this.playerPosition);
+            // Three.js chi lay light.target khi target nam trong scene. Neu khong thi no
+            // van dung target mac dinh tai (0,0,0) va vi tri target ban ghi vao bi bo qua.
+            if (this.moonLight.target.parent !== this.scene) this.scene.add(this.moonLight.target);
             this.moonLight.intensity = intensity;
         }
     }
@@ -363,13 +401,26 @@ export class ShadowSystem {
 
         const renderer = this.renderer;
         const scene = this.scene;
-        const prevRT = renderer.getRenderTarget();
 
-        renderer.setRenderTarget(this.moonLight.shadow.map);
+        // FIX "dem cung khong thanh": main.js dat shadowMap.autoUpdate = false
+        // nen THREE khong bao gio cap phat moonLight.shadow.map (do luon null).
+        // Luc do setRenderTarget(null) = ve depth ra CANVAS CHINH (lam mat hinh
+        // da render truoc do), them 1 MeshDepthMaterial moi frame (GC) va render
+        // CA SCENE them 1 lan moi frame dem. Thuc te khong co gi thay doi ve mat
+        // anh sang vi moonLight khong co map -> khong co bay thuc su dung bay do nay
+        // (chi lang phi). Bo qua khi khong co map; dung material da cache khi co.        const shadowMap = this.moonLight.shadow.map;
+        if (!shadowMap) return;
+
+        const prevRT = renderer.getRenderTarget();
+        renderer.setRenderTarget(shadowMap);
         renderer.clearDepth();
 
         const prevOverride = scene.overrideMaterial;
-        scene.overrideMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+        if (!this._moonDepthMat) {
+            this._moonDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+            this._moonDepthMat.userData.isShadowMaterial = true;
+        }
+        scene.overrideMaterial = this._moonDepthMat;
         renderer.render(scene, this.moonLight.shadow.camera);
         scene.overrideMaterial = prevOverride;
 

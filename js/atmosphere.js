@@ -167,22 +167,33 @@ export class AtmosphereSystem {
 
                     // Night blend
                     float sunAltitude = uSunDirection.y;
-                    float nightFactor = smoothstep(0.1, -0.1, sunAltitude);
-                    skyBase = mix(uNightColor, skyBase, nightFactor);
+                    // 0 = đêm, 1 = ban ngày.
+                    // BUG FIX: truoc do la smoothstep(0.1, -0.1, ...) voi edge0 > edge1 — GLSL quy uoc
+                    // "Results are undefined if edge0 >= edge1", nen ket qua phu thuoc GPU/driver.
+                    // Viet lai dung thu tu edge cho ket qua xac dinh tren moi may.
+                    float dayFactor = smoothstep(-0.1, 0.1, sunAltitude);
+                    skyBase = mix(uNightColor, skyBase, dayFactor);
+
+                    // Ensure night sky is sufficiently dark - clamp maximum brightness at night
+                    if (dayFactor < 0.5) {
+                        skyBase = min(skyBase, vec3(0.12));
+                    }
 
                     // Atmospheric scattering
                     vec3 scatter = atmosphereScattering(viewDir, uSunDirection, altitude);
 
-                    // Sun disc
+                    // Sun disc - reduced intensity to prevent white sky
                     float sunAngularRadius = 0.00465;
                     float sunDisc = 1.0 - smoothstep(sunAngularRadius, sunAngularRadius * 1.5, acos(max(-1.0, min(1.0, dot(viewDir, uSunDirection)))));
-                    vec3 sunGlow = uSunColor * sunDisc * uSunIntensity * 50.0 * nightFactor;
+                    // Further reduced sun glow intensity and removed nightFactor multiplier for sun (sun shouldn't glow at night)
+                    vec3 sunGlow = uSunColor * sunDisc * uSunIntensity * 12.0;  // Reduced from 25.0 to 12.0
 
                     // Moon (handled by separate mesh)
 
                     vec3 finalColor = skyBase + scatter + sunGlow;
-                    finalColor = pow(finalColor * uExposure, vec3(1.0/2.2)); // Gamma correction
-
+                    // NO exposure/gamma here - renderer handles tone mapping (ACESFilmic)
+                    // Clamp to prevent over-exposure (white sky) before tone mapping
+                    finalColor = min(finalColor, vec3(1.0));
                     gl_FragColor = vec4(finalColor, 1.0);
                 }
             `,
@@ -231,8 +242,27 @@ export class AtmosphereSystem {
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
+        // BUG FIX (nguyen nhan goc BUG 4 - "hai goc tren bi nho trang den khi co troi"):
+        // Truoc do la `size: 100` ket hop `sizeAttenuation: false`. voi sizeAttenuation:false
+        // thi three.js dua dung `gl_PointSize = size` (don vi pixel, KHONG quy tu khoang cach),
+        // nen moi ngoi sao ve thanh HINH VUONG CUNG 100x100 pixel. PointMaterial khong co map
+        // nen vuong do co vien CUNG, va blending AdditiveBlending + vertexColors -> luon ra
+        // [255,255,255]. Hau qua do thuc te:
+        //   - sao nam gan ria man hinh bi viewport CAT -> thanh hinh chu nhat dinh vao goc
+        //     (do duoc: pixel (626,109) = [255,255,255] luc 00:30, vuong 100px cat o x=610..640)
+        //   - `opacity` chi > 0 khi sunDeg < -6 -> chi xem ra luc DEM
+        //   - `depthTest: true` + renderOrder -999 -> bi geometry che -> "bi mat khi xoay camera
+        //     de goc do chua vat the". Tat ca khop 100% trieu chung bao cao.
+        // CUNG CHUNG NGUYEN (bang chung do): `scene.children[3]` = starsMesh (Points, ro -999)
+        //   base  -> TR [255,255,255]
+        //   tat no -> TR [46,47,60] = DUNG mau scene.background (#2e2f3c), bien mat hoan toan
+        //   tat ca children -> ca TL va TR [46,47,60]
+        //   bat lai -> TR [255,255,255] (trang thai khong bi ro)
+        // `size: 3` = diem sao 3px (khoang 2.4-3px trong buffer 640x366), van nhin thay sao.
+        // Note: attribute `size` o dong ~238 la DEAD CODE - PointsMaterial khong doc no
+        // (chi ShaderMaterial tu code moi doc), nen khong the dua vao day ma khong doi shader.
         this.starsMaterial = new THREE.PointsMaterial({
-            size: 100,
+            size: 3,
             vertexColors: true,
             transparent: true,
             opacity: 0,
@@ -403,7 +433,7 @@ export class AtmosphereSystem {
         const moonDir = time.getMoonDirection();
         const sunIntensity = time.getSunIntensity();
         const moonIntensity = time.getMoonIntensity();
-        const exposure = time.getExposure();
+        // exposure no longer needed in sky shader - renderer handles tone mapping
 
         // Update sky material
         if (this.skyMaterial) {
@@ -411,7 +441,7 @@ export class AtmosphereSystem {
             this.skyMaterial.uniforms.uSunColor.value.copy(time.getSunColor());
             this.skyMaterial.uniforms.uSunIntensity.value = sunIntensity;
             this.skyMaterial.uniforms.uSkyColor.value.copy(time.getSkyColor());
-            this.skyMaterial.uniforms.uExposure.value = exposure;
+            this.skyMaterial.uniforms.uExposure.value = time.getExposure();
 
             // Horizon/zenith colors based on time
             if (sunDeg > 10) {
@@ -426,8 +456,11 @@ export class AtmosphereSystem {
                 this.skyMaterial.uniforms.uHorizonColor.value.setHSL(lerp(0.02, 0.04, t), lerp(0.8, 0.6, t), lerp(0.3, 0.6, t));
                 this.skyMaterial.uniforms.uZenithColor.value.setHSL(0.62, 0.4, lerp(0.2, 0.4, t));
             } else {
-                this.skyMaterial.uniforms.uHorizonColor.value.setHSL(0.65, 0.2, 0.1);
-                this.skyMaterial.uniforms.uZenithColor.value.setHSL(0.65, 0.25, 0.05);
+                // Night: darker horizon and zenith
+                this.skyMaterial.uniforms.uHorizonColor.value.setHSL(0.65, 0.2, 0.08);
+                this.skyMaterial.uniforms.uZenithColor.value.setHSL(0.65, 0.25, 0.03);
+                // Update uNightColor for the shader's night blend
+                this.skyMaterial.uniforms.uNightColor.value.setHSL(0.65, 0.25, 0.02);
             }
         }
 

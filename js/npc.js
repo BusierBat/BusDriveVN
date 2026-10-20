@@ -407,6 +407,17 @@ export class BusStationManager {
         bus.group.rotation.y = (slot.rotation || 0) + Math.PI / 2;
         slot.occupied = true;
         this.busGroup.add(bus.group);
+        // Bug 8: xe bãi tĩnh PHẢI cản xe người chơi — trước đây bãi bến
+        // "trống trơn" với collisionSystem nên xe lái xuyên qua cả dãy xe
+        // đậu (15 bãi Nam Tuy Hòa như không khí). data.ai (chỉ heading) cho
+        // mtvForHit dùng đúng OBB full kích thước xe khách.
+        if (window.collisionSystem && bus.userData.colId === undefined) {
+            bus.userData.colId = window.collisionSystem.register(
+                slot.position.x, slot.position.z, 7.0, 'static',
+                { ai: { heading: bus.group.rotation.y } },
+                sy, 4.0
+            );
+        }
         this.stationBuses.push({ bus, state: 'PARKED' });
     }
     update(dt) {
@@ -415,7 +426,16 @@ export class BusStationManager {
             if (this.spawnTimer >= 0.5) { this.spawnTimer = 0; this._spawnOneBus(this.spawnQueue.shift()); }
         }
     }
-    dispose() { if (this.busGroup.parent) this.busGroup.parent.remove(this.busGroup); }
+    dispose() {
+        // Bug 8: hủy colliders của các xe bãi tĩnh đã đăng ký (_spawnOneBus).
+        if (window.collisionSystem) {
+            for (const sb of this.stationBuses) {
+                const id = sb.bus && sb.bus.userData && sb.bus.userData.colId;
+                if (id !== undefined) window.collisionSystem.remove(id);
+            }
+        }
+        if (this.busGroup.parent) this.busGroup.parent.remove(this.busGroup);
+    }
 }
 
 export class TrafficSpawnManager {
@@ -494,36 +514,127 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
     if (parkingSlots.length > 0) { try { stationManager = new BusStationManager(scene, map, parkingSlots, playerSpawnPos); } catch (e) { console.error("[npc] BusStationManager init failed:", e); } }
     
     let playerRef = playerBus || null;
-    const playerScratch = { x: 0, z: 0 };
-    function getPlayerPos() { if (!playerRef && scene) { for (const c of scene.children) if (c.name === "bus") { playerRef = c; break; } } if (playerRef && playerRef.group && playerRef.group.position) { playerScratch.x = playerRef.group.position.x; playerScratch.z = playerRef.group.position.z; return true; } return false; }
+    const playerScratch = { x: 0, z: 0, y: 0 };
+    function getPlayerPos() { if (!playerRef && scene) { for (const c of scene.children) if (c.name === "bus") { playerRef = c; break; } } if (playerRef && playerRef.group && playerRef.group.position) { playerScratch.x = playerRef.group.position.x; playerScratch.z = playerRef.group.position.z; playerScratch.y = playerRef.group.position.y; return true; } return false; }
 
     let waitingPassengers = [];
+    // 24 NPC hành khách: 12 tại bến Nam Tuy Hòa + 12 dọc tuyến.
+    // Bến: đứng rải trên pad giữa nhà chờ/ticket và dãy bãi (dữ liệu
+    // structures baySlots đã đối chiếu R(rot): khung chuẩn world = center +
+    // [cos -sin; sin cos]·(ox,oz) khớp bay band 18..48 và road n_7493 tại
+    // spine). KHÔNG đứng trong bãi xe, KHÔNG ra lề QL1, không đè công trình.
+    // Dọc tuyến: giữa 2 waypoint của route, mép PHẢI theo hướng xe chạy
+    // (right = cross(dir,up) = (-dz,dx)), cách mép ≥ 2.2m, bỏ cầu/hầm/
+    // nút giao dày — bến đón ven QL1 đúng kiểu SAO limousine.
     function generateWaitingPassengers() {
         waitingPassengers = [];
         const waypoints = graph.getRouteWaypoints();
         if (waypoints.length === 0) return;
-        const stationNode = waypoints[0];
-        // Y theo terrain thật (map.getTerrainHeight) => hành khách đứng đúng mặt đất
-        const groundY = map.getTerrainHeight ? map.getTerrainHeight(stationNode.x, stationNode.z) : 0.5;
-        for (let i = 0; i < 10; i++) {
-            waitingPassengers.push({ id: `pass_station_${i}`, x: stationNode.x + (random() - 0.5) * 15, z: stationNode.z + (random() - 0.5) * 15, y: groundY, destination: waypoints[waypoints.length - 1].id });
+        const destId = waypoints[waypoints.length - 1].id;
+
+        // ---------- 12 NPC TẠI BẾN NAM TUY HÒA ----------
+        const stData = (map.getStationsData && map.getStationsData()) || [];
+        let stHub = null;
+        for (const s of stData) {
+            if (s.id === "nam_tuy_hoa" || s.is_spawn) { stHub = s; break; }
         }
-        for (let i = 1; i < waypoints.length - 1; i++) {
-            if (i > 10) break;
-            const p1 = waypoints[i-1];
-            const p2 = waypoints[i];
-            const dx = p2.x - p1.x;
-            const dz = p2.z - p1.z;
-            const len = hypot2(dx, dz);
-            if (len === 0) continue;
-            const rx = dz / len;
-            const rz = -dx / len;
-            const offset = 15 + random() * 5;
-            const side = random() > 0.5 ? 1 : -1;
-            const x = p1.x + dx * 0.5 + rx * offset * side + (random() - 0.5) * 3;
-            const z = p1.z + dz * 0.5 + rz * offset * side + (random() - 0.5) * 3;
-            waitingPassengers.push({ id: `pass_road_${i}`, x, z, y: map.getTerrainHeight ? map.getTerrainHeight(x, z) : 0.5, destination: waypoints[waypoints.length - 1].id });
+        if (!stHub) stHub = stData.find(s => s.type === "BUS_STATION" && s.baySlots && s.baySlots.length) || null;
+        const placedSt = [];
+        if (stHub) {
+            const co = Math.cos(stHub.rot || 0), si = Math.sin(stHub.rot || 0);
+            const toWorld = (ox, oz) => [
+                stHub.x + co * ox - si * oz,
+                stHub.z + si * ox + co * oz
+            ];
+            // vùng chờ tính trước ở khung local (đối chiếu bay + recycle):
+            // oz ∈ [-26..-10], ox ∈ [-14..+13] — ngoài hall (ox≤-20), ngoài
+            // dãy bãi bay band (ox 18..48 band, oz 18 line), ngoài road spine
+            // (ox 33, oz 0) và xa mốc spawn (0,0) của xe người chơi.
+            const GRID = [];
+            for (let r = 0; r < 3; r++) {
+                for (let c = 0; c < 4; c++) {
+                    GRID.push([-12 + c * 8.3, -23 + r * 6.4]);   // (ox, oz)
+                }
+            }
+            for (let i = 0; i < 12; i++) {
+                // jitter nhỏ tách đều (pattern shinable, không đứng chồng)
+                const jagX = ((i * 37) % 11 - 5) * 0.22;
+                const jagZ = ((i * 53) % 13 - 6) * 0.16;
+                const [px, pz] = toWorld(GRID[i][0] + jagX, GRID[i][1] + jagZ);
+                const gy = map.getTerrainHeight ? map.getTerrainHeight(px, pz) : 0.5;
+                placedSt.push({ id: `pass_station_${i}`, x: px, z: pz, y: gy, destination: destId });
+            }
+        } else {
+            console.warn("[npc] khong tim thay du lieu ben Nam Tuy Hoa cho pass_station");
         }
+
+        // ---------- 12 NPC DỌC TUYẾN (mép phải hướng xe chạy) ----------
+        const segsAll = graph.segments || [];
+        const edgeByPair = new Map();
+        for (const s of segsAll) {
+            edgeByPair.set(s.from + "|" + s.to, s);
+            edgeByPair.set(s.to + "|" + s.from, s);
+        }
+        const deg = new Map();
+        for (const s of segsAll) {
+            deg.set(s.from, (deg.get(s.from) || 0) + 1);
+            deg.set(s.to, (deg.get(s.to) || 0) + 1);
+        }
+        // ứng viên: mọi cặp waypoint kế tiếp của route; cum-mét để chọn
+        // 12 điểm DÀN ĐỀU dọc tuyến (~44km/lần ở route 538km) thay vì dồn ở đầu
+        const cand = [];
+        let cum = 0;
+        for (let i = 0; i < waypoints.length - 1; i++) {
+            const a = waypoints[i], b = waypoints[i + 1];
+            const dxz = b.x - a.x, dyz = b.z - a.z;
+            const segLen = Math.hypot(dxz, dyz);
+            cum += segLen;
+            if (segLen < 25) continue;
+            const seg = edgeByPair.get(a.id + "|" + b.id);
+            if (!seg) continue;
+            if (seg.class === "EXPRESSWAY" || seg.class === "TUNNEL" || seg.bridge) continue;
+            if ((deg.get(a.id) || 0) > 3 || (deg.get(b.id) || 0) > 3) continue;
+            cand.push({ a, b, seg, segLen, cumStart: cum - segLen, hard: i });
+        }
+        const routeTotal = Math.max(1, cum);
+        const used = [];
+        const placedRoad = [];
+        for (let k = 1; k <= 12; k++) {
+            const target = routeTotal * (k / 13.0);
+            // ứng viên gần target nhất mà chưa dùng và cách các điểm đã chọn >= 4km
+            let best = null, bestDt = Infinity;
+            for (const c2 of cand) {
+                const dt = Math.abs(c2.cumStart + c2.segLen * 0.5 - target);
+                if (dt >= bestDt) continue;
+                if (used.some(i2 => i2 >= c2.hard - 24 && i2 <= c2.hard + 24)) continue;
+                const p__ = c2.a;
+                if (placedRoad.some(q => Math.hypot(q.x - p__.x, q.z - p__.z) < 4000)) continue;
+                best = c2; bestDt = dt;
+            }
+            if (!best) continue;
+            used.push(best.hard);
+            const a = best.a, b = best.b, seg = best.seg, segLen = best.segLen;
+            const half = (seg.width || 12) * 0.5;
+            const ux = (b.x - a.x) / segLen, uz = (b.z - a.z) / segLen;
+            // mé PHẢI theo hướng a->b (hướng xe chạy trên route):
+            // right = cross(dir, up) = (-dz, dx)
+            const rx = -uz, rz = ux;
+            const off = half + 2.2 + ((k * 29) % 5) * 0.35;   // 2.2..3.6m lề
+            const px = a.x + ux * segLen * 0.5 + rx * off;
+            const pz = a.z + uz * segLen * 0.5 + rz * off;
+            // yHint từ cao độ node đầu/cuối segment (node.y = mặt đường):
+            // không có hint, `_surfaceAt` chọn mặt CAO NHẤT — pedestrian dọc
+            // tuyến rơi trúng đè cầu/viaduct đi ngang gần segment. Hint neo
+            // scoring về mặt thuộc chính segment này.
+            let sideHintY = null;
+            if (typeof a.y === "number" && typeof b.y === "number") sideHintY = a.y + (b.y - a.y) * 0.5;
+            else if (typeof a.y === "number") sideHintY = a.y;
+            const gy = map.getTerrainHeight ? map.getTerrainHeight(px, pz, sideHintY) : 0.5;
+            placedRoad.push({ id: `pass_road_${k}`, x: px, z: pz, y: gy, destination: destId });
+        }
+
+        waitingPassengers = placedSt.concat(placedRoad);
+        console.log("[npc] waiting passengers: ", placedSt.length, "ben +", placedRoad.length, "duoc tuyen (muc tieu 12+12)");
     }
     generateWaitingPassengers();
 
@@ -567,7 +678,11 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
 
         const npc = pedPool.pop() || createHumanoidNPC(seed + (pedIdCounter++));
         if (!npc) return false;
-        const gy = map.getTerrainHeight ? map.getTerrainHeight(sx, sz) : 0.5;
+        // yHint = cao độ người chơi (bus.y = mặt đường): khi player đang chạy
+        // trên cầu/hầm, pedestrian spawn xung quanh phải bám mặt CÙNG MỨC
+        // player thay vì nhảy lên surface cao nhất trong vùng. Trả vềspace
+        // node (surfaceY − 0.5) khớp cách dùng gy hiện có.
+        const gy = map.getTerrainHeight ? map.getTerrainHeight(sx, sz, playerScratch.y) : 0.5;
         npc.group.position.set(sx, gy, sz);
         npc.group.rotation.y = pedRandom() * TWO_PI;
         npc.group.visible = true;
@@ -643,7 +758,13 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
                 npc.group.position.x += npc.walkDir.x * spd * dt;
                 npc.group.position.z += npc.walkDir.z * spd * dt;
                 if (map.getTerrainHeight) {
-                    npc.group.position.y = map.getTerrainHeight(npc.group.position.x, npc.group.position.z);
+                    // yHint = cao độ hiện tại của chính NPC (surface-space =
+                    // +0.5): bám mặt đang đứng, không nhảy qua deck cầu/viaduct
+                    // đi ngang lúc đi bộ cắt đường.
+                    npc.group.position.y = map.getTerrainHeight(
+                        npc.group.position.x, npc.group.position.z,
+                        npc.group.position.y + 0.5
+                    );
                 }
                 // Đổi hướng ngẫu nhiên
                 if (pedRandom() < dt * 0.3) {

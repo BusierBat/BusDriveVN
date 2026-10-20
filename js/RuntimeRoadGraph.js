@@ -257,14 +257,43 @@ export class RuntimeRoadGraph {
         const came = new Map();
         const open = new Set([fromId]);
         const fScore = new Map([[fromId, h(this._nodeMap.get(fromId))]]);
-        let guard = 0;
-        while (open.size > 0 && guard++ < 40000) {
-            let cur = null, curF = Infinity;
-            for (const id of open) {
-                const f = fScore.get(id);
-                if (f !== undefined && f < curF) { curF = f; cur = id; }
+        // Min-heap theo fScore thay cho quét Set O(n)/vòng: đường dài (QL1A/CT01,
+        // goi qua nextSegmentToward) tung nảy 73–244ms tren main thread — thay ro
+        // khi chay nhanh. Lazy deletion: moi lan cai thien gScore thi push ban sao;
+        // ban cu bi bo qua khi pop vi node da roi khoi open.
+        const heap = [[fScore.get(fromId), fromId]];
+        const heapPush = (f, id) => {
+            heap.push([f, id]);
+            let c = heap.length - 1;
+            while (c > 0) {
+                const p = (c - 1) >> 1;
+                if (heap[p][0] <= heap[c][0]) break;
+                const t = heap[p]; heap[p] = heap[c]; heap[c] = t;
+                c = p;
             }
-            if (cur === null) break;
+        };
+        const heapPop = () => {
+            const top = heap[0];
+            const last = heap.pop();
+            if (heap.length > 0) {
+                heap[0] = last;
+                let p = 0;
+                for (;;) {
+                    const l = p * 2 + 1, r = l + 1;
+                    let s = p;
+                    if (l < heap.length && heap[l][0] < heap[s][0]) s = l;
+                    if (r < heap.length && heap[r][0] < heap[s][0]) s = r;
+                    if (s === p) break;
+                    const t = heap[s]; heap[s] = heap[p]; heap[p] = t;
+                    p = s;
+                }
+            }
+            return top;
+        };
+        let guard = 0;
+        while (heap.length > 0 && guard++ < 40000) {
+            const cur = heapPop()[1];
+            if (!open.has(cur)) continue;   // bản sao cũ đã xử lý (lazy deletion)
             if (cur === toId) {
                 const out = [];
                 let k = cur;
@@ -281,8 +310,10 @@ export class RuntimeRoadGraph {
                 if (gScore.has(e.to) && gScore.get(e.to) <= ng) continue;
                 came.set(e.to, cur);
                 gScore.set(e.to, ng);
-                fScore.set(e.to, ng + h(this._nodeMap.get(e.to)));
+                const nf = ng + h(this._nodeMap.get(e.to));
+                fScore.set(e.to, nf);
                 open.add(e.to);
+                heapPush(nf, e.to);
             }
         }
         return null;
@@ -359,7 +390,9 @@ export class RuntimeRoadGraph {
                 const f = this.getNode(s.from);
                 const t = this.getNode(s.to);
                 if (!f || !t) return null;
-                return { from: { x: f.x, z: f.z }, to: { x: t.x, z: t.z } };
+                // Giữ `class` để ui.js phân biệt QL/cao tốc với đường nhỏ
+                // (ném đi thì lớp vẽ đường lớn là dead code).
+                return { from: { x: f.x, z: f.z }, to: { x: t.x, z: t.z }, class: s.class };
             }).filter(Boolean),
             route: this.getRouteWaypoints().map(w => ({ x: w.x, z: w.z })),
             pois: this.pois.map(p => ({

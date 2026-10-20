@@ -71,6 +71,7 @@ export class CameraSystem {
 
     this.bedLookYaw = 0;
     this.bedLookPitch = 0;
+    this.seatPivotYaw = 0;
     this.cabinYaw = 0;
     this.cabinPitch = 0;
 
@@ -112,8 +113,12 @@ export class CameraSystem {
         } else if (mode.startsWith('seat_')) {
             this.bedLookYaw -= sensX;
             this.bedLookPitch -= sensY;
-            this.bedLookYaw = ((this.bedLookYaw + Math.PI * 10) % (Math.PI * 2)) - Math.PI;
-            this.bedLookPitch = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, this.bedLookPitch));
+            // Kẹp quanh pivot hướng aisle (setMode seat_) — hết nhìn xuyên
+            // divider đầu/đuôi giường + rèm aisle = hết "vật cản vô hình";
+            // pitch hẹp ±0.8 tránh dính trần/sàn buồng.
+            const pivot = this.seatPivotYaw || 0;
+            this.bedLookYaw = Math.max(pivot - 1.0, Math.min(pivot + 1.0, this.bedLookYaw));
+            this.bedLookPitch = Math.max(-0.8, Math.min(0.8, this.bedLookPitch));
         } else {
             this.cabinYaw -= sensX;
             this.cabinPitch -= sensY;
@@ -138,8 +143,19 @@ export class CameraSystem {
     this.orbitYaw = Math.PI;
     this.orbitPitch = 0.2;
 
-    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 1.32, 5.2);
-    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 1.32, 5.2);
+    // MẮT NGƯỜI THẬT theo interior.js: ghế tài xế x=-0.35 z=4.5 (cushion
+    // y=0.44); vô lăng x=-0.35 (đã dời runtime) z=5.1 r0.22 (viền trên y1.32);
+    // dashboard z5.3-5.6, cluster center y~1.05.
+    // driver: mắt ≈ (−0.35, 1.28, 4.95) — CAO HƠN bản 1.22: viền vô lăng
+    // trên y1.32 chỉ nhỉnh mắt 0.04 → thấy đúng dáng arc vô lăng, và đường
+    // nhìn về cluster (y1.05) xuyên đúng lỗ vô lăng, không dính nan hoa (y1.1).
+    // Bản cũ từ đầu prompt (0.65, 1.32, 5.2) là ghế PHỤ XE (hoán vị) + đè dash.
+    // HOÁN VỊ theo yêu cầu test thực tế: camera "Tài xế" đặt tại 0.65 (chỗ
+    // ghế người chơi coi là chỗ tài xế), camera "Ghế phụ" về −0.35.
+    // z=4.75 giữ nguyên (ngay chỗ ghế, vô lăng 0.35m trước mắt).
+    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 1.28, 4.75);
+    // copilot: mắt (−0.35, 1.28, 4.75) — ghế bên kia dash.
+    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 1.28, 4.75);
     else if (mode === 'cabin') this.targetPos = new THREE.Vector3(0, 1.5, 3.2);
     else if (mode === 'outside') { /* nhanh orbit: update() dung orbitYaw/Pitch/Distance, khong dung targetPos */ }
     else if (mode.startsWith('seat_')) {
@@ -147,8 +163,16 @@ export class CameraSystem {
       const seat = PASSENGER_SEATS[idx % PASSENGER_SEATS.length];
       this.targetPos = seat.localPos.clone();
       this.targetPos.y += 0.15;
-      this.targetPos.z += 0.35;
-      this.bedLookYaw = seat.side === 'left' ? 0.65 : -0.65;
+      // Lùi 0.35 -> 0.22: camera lìa tường đầu giường 0.30m (bản cũ chỉ cách
+      // 0.30m tổng, các row cuối còn sát ~0.15m) — thoáng hơn mà vẫn giữ
+      // tầm nhìn ra aisle. Điều chỉnh CHỈ camera, không dựng thêm mesh.
+      this.targetPos.z += 0.22;
+      // Pivot = hướng lối đi (aisle): trái nhìn +x, phải nhìn −x. Camera
+      // ngồi trong buồng giường có divider đầu giường 0.43m trước mặt và rèm
+      // aisle sát phía +z — quay 360° là đâm mesh ("vật cản vô hình") →
+      // khoá yaw quanh pivot ±1.0 rad là phạm vi nhìn hữu dụng của buồng.
+      this.seatPivotYaw = seat.side === 'left' ? 0.65 : -0.65;
+      this.bedLookYaw = this.seatPivotYaw;
       this.bedLookPitch = -0.08;
     }
   }

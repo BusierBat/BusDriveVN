@@ -298,6 +298,11 @@ function assembleBus(mats, withDoorPivot) {
 
   const extMat = new THREE.MeshBasicMaterial({
     map: mats.ledExtTexture,
+    // SÁNG HƠN: nhân màu trắng 1.8x (THREE.Color nhận giá trị > 1) —
+    // additive blending nhân texture * color, tăng scale màu mà KHÔNG đổi tông
+    // xanh 0x2fb6ff gốc. Đặt 1 lần lúc dựng material, không chạy mỗi frame,
+    // áp dụng cho cả xe người chơi lẫn xe NPC (dùng chung assembleBus).
+    color: new THREE.Color(1.8, 1.8, 1.8),
     transparent: true,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
@@ -350,8 +355,15 @@ function makeControl(a) {
       }
     },
     setDoor: (t) => {
-      if(a.doorPivot) {
-        a.doorPivot.position.z = (L/2 - 1.0) - t * 1.2;
+      if (a.doorPivot) {
+        // Cửa trượt VỀ SAU khi mở (mở = t=1 → dịch −z 1.2m; đóng = t=0 → về 0).
+        // doorGeo đã được dựng NGAY tại vị trí đúng trên thân xe theo layout
+        // texture (sideZr: z = L/2 − (px − bodyFront)·S — door px 97..220 →
+        // z ≈ 5.14..6.19, sát mũi xe như trận hình vẽ). Do đó lực offset pivot
+        // khi đóng phải là 0; trước đây là (L/2 − 1.0) = +5.4m trên đỉnh tọa
+        // độ local sẵn có → cả MESH CỬA TRÔI RA TRƯỚC ĐẦU XE ~5.4m (bug "cửa
+        // lệch về phía trước"). Trượt đi/trượt về không drift: luôn tính từ 0.
+        a.doorPivot.position.z = -t * 1.2;
       }
     }
   };
@@ -382,25 +394,37 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   const tailMaterial = a.tailMesh.material;
   const emergencyMaterial = a.emergencyMesh.material;
 
-  const spotL = new THREE.SpotLight(0xfff3cf, 0, 120, Math.PI / 5, 0.3, 1.0);
+  const spotL = new THREE.SpotLight(0xfff3cf, 0, 400, Math.PI / 5, 0.05, 1.0);
   spotL.position.set(-0.78, 1.05, L / 2 + 0.05);
-  const spotLT = new THREE.Object3D(); spotLT.position.set(-0.78, 0, L / 2 + 25);
-  const spotR = new THREE.SpotLight(0xfff3cf, 0, 120, Math.PI / 5, 0.3, 1.0);
+  const spotLT = new THREE.Object3D(); spotLT.position.set(-0.78, 0, L / 2 + 100);
+  const spotR = new THREE.SpotLight(0xfff3cf, 0, 400, Math.PI / 5, 0.05, 1.0);
   spotR.position.set(0.78, 1.05, L / 2 + 0.05);
-  const spotRT = new THREE.Object3D(); spotRT.position.set(0.78, 0, L / 2 + 25);
-  const tailGlow = new THREE.PointLight(0xff2020, 0, 7, 1.8);
+  const spotRT = new THREE.Object3D(); spotRT.position.set(0.78, 0, L / 2 + 100);
+  const tailGlow = new THREE.PointLight(0xff2020, 0, 20, 2.5);
   tailGlow.position.set(0, 1.1, -L / 2 - 0.3);
   a.root.add(spotL, spotLT, spotR, spotRT, tailGlow);
   spotL.target = spotLT;
   spotR.target = spotRT;
 
   let signalLeft = false, signalRight = false, hazard = false;
+  let cockpitScreenTimer = 999;   // attach muộn: vẽ luôn frame đầu
   function update(dt) {
-    c.updateDoor(dt);
+    // ĐÃ XÓA `c.updateDoor(dt)` — makeControl không có hàm đó (chỉ
+    // setSteering/setWheelRotation/setDoor) => TypeError mỗi frame
+    // ("c.updateDoor is not a function"). Cửa animate chính chủ tại
+    // main.js: doorProgress -> bus.setDoor(doorProgress).
     const t = performance.now() / 1000;
     const blink = (t % 1) < 0.5;
     mats.indL.emissiveIntensity = ((signalLeft || hazard) && blink) ? 1.8 : 0.05;
     mats.indR.emissiveIntensity = ((signalRight || hazard) && blink) ? 1.8 : 0.05;
+    // cockpit tài xế: màn update/BSOD redraw theo CHU KỲ 1s (không mỗi frame)
+    if (cockpitTickScreen) {
+      cockpitScreenTimer += dt;
+      if (cockpitScreenTimer >= 1) {
+        cockpitScreenTimer = 0;
+        cockpitTickScreen(performance.now());
+      }
+    }
   }
 
   function setHeadlights(on) {
@@ -413,11 +437,21 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       spotL.intensity = 0;
       spotR.intensity = 0;
     }
-    spotL.visible = on;
-    spotR.visible = on;
+    // BUG 6 FIX (game khuyng khi bam F/L): KHONG doi `.visible` cua SpotLight/PointLight.
+    // Trong Three.js r160 `numPointLights`/`numSpotLights` nam TRONG program cache key
+    // va `lights.state.version` tang khi length light trong render list doi -> tat 2 den
+    // nay lam `needsProgramChange = true` cho TOAN BO MeshStandardMaterial -> gl.linkProgram
+    // DONG BO ngay frame do (khong dung KHR_parallel_shader_compile) -> dot 1-3 giay tren
+    // Intel UHD. Tat den chi can intensity = 0 (da co o tren) -> light count co dinh.
+    spotL.visible = true;
+    spotR.visible = true;
   }
 
-  function setTaillights(on) { tailMaterial.emissiveIntensity = on ? 0.9 : 0; tailGlow.intensity = on ? 6 : 0; tailGlow.visible = on; }
+  function setTaillights(on) {
+    tailMaterial.emissiveIntensity = on ? 0.9 : 0;
+    tailGlow.intensity = on ? 6 : 0;
+    tailGlow.visible = true;   // BUG 6: giu luon trong render list, chi intensity moi doi
+  }
   function setSignalLeft(on) { signalLeft = on; }
   function setSignalRight(on) { signalRight = on; }
   function setHazard(on) { hazard = on; }
@@ -436,6 +470,345 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     }
   }
 
+  // ===== COCKPIT TAI XE (bus.js — interior.js CAM sua file, chi gan runtime) =====
+  // Man hinh / 2 dong ho / nut bam la mesh CO SAN cua interior.js (o khung dash
+  // tai (0,1.05,5.6) va x lan can =+/-0.45). Module nay CHI gan material/texture runtime
+  // cho dung mesh do (traverse theo geometry + vi tri), khong dung he thong
+  // thu hai cung chuc nang, khong sua file interior.js. Screen redraw theo chu
+  // ky (1s; speedo chi khi so km/h doi) — nhe cho Pentium N5000/4GB. NPC
+  // (createNpcBus) khong goi setInteriorReference nen khong attach.
+  let cockpitDrawSpeed = null;
+  function setDriverTelemetry(speedKmhSigned) {
+    if (cockpitDrawSpeed) cockpitDrawSpeed(speedKmhSigned);
+  }
+  let cockpitTickScreen = null;
+  function createDriverCockpit(interiorRoot) {
+    if (cockpitTickScreen || !interiorRoot?.isObject3D) return;
+    const findMesh = (pred) => {
+      let hit = null;
+      interiorRoot.traverse(o => {
+        if (hit || !o.isMesh) return;
+        const gp = o.geometry?.parameters;
+        if (gp && pred(gp, o)) hit = o;
+      });
+      return hit;
+    };
+    const findAllMeshes = (pred) => {
+      const hits = [];
+      interiorRoot.traverse(o => {
+        if (!o.isMesh) return;
+        const gp = o.geometry?.parameters;
+        if (gp && pred(gp, o)) hits.push(o);
+      });
+      return hits;
+    };
+    const screenMesh = findMesh((gp, o) =>
+      Math.abs(gp.width - 0.5) < 0.03 && Math.abs(gp.height - 0.25) < 0.03 &&
+      Math.abs(gp.depth - 0.05) < 0.03 && Math.abs(o.position.x) < 0.12 &&
+      o.position.z > 5.3 && o.position.y > 0.9);
+    const speedoMesh = findMesh((gp, o) =>
+      Math.abs(gp.width - 0.35) < 0.03 && Math.abs(gp.height - 0.2) < 0.03 &&
+      o.position.x < -0.25 && o.position.x > -0.6 && o.position.z > 5.3);
+    const gaugeMesh = findMesh((gp, o) =>
+      Math.abs(gp.width - 0.25) < 0.03 && Math.abs(gp.height - 0.15) < 0.03 &&
+      o.position.x > 0.25 && o.position.x < 0.6 && o.position.z > 5.3);
+    const btnMeshes = findAllMeshes((gp, o) =>
+      Math.abs(gp.width - 0.04) < 0.02 && Math.abs(gp.height - 0.04) < 0.02 &&
+      Math.abs(gp.depth - 0.04) < 0.02 && o.position.z > 5.3 &&
+      o.position.y > 0.7 && o.position.y < 1.0);
+    if (!screenMesh) {
+      console.warn("[cockpit] Khong tim thay man hinh dashboard trong interior — khong gan bua");
+      return;
+    }
+
+    // ---- man hinh trung tam: Windows Update + BSOD (TRUST_ME_BRO) + QR gia ----
+    const SW = 320, SH = 192, DOT_N = 5, DOT_R = 13;
+    const screenCv = document.createElement('canvas');
+    screenCv.width = SW; screenCv.height = SH;
+    const sctx = screenCv.getContext('2d');
+    // 37% khoi dau; +1% moi 300 giay gio THUC (Date.now, khong theo FPS)
+    const UPDATE_STEP_MS = 300000;
+    const updateStartMs = Date.now();
+    let screenMode = 0, lastScreenDraw = 0, lastBsodStart = 0, bsodEndMs = 0, bsodProgress = 0;
+
+    const drawQRPseudo = (x, y, size) => {
+      // QR Chi LA HINH (de bai) — luoi module gia, co 3 finder square cho giong,
+      // KHONG ma hoa noi dung gi ca.
+      const cells = 21, cell = size / (cells + 4);
+      sctx.fillStyle = '#f2f2f2';
+      sctx.fillRect(x, y, (cells + 4) * cell, (cells + 4) * cell);
+      sctx.fillStyle = '#1a1a1a';
+      for (let r = 0; r < cells; r++) {
+        for (let c = 0; c < cells; c++) {
+          const inFinder = (r < 8 && c < 8) || (r < 8 && c >= cells - 8) || (r >= cells - 8 && c < 8);
+          if (inFinder) continue;
+          if (((r * 31 + c * 17 + (r * c) % 23) % 7) < 3) {
+            sctx.fillRect(x + (c + 2) * cell, y + (r + 2) * cell, cell, cell);
+          }
+        }
+      }
+      const finder = (fx, fy) => {
+        const f = 7 * cell;
+        sctx.fillRect(x + (fx + 2) * cell, y + (fy + 2) * cell, f, f);
+        sctx.fillStyle = '#f2f2f2';
+        sctx.fillRect(x + (fx + 3) * cell, y + (fy + 3) * cell, f - 2 * cell, f - 2 * cell);
+        sctx.fillStyle = '#1a1a1a';
+        sctx.fillRect(x + (fx + 4) * cell, y + (fy + 4) * cell, f - 4 * cell, f - 4 * cell);
+      };
+      finder(0, 0); finder(cells - 7, 0); finder(0, cells - 7);
+    };
+    const drawUpdateScreen = (nowMs) => {
+      const pct = 37 + Math.floor((nowMs - updateStartMs) / UPDATE_STEP_MS);
+      sctx.fillStyle = '#0468c8';
+      sctx.fillRect(0, 0, SW, SH);
+      // vong xoay cham: chu ky RIENG 1.6s, doc lap voi percent
+      const spin = ((nowMs % 1600) / 1600) * Math.PI * 2;
+      sctx.fillStyle = '#ffffff';
+      for (let i = 0; i < DOT_N; i++) {
+        const ang = spin - i * ((Math.PI * 2) / DOT_N);
+        sctx.globalAlpha = 1.0 - i * 0.17;
+        sctx.beginPath();
+        sctx.arc(38 + Math.cos(ang) * DOT_R, 44 + Math.sin(ang) * DOT_R, 4.2, 0, Math.PI * 2);
+        sctx.fill();
+      }
+      sctx.globalAlpha = 1;
+      sctx.textAlign = 'left';
+      sctx.font = 'bold 23px Arial';
+      sctx.fillText(`Working on update ${pct}%`, 24, 110);
+      sctx.font = '15px Arial';
+      sctx.fillText(`${pct}% complete`, 24, 137);
+      sctx.font = '13px Arial';
+      sctx.fillText("Don't turn off your computer", 24, 168);
+    };
+    const drawBsodScreen = () => {
+      bsodProgress = Math.min(99, bsodProgress + 17);
+      sctx.fillStyle = '#0078d7';
+      sctx.fillRect(0, 0, SW, SH);
+      sctx.fillStyle = '#ffffff';
+      sctx.textAlign = 'left';
+      sctx.font = 'bold 42px Arial';
+      sctx.fillText(':(', 26, 60);
+      sctx.font = '14px Arial';
+      sctx.fillText('Your PC ran into a problem and needs to', 26, 88);
+      sctx.fillText(`We're just collecting some error info,`, 26, 106);
+      sctx.fillText(`and then we'll restart for you. ${bsodProgress}%`, 26, 124);
+      sctx.font = '11px Arial';
+      sctx.fillText('For more information about this issue and possible', 26, 150);
+      sctx.fillText('fixes, visit busdrivevn.local/trustmebro', 26, 164);
+      sctx.font = 'bold 12px Arial';
+      sctx.fillText('STOP code: TRUST_ME_BRO', 26, 184);
+      drawQRPseudo(SW - 66, SH - 78, 46);
+    };
+    const screenTex = new THREE.CanvasTexture(screenCv);
+    screenTex.colorSpace = THREE.SRGBColorSpace;
+    const refreshScreen = (nowMs) => {
+      if (screenMode === 0) {
+        drawUpdateScreen(nowMs);
+        // xac suat nho + cooldown 90s moi xuat hien BSOD (ngau nhien vua phai)
+        if (nowMs - lastBsodStart > 90000 && Math.random() < 0.006) {
+          screenMode = 1;
+          lastBsodStart = nowMs;
+          bsodEndMs = nowMs + 12000 + Math.random() * 12000;
+          bsodProgress = 0;
+        }
+      } else {
+        drawBsodScreen();
+        if (nowMs > bsodEndMs) screenMode = 0;  // "restart" xong ve lai update
+      }
+      screenTex.needsUpdate = true;
+    };
+    refreshScreen(performance.now());
+    cockpitTickScreen = refreshScreen;
+    screenMesh.material = new THREE.MeshBasicMaterial({ map: screenTex });
+
+    // ---- dong ho toc do (cluster trai): SO KMH LAY TU XE THAT ----
+    let spdCtex = null, lastSpdInt = -1, lastSpdRev = null, lastSpdDrawMs = 0;
+    if (speedoMesh) {
+      const GW2 = 192, GH2 = 96;
+      const spdCv = document.createElement('canvas');
+      spdCv.width = GW2; spdCv.height = GH2;
+      const gctx = spdCv.getContext('2d');
+      spdCtex = new THREE.CanvasTexture(spdCv);
+      spdCtex.colorSpace = THREE.SRGBColorSpace;
+      speedoMesh.material = new THREE.MeshBasicMaterial({ map: spdCtex });
+      // ve lai CHI khi so km/h doi (hoac che do lui doi) — khong tung frame
+      cockpitDrawSpeed = (kmhSigned) => {
+        const rev = kmhSigned < -0.5;
+        const aint = Math.round(Math.abs(kmhSigned));
+        const nowMs = performance.now();
+        if (aint === lastSpdInt && rev === lastSpdRev && (nowMs - lastSpdDrawMs) < 3000) return;
+        lastSpdInt = aint; lastSpdRev = rev; lastSpdDrawMs = nowMs;
+        gctx.fillStyle = '#020208';
+        gctx.fillRect(0, 0, GW2, GH2);
+        gctx.strokeStyle = '#35ffd0';
+        gctx.lineWidth = 2;
+        gctx.strokeRect(3, 3, GW2 - 6, GH2 - 6);
+        gctx.fillStyle = '#f2fffb';
+        gctx.textAlign = 'center';
+        gctx.font = 'bold 40px Consolas, monospace';
+        gctx.fillText(String(aint), GW2 / 2, 54);
+        gctx.font = '13px Arial';
+        gctx.fillStyle = '#8fe8d8';
+        gctx.fillText(rev ? 'R' : 'km/h', GW2 / 2, 76);
+        spdCtex.needsUpdate = true;
+      };
+      cockpitDrawSpeed(0);
+    } else {
+      console.warn("[cockpit] Khong tim thay cluster toc do trong interior");
+    }
+
+    // ---- dong ho phu (cluster phai): canvas TINH ve 1 lan ----
+    if (gaugeMesh) {
+      const aCv = document.createElement('canvas');
+      aCv.width = 160; aCv.height = 96;
+      const actx = aCv.getContext('2d');
+      actx.fillStyle = '#020208';
+      actx.fillRect(0, 0, 160, 96);
+      actx.textAlign = 'center';
+      actx.strokeStyle = '#ffcf3f'; actx.lineWidth = 2;
+      actx.strokeRect(10, 14, 60, 40);
+      actx.fillStyle = '#ffcf3f'; actx.font = '13px Arial';
+      actx.fillText('BATT', 40, 40);
+      actx.strokeStyle = '#2fb6ff';
+      actx.strokeRect(90, 14, 60, 40);
+      actx.fillStyle = '#2fb6ff';
+      actx.fillText('TANK', 120, 40);
+      actx.fillStyle = '#99a';
+      actx.font = '11px Arial';
+      actx.fillText('Tieu hao: 8km/l', 80, 78);
+      gaugeMesh.material = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(aCv) });
+    }
+
+    // ---- 4 nut bam: PHAN NHOM mau phat sang (gan 1 LAN luc attach ----
+    // nhom: do = dung khan, vang = cua, xanh = LED noi that, trang = den)
+    if (btnMeshes.length) {
+      const groups = [0xff4040, 0xffd23f, 0x2fb6ff, 0xf2f4f0];
+      btnMeshes.forEach((m, i) => {
+        m.material = new THREE.MeshStandardMaterial({
+          color: 0x111118, emissive: groups[i % 4], emissiveIntensity: 1.4
+        });
+      });
+    } else {
+      console.warn("[cockpit] Khong tim thay nut bam tren dashboard interior");
+    }
+
+    buildCockpitShell(interiorRoot, findMesh, findAllMeshes);
+  }
+
+  // ===== REBUILD TABLO theo anh khoang lai THACO that (anh kem prompt) =====
+  // interior.js la FILE CAM — moi mesh duoi day do bus.js dung PHU quanh dash
+  // san cua interior (dash goc y0.8-1.0 z5.3-5.6, volang x0.35 z5.1) cung he
+  // toa do; khong dong geometry interior. Mesh count nho (~16) — Pentium-safe.
+  function buildCockpitShell(interiorRoot, findMesh, findAllMeshes) {
+    const dashDark = new THREE.MeshStandardMaterial({ color: 0x14141c, roughness: 0.4, metalness: 0.25 });
+    const chrome = new THREE.MeshStandardMaterial({ color: 0xd8dce6, roughness: 0.3, metalness: 0.85 });
+    const panelMat = new THREE.MeshStandardMaterial({ color: 0x0c0e12, roughness: 0.7 });
+    // NOTE (táp-lô rebuild): hai mesh dash "phụ" cũ (dashTop/lowerDash) ĐÃ BỊ
+    // XÓA — táp-lô thật giờ được dựng TRONG interior.js (mặt trên nghiêng +
+    // mặt trước + vách hai bên + kick + knee console, khối kín hết bóng "bàn").
+    // Dùng thêm khối dup ở đây chỉ gây z-fighting + tái tạo hình "chân bàn".
+    // Các giáo deco giữ lại MẮT LÊN MẶT DASH MỚI:
+    //   mặt trước dash z≈5.785±0.025 (bề ngoài 5.81) — mọi mesh mặt ở z>5.81.
+    // Nep chrome ngang seam mặt trước/kick panel (y seam 0.736)
+    const trim = new THREE.Mesh(new THREE.BoxGeometry(2.24, 0.025, 0.03), chrome);
+    trim.position.set(0, 0.736, 5.808);
+    interiorRoot.add(trim);
+    // Vong chrome quanh cluster (trái) + gauge phu (phai) — tâm trùng mesh
+    // cluster/gauge cua interior (o z5.83), vong nhont truoc 1 cho de thay.
+    const clusterTrim = new THREE.Mesh(new THREE.TorusGeometry(0.21, 0.018, 8, 24), chrome);
+    clusterTrim.position.set(-0.45, 0.99, 5.87);
+    interiorRoot.add(clusterTrim);
+    const gaugeTrim = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.014, 8, 20), chrome);
+    gaugeTrim.position.set(0.45, 0.98, 5.86);
+    interiorRoot.add(gaugeTrim);
+    // 2 khe gio turbine chrome (phai dash theo anh): khung + ruot toi mau;
+    // dong thoi: DICH cot volang chay runtime (interior dat x=+0.35 trong khi
+    // ghe tai xe x=-0.35 theo LHD — volang phai nam truoc nguc tai xe).
+    // ===== VÔ LĂNG: ẨN nhóm gốc + DỰNG LẠI bằng mesh bus.js =====
+    // Test thực tế: phép dời position trên nhóm interior KHÔNG hiện đúng chỗ
+    // (vô lăng vẫn bên phải = phía copilot). Thay vì thử các khác biến transform
+    // runtime, qui về đạo hàm chắc chắn: ẨN steerGroup gốc (visible=false —
+    // không phụ thuộc matrix đóng băng), dựng lại wheel+nan+column của bus.js
+    // NGAY TẠI ghế tài xế LHD (x=-0.35, z=5.1, nghiêng như gốc PI/2-0.2).
+    // Tìm nhóm gốc bằng torus vô lăng interior (local (0,0,0)); trims của
+    // bus.js (clusterTrim/gaugeTrim) cũng Torus nhưng position != 0 → lọc.
+    const steerRing = findMesh((gp, o) =>
+      o.geometry?.type === "TorusGeometry" &&
+      Math.abs(o.position.x) < 0.001 && Math.abs(o.position.y) < 0.001 &&
+      Math.abs(o.position.z) < 0.001);
+    if (steerRing?.parent) steerRing.parent.visible = false;
+    const wheelGroup = new THREE.Group();
+    // HOÁN VỊ theo test thực tế: vô lăng về x=+0.35 (chỗ ghế người chơi coi
+    // là "tài xế"); nhóm gốc interior đã ẨN nên chỉ có 1 vô lăng duy nhất.
+    wheelGroup.position.set(0.35, 1.1, 5.1);
+    const wRing = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 8, 16), dashDark);
+    wRing.rotation.x = Math.PI / 2 - 0.2;
+    wheelGroup.add(wRing);
+    for (let i = 0; i < 3; i++) {
+      const wAngle = (i / 3) * Math.PI * 2;
+      const wSpoke = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.025, 0.025), dashDark);
+      wSpoke.position.set(Math.sin(wAngle) * 0.12, 0, Math.cos(wAngle) * 0.12);
+      wSpoke.rotation.y = -wAngle;
+      wheelGroup.add(wSpoke);
+    }
+    const wColumn = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.3, 8), panelMat);
+    wColumn.position.set(0, -0.15, 0);
+    wColumn.rotation.x = 0.2;
+    wheelGroup.add(wColumn);
+    interiorRoot.add(wheelGroup);
+    for (const vx of [0.95, 0.62]) {
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.035, 14), chrome);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.set(vx, 1.0, 5.826);
+      interiorRoot.add(ring);
+      const core = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.03, 12), panelMat);
+      core.rotation.x = Math.PI / 2;
+      core.position.set(vx, 1.0, 5.831);
+      interiorRoot.add(core);
+    }
+    // Can so: tru + num (giua, thap — theo anh)
+    const gearStick = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.02, 0.2, 8), chrome);
+    gearStick.position.set(0.5, 0.75, 4.7);
+    interiorRoot.add(gearStick);
+    const gearKnob = new THREE.Mesh(new THREE.SphereGeometry(0.038, 10, 8), dashDark);
+    gearKnob.position.set(0.5, 0.87, 4.7);
+    interiorRoot.add(gearKnob);
+    // Panel cong tac ben phai — montag len mat truoc dash moi (z>5.81)
+    const switchPanel = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.16, 0.03), panelMat);
+    switchPanel.position.set(0.75, 0.80, 5.823);
+    interiorRoot.add(switchPanel);
+    // ===== GHE TAI XE + PHU XE: boc CAM/DEN khau thoi theo anh THACO =====
+    // Mesh ghe co san cua interior (cushion/back/headrest, z4.2-4.6, y<1.15):
+    // gán material runtime — khong doi hinh hoc, khong sua file cam.
+    // Man trung tam + cluster: scale RUNTIME (man goc 0.5x0.25 & cluster
+    // 0.35x0.2 la quá nho tu mat nguoi ngi z4.95 y1.22 nhìn; theo ảnh màn
+    // trung tâm = lớn màn dấu giữa dash. Gi nguyên vi tri, không doi file cấm.
+    const bigScreen = findMesh((gp, o) =>
+      Math.abs(gp.width - 0.5) < 0.03 && Math.abs(gp.height - 0.25) < 0.03 &&
+      Math.abs(gp.depth - 0.05) < 0.03 && Math.abs(o.position.x) < 0.12 &&
+      o.position.z > 5.3 && o.position.y > 0.9);
+    // QUAN TRỌNG: mesh của interior qua helper box() bị đóng băng matrix
+    // (matrixAutoUpdate=false + matrix cache sẵn) — scale.set() thật mà KHÔNG
+    // gọi updateMatrix() thì matrix không bao giờ được tính lại = scale chết.
+    if (bigScreen) { bigScreen.scale.set(1.4, 1.4, 1); bigScreen.updateMatrix(); }
+    const bigCluster = findMesh((gp, o) =>
+      Math.abs(gp.width - 0.35) < 0.03 && Math.abs(gp.height - 0.2) < 0.03 &&
+      o.position.x < -0.25 && o.position.x > -0.6 && o.position.z > 5.3);
+    if (bigCluster) { bigCluster.scale.set(1.25, 1.25, 1); bigCluster.updateMatrix(); }
+    const seatMeshes = findAllMeshes((gp, o) =>
+      (Math.abs(gp.width - 0.5) < 0.03 || Math.abs(gp.width - 0.45) < 0.03 ||
+       Math.abs(gp.width - 0.3) < 0.03 || Math.abs(gp.width - 0.25) < 0.03) &&
+      o.position.z < 4.65 && o.position.z > 4.15 &&
+      o.position.y > 0.2 && o.position.y < 1.15 &&
+      (Math.abs(o.position.x + 0.35) < 0.05 || Math.abs(o.position.x - 0.65) < 0.05));
+    const seatCam = new THREE.MeshStandardMaterial({ color: 0xd97b1f, roughness: 0.9, metalness: 0.05 });
+    const seatBlack = new THREE.MeshStandardMaterial({ color: 0x17171e, roughness: 0.85, metalness: 0.05 });
+    seatMeshes.forEach((m) => {
+      const headrestLike = m.geometry.parameters.width <= 0.32;
+      m.material = headrestLike ? seatBlack : seatCam;
+    });
+  }
+
   function setEmergencyBrake(on) { emergencyMaterial.emissiveIntensity = on ? 1.2 : 0; emergencyMaterial.opacity = on ? 1 : 0; }
   function dispose() {}
 
@@ -443,9 +816,13 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     group: a.root, texture, dimensions: BUS_DIMENSIONS, wheelRadius: WHEEL_RADIUS,
     setSteering: c.setSteering, setWheelRotation: c.setWheelRotation, setDoor: c.setDoor,
     setHeadlights, setTaillights, setIndicators, setSignalLeft, setSignalRight, setHazard,
-    setInteriorLed, setEmergencyBrake, update, dispose,
+    setInteriorLed, setEmergencyBrake, update, dispose, setDriverTelemetry,
     areLightsOn: false, doorOpen: false, interiorLedOn: false,
-    setInteriorReference: (interior) => { interiorRef = interior; }
+    setInteriorReference: (interior) => {
+      interiorRef = interior;
+      // cockpit chỉ tồn tại trên xe người chơi (interior của createBusInterior)
+      if (interior?.isObject3D) createDriverCockpit(interior);
+    }
   };
 
   return busObj;
@@ -462,6 +839,14 @@ export function loadNpcSkinList() {
     npcSkinPromise = Promise.resolve(npcSkinList);
     return npcSkinPromise;
   }
+
+  // Pre-defined skin list as fallback (since directory listing may not work on all servers)
+  const knownSkins = [
+    "bus (1).png", "bus (2).png", "bus (3).png", "bus (4).png",
+    "bus (5).png", "bus (6).png", "bus (7).png", "bus (8).png",
+    "bus (9).png", "bus (10).png", "bus (11).png", "bus (12).png",
+    "bus (13).png", "bus (14).png", "bus (15).png", "bus (16).png"
+  ];
 
   npcSkinPromise = fetch(NPC_SKIN_DIR, { cache: "no-store" })
     .then((r) => {
@@ -495,14 +880,15 @@ export function loadNpcSkinList() {
       npcSkinList = [...names].sort().map((n) => NPC_SKIN_DIR + n);
 
       if (npcSkinList.length === 0) {
-        npcSkinList = [BUS_TEXTURE_URL];
+        // Fallback to known skins
+        npcSkinList = knownSkins.map(n => NPC_SKIN_DIR + n);
       }
 
       return npcSkinList;
     })
     .catch((err) => {
-      console.warn('️ Cannot load skin list, using default:', err);
-      npcSkinList = [BUS_TEXTURE_URL];
+      console.warn('⚠ Cannot load skin list from server, using built-in list:', err);
+      npcSkinList = knownSkins.map(n => NPC_SKIN_DIR + n);
       return npcSkinList;
     });
 

@@ -41,9 +41,14 @@ const matLEDBlue = new THREE.MeshStandardMaterial({
     emissive: 0x2fb6ff,
     emissiveIntensity: 2.5
 });
+// Ban dau la 0xe8c9a0 (kem/kho mo) - tach lam 2 ton: giua kem, hai ben xanh.
+// That te thi matLEDNude chi chiem 1 day (centerLed) nhung chinh no la day to nhat
+// va nam ngay tren aisle, trong khi cac diem chieu cung mau kem la nhung diem manh nhat
+// (centerLedLight int 6 / dist 18). Ket qua: day LED nhin xanh ma anh sang len ghe,
+// tran, aisle lai mau TRANG. Dong bo het ve xanh 0x2fb6ff - mau da dung cho matLEDBlue.
 const matLEDNude = new THREE.MeshStandardMaterial({
-    color: 0x3a2a1a,
-    emissive: 0xe8c9a0,
+    color: 0x001118,
+    emissive: 0x2fb6ff,
     emissiveIntensity: 2.8
 });
 const matLEDRib = new THREE.MeshStandardMaterial({
@@ -66,6 +71,28 @@ const matScreen = new THREE.MeshStandardMaterial({ color: 0x0a0a1a, emissive: 0x
 
 function box(w, h, d, mat, x, y, z, group) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    m.updateMatrix();
+    m.matrixAutoUpdate = false;
+    group.add(m);
+    return m;
+}
+
+// Dùng cho táp-lô rebuild: như box() nhưng hỗ trợ nghiêng quanh trục X
+// (mặt trên táp-lô nghiêng nhẹ về kính trước) — rotate TRƯỚC updateMatrix
+// vì mesh bị freeze matrix (matrixAutoUpdate=false).
+function dashPiece(w, h, d, mat, x, y, z, group, rotX) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    m.rotation.x = rotX || 0;
+    m.updateMatrix();
+    m.matrixAutoUpdate = false;
+    group.add(m);
+    return m;
+}
+
+function dashPieceSphere(r, mat, x, y, z, group) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 6), mat);
     m.position.set(x, y, z);
     m.updateMatrix();
     m.matrixAutoUpdate = false;
@@ -102,25 +129,35 @@ function buildCabin(groups) {
     box(0.06, 1.8, 0.06, matShell, -WALL_X, 1.8, 5.8, BodyShell);
     box(0.06, 1.8, 0.06, matShell, WALL_X, 1.8, 5.8, BodyShell);
 
-    box(1.6, 0.3, 0.6, matDashboard, 0, 0.8, 5.3, Dashboard);
-    box(1.6, 0.08, 0.5, matDashboardPanel, 0, 1.0, 5.35, Dashboard);
-    box(0.5, 0.25, 0.05, matScreen, 0, 1.05, 5.6, Dashboard);
-    box(0.35, 0.2, 0.05, matCluster, -0.45, 1.05, 5.6, Dashboard);
-    box(0.25, 0.15, 0.05, matCluster, 0.45, 1.05, 5.6, Dashboard);
-    for (let i = 0; i < 4; i++) {
-        box(0.04, 0.04, 0.04, matBtn, -0.3 + i * 0.15, 0.85, 5.6, Dashboard);
-    }
+    // ===== TÁP-LÔ (REBUILD — hết dạng "bàn": không còn slab nổi + phần thả lơ lửng) =====
+    // Cấu trúc khối kín: mặt trên nghiêng nhẹ (đá cản gió vùng kính) + mặt trước
+    // đứng + vách hai bên xuống gần sàn + kick chỗ chân + knee console ghế lái.
+    // Toàn bộ nằm y 0.36..1.25, x ±1.13 (chạm cột cạnh), z 4.87..5.97 — sát kính
+    // (kính trước y1.1..2.5 @z6.0). Mắt tài xế (camera.js: x-0.35, y1.28, z4.75)
+    // vẫn nhìn xuyên qua trên mép dash về kính/đường.
+    // NEU COCKPIT RUNTIME (bus.js createDriverCockpit findMesh bám theo KÍCH
+    // THƯỚC mesh): màn 0.5×0.25×0.05, cluster 0.35×0.2×0.05, gauge 0.25×0.15×0.05
+    // và 4 nút 0.04³ — giữ nguyên kích thước, chỉ dời vị trí lên mặt dash mới.
+    {
+        dashPiece(2.26, 0.055, 1.10, matDashboardPanel, 0, 1.175, 5.42, Dashboard, 0.08); // mặt trên nghiêng
+        dashPiece(2.26, 0.38, 0.05, matDashboard, 0, 0.926, 5.785, Dashboard, 0);         // mặt trước (gắn đồng hồ/màn)
+        dashPiece(2.26, 0.37, 0.05, matDashboard, 0, 0.551, 5.785, Dashboard, 0);         // kick panel chỗ chân
+        dashPiece(0.05, 0.72, 0.92, matDashboard, -1.115, 0.875, 5.30, Dashboard, 0);     // vách trái (dừng trước cột kính z5.77)
+        dashPiece(0.05, 0.72, 0.92, matDashboard, 1.115, 0.875, 5.30, Dashboard, 0);      // vách phải (dừng trước cột kính z5.77)
+        // Knee console: gọn nhẹ, lùi sát kick panel (z5.65) để không nhô ra trước volang.
+        // Kích thước nhỏ: rộng 0.45, cao 0.25, sâu 0.18 — chỉ đỡ gối, không thành "bàn".
+        dashPiece(0.45, 0.25, 0.18, matDashboard, -0.35, 0.68, 5.65, Dashboard, 0);        // knee console ghế lái (gọn, sát dash)
 
-    const lever = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.25, 6), matDark);
-    lever.position.set(0.25, 0.9, 5.6);
-    lever.updateMatrix();
-    lever.matrixAutoUpdate = false;
-    Dashboard.add(lever);
-    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 6), matDark);
-    knob.position.set(0.25, 1.03, 5.6);
-    knob.updateMatrix();
-    knob.matrixAutoUpdate = false;
-    Dashboard.add(knob);
+        dashPiece(0.5, 0.25, 0.05, matScreen, 0, 0.94, 5.83, Dashboard, 0);               // màn trung tâm
+        dashPiece(0.35, 0.2, 0.05, matCluster, -0.45, 0.99, 5.83, Dashboard, 0);          // cluster tốc độ (trước T/L)
+        dashPiece(0.25, 0.15, 0.05, matCluster, 0.45, 0.98, 5.83, Dashboard, 0);          // gauge phụ (copilot)
+        for (let i = 0; i < 4; i++) {
+            dashPiece(0.04, 0.04, 0.04, matBtn, -0.3 + i * 0.15, 0.80, 5.82, Dashboard, 0);
+        }
+
+        dashPiece(0.015, 0.25, 0.015, matDark, 0.25, 0.9, 5.83, Dashboard, 0);            // cần gạt (montag lên mặt dash)
+        dashPieceSphere(0.025, matDark, 0.25, 1.055, 5.83, Dashboard);
+    }
 
     const steerGroup = new THREE.Group();
     steerGroup.position.set(0.35, 1.1, 5.1);
@@ -207,18 +244,68 @@ function buildPassengerCabin(groups) {
     }
 
     // ---------- ĐÈN POINT LIGHT ----------
-    const centerLight = new THREE.PointLight(0xe8c9a0, 0, 8, 1.5);
-    centerLight.position.set(0, CEILING_Y - 0.1, 0);
+    // Hệ thống đèn cabin thực tế: đèn chính giữa + đèn hai bên + đèn dải LED dọc cabin
+    // Tất cả đèn có distance đủ lớn để chiếu toàn bộ cabin 12m, decay = 1.0 (giảm dần tự nhiên)
+    
+    // Đèn chính giữa - chiếu toàn bộ cabin giữa.
+    // Gu luc 0xffeeb8 (trang am), nhung chinh no la diem manh nhat (int 6, dist 18, ngay giua tran)
+    // nen no quyet dinh mau anh sang tren ghe/aisle -> lam LED xanh phat ra anh TRANG.
+    // Doi sang mau xanh 0x88ccff da dung cua leftLedLight/rightLedLight de dong bo.
+    const centerLight = new THREE.PointLight(0x88ccff, 0, 18, 1.0);
+    centerLight.position.set(0, CEILING_Y - 0.15, 0);
     centerLight.name = "centerLedLight";
-    const leftLight = new THREE.PointLight(0x2fb6ff, 0, 6, 1.5);
-    leftLight.position.set(-0.22, CEILING_Y - 0.1, 0);
-    leftLight.name = "leftLedLight";
-    const rightLight = new THREE.PointLight(0x2fb6ff, 0, 6, 1.5);
-    rightLight.position.set(0.22, CEILING_Y - 0.1, 0);
-    rightLight.name = "rightLedLight";
     Lights.add(centerLight);
+
+    // Đèn hai bên (xanh dương nhẹ) - chiếu bên hông ghế ngồi
+    const leftLight = new THREE.PointLight(0x88ccff, 0, 16, 1.0);
+    leftLight.position.set(-0.8, CEILING_Y - 0.15, 0);
+    leftLight.name = "leftLedLight";
     Lights.add(leftLight);
+
+    const rightLight = new THREE.PointLight(0x88ccff, 0, 16, 1.0);
+    rightLight.position.set(0.8, CEILING_Y - 0.15, 0);
+    rightLight.name = "rightLedLight";
     Lights.add(rightLight);
+
+    // Đèn dải LED dọc cabin - phân bố đều mỗi 2m (7 đèn dọc cabin 12m)
+    const ledStripPositions = [5.0, 3.3, 1.6, 0, -1.6, -3.3, -5.0];
+    const ledStripLights = [];
+    
+    for (let i = 0; i < ledStripPositions.length; i++) {
+        const z = ledStripPositions[i];
+        
+        // Đèn dải giữa - dong bo mau xanh voi day LED (matLEDNude da doi sang 0x2fb6ff)
+        const centerStrip = new THREE.PointLight(0x88ccff, 0, 10, 1.0);
+        centerStrip.position.set(0, CEILING_Y - 0.08, z);
+        centerStrip.name = `centerLedStrip_${i}`;
+        centerStrip.userData.base = 1.0;
+        Lights.add(centerStrip);
+        ledStripLights.push(centerStrip);
+        
+        // Đèn dải hai bên (xanh dương nhẹ)
+        for (const side of [1, -1]) {
+            const sideStrip = new THREE.PointLight(0x88ccff, 0, 8, 1.0);
+            sideStrip.position.set(side * 0.7, CEILING_Y - 0.08, z);
+            sideStrip.name = `sideLedStrip_${side}_${i}`;
+            sideStrip.userData.base = 0.7;
+            Lights.add(sideStrip);
+            ledStripLights.push(sideStrip);
+        }
+    }
+
+    // Đèn đầu/đuôi cabin (gần cửa) - cường độ cao hơn
+    const frontLight = new THREE.PointLight(0x88ccff, 0, 12, 1.0);
+    frontLight.position.set(0, CEILING_Y - 0.1, L * 0.45);
+    frontLight.name = "frontLedLight";
+    Lights.add(frontLight);
+
+    const rearLight = new THREE.PointLight(0x88ccff, 0, 12, 1.0);
+    rearLight.position.set(0, CEILING_Y - 0.1, -L * 0.45);
+    rearLight.name = "rearLedLight";
+    Lights.add(rearLight);
+
+    // Lưu tham chiếu cho setInteriorLed
+    groups.ledStripLights = ledStripLights;
 
     // ---------- THÂN XE ----------
     const shellLen = L - 0.6;
@@ -408,41 +495,95 @@ export function createBusInterior() {
 
     const lights = [];
     const mkLight = (x, y, z, intensity) => {
-        const pl = new THREE.PointLight(0x9fd8ff, intensity, 5, 2);
+        const pl = new THREE.PointLight(0x9fd8ff, intensity, 8, 2);
         pl.position.set(x, y, z);
         pl.userData.base = intensity;
         groups.Lights.add(pl);
         lights.push(pl);
     };
-    mkLight(0, 3.25, 2.0, 0.6);
-    mkLight(0, 3.25, -3.0, 0.6);
-    mkLight(0, 2.0, 2.0, 0.5);
-    mkLight(0, 2.0, -3.0, 0.5);
-    mkLight(0, 2.6, 5.0, 0.4);
+    mkLight(0, 3.25, 2.0, 1.0);
+    mkLight(0, 3.25, -3.0, 1.0);
+    mkLight(0, 2.0, 2.0, 0.8);
+    mkLight(0, 2.0, -3.0, 0.8);
+    mkLight(0, 2.6, 5.0, 0.6);
 
     function setInteriorLed(on) {
-        matLEDBlue.emissiveIntensity = on ? 2.8 : 0;
-        matLEDNude.emissiveIntensity = on ? 3.0 : 0;
-        matLEDRib.emissiveIntensity = on ? 1.6 : 0;
-        matCluster.emissiveIntensity = on ? 0.6 : 0.1;
+        // Emissive materials cho dải LED mesh
+        matLEDBlue.emissiveIntensity = on ? 5.0 : 0;
+        matLEDNude.emissiveIntensity = on ? 5.5 : 0;
+        matLEDRib.emissiveIntensity = on ? 3.5 : 0;
+        matCluster.emissiveIntensity = on ? 1.0 : 0.1;
 
+        // --- PointLights chính ---
         const centerLight = groups.Lights.getObjectByName('centerLedLight');
         const leftLight = groups.Lights.getObjectByName('leftLedLight');
         const rightLight = groups.Lights.getObjectByName('rightLedLight');
-        const intensity = on ? 0.8 : 0;
-        if (centerLight) centerLight.intensity = intensity;
-        if (leftLight) leftLight.intensity = intensity * 0.7;
-        if (rightLight) rightLight.intensity = intensity * 0.7;
-        // three.js bo qua light invisible (projectObject) => tat that su,
-        // khong chi intensity = 0 (van ton shader/GPU dem).
-        const vis = !!on;
-        if (centerLight) centerLight.visible = vis;
-        if (leftLight) leftLight.visible = vis;
-        if (rightLight) rightLight.visible = vis;
+        const frontLight = groups.Lights.getObjectByName('frontLedLight');
+        const rearLight = groups.Lights.getObjectByName('rearLedLight');
 
+        const baseIntensity = on ? 1.0 : 0;
+
+        // BUG 6 FIX (game khuyng vai giay khi bam F/L):
+        // Truoc do moi lan `setInteriorLed()` de `light.visible = on` cho ~15 PointLight
+        // (center/left/right/front/rear + 7 ledStrip + mkLight). Trong Three.js r160
+        // (vendor/three), `numPointLights` + `numSpotLights` nam TRONG program cache key
+        // (three.module.js:20870, 21000) va `lights.state.version` tang khi length doi
+        // (:21927) -> `needsProgramChange = true` cho TOAN BO MeshStandardMaterial
+        // (:30188) -> `gl.linkProgram()` DONG BO ngay frame do (:20269, khong dung
+        // KHR_parallel_shader_compile). Tren Intel UHD N5000 = dot 1-3 giay.
+        // Giai thich "khong phai lan nao cung xay": chi tinh config nao chua co trong
+        // program cache -> lan dau xay dung dot, lan sau da cache thi menh.
+        // CACH SUA: GIU `visible = true` moi luc, chi tat bang `intensity = 0`.
+        //   - Den van duoc hien thi/bat tat binh thuong (khong loai bo hieu ung den)
+        //   - Light count CO DINH -> khong recompile -> khong dot
+        //   - Per-frame khong te hon baseline vi luc load toan bo den da visible = true
+        //   - Mesh LED (`obj.visible = on` o duoi) van GIU NGUYEN: mesh visibility
+        //     khong nam trong program key nen khong gay recompile.
+        const vis = true;   // giu den luon co trong render list (chi intensity moi doi)
+
+        // Đèn chính giữa (trắng ấm) - mạnh nhất
+        if (centerLight) { centerLight.intensity = baseIntensity * 6.0; centerLight.visible = vis; }
+        // Đèn hai bên (xanh dương nhẹ)
+        if (leftLight) { leftLight.intensity = baseIntensity * 5.0; leftLight.visible = vis; }
+        if (rightLight) { rightLight.intensity = baseIntensity * 5.0; rightLight.visible = vis; }
+        // Đèn đầu/đuôi cabin
+        if (frontLight) { frontLight.intensity = baseIntensity * 4.5; frontLight.visible = vis; }
+        if (rearLight) { rearLight.intensity = baseIntensity * 4.5; rearLight.visible = vis; }
+
+        // --- LED Strip Lights dọc cabin ---
+        if (groups.ledStripLights) {
+            groups.ledStripLights.forEach((pl, i) => {
+                if (!pl) return;
+                const factor = [0.7, 0.9, 1.0, 1.0, 1.0, 0.9, 0.7][i] || 0.8;
+                pl.intensity = baseIntensity * 5.0 * factor;
+                pl.visible = vis;
+            });
+        }
+
+        // --- Đèn đầu/đuôi cabin ---
+        if (frontLight) { frontLight.intensity = baseIntensity * 4.5; frontLight.visible = vis; }
+        if (rearLight) { rearLight.intensity = baseIntensity * 4.5; rearLight.visible = vis; }
+
+        // --- Emissive materials cho dải LED mesh ---
+        matLEDBlue.emissiveIntensity = on ? 5.0 : 0;
+        matLEDNude.emissiveIntensity = on ? 5.5 : 0;
+        matLEDRib.emissiveIntensity = on ? 3.5 : 0;
+        matCluster.emissiveIntensity = on ? 1.0 : 0.1;
+
+        // --- Các đèn phụ (mkLight) ---
         for (const pl of lights) {
-            pl.intensity = on ? pl.userData.base : 0;
+            pl.intensity = on ? pl.userData.base * 1.5 : 0;
             pl.visible = vis;
+        }
+
+        // --- LED strip meshes (dải LED nhìn thấy được) ---
+        const ledStrips = groups.Led;
+        if (ledStrips) {
+            ledStrips.traverse((obj) => {
+                if (obj.isMesh && (obj.material === matLEDBlue || obj.material === matLEDNude || obj.material === matLEDRib)) {
+                    obj.visible = on;
+                }
+            });
         }
     }
 

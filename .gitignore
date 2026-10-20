@@ -16,3 +16,6 @@ _generr.txt
 Thumbs.db
 .vscode/*
 !.vscode/settings.json
+
+# Agent tool state (khong phai cong viec du an)
+.opencode/

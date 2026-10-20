@@ -60,7 +60,19 @@ const DRIVER_TYPES = {
     NORMAL: { speedFactor: 0.95, followingDistance: 10, timeGap: 1.1, acceleration: 3.2, deceleration: 6.0, emergencyDecel: 9.0, reactionTime: 0.30, overtakeChance: 0.15, laneChangeAggro: 0.40, recklessChance: 0.06, roadsideStopChance: 0.004, yieldProbability: 0.5, isBus: false },
     FAST: { speedFactor: 1.08, followingDistance: 7, timeGap: 0.95, acceleration: 4.5, deceleration: 7.0, emergencyDecel: 10.0, reactionTime: 0.22, overtakeChance: 0.40, laneChangeAggro: 0.65, recklessChance: 0.15, roadsideStopChance: 0.002, yieldProbability: 0.25, isBus: false },
     AGGRESSIVE: { speedFactor: 1.15, followingDistance: 5, timeGap: 0.85, acceleration: 5.5, deceleration: 8.0, emergencyDecel: 11.0, reactionTime: 0.18, overtakeChance: 0.60, laneChangeAggro: 0.85, recklessChance: 0.28, roadsideStopChance: 0.001, yieldProbability: 0.2, isBus: false },
-    BUS_DRIVER: { speedFactor: 0.88, followingDistance: 12, timeGap: 1.2, acceleration: 2.6, deceleration: 5.5, emergencyDecel: 9.0, reactionTime: 0.32, overtakeChance: 0.10, laneChangeAggro: 0.30, recklessChance: 0.05, roadsideStopChance: 0.012, yieldProbability: 0.7, isBus: true, busStopProbability: 0.3 }
+    BUS_DRIVER: { speedFactor: 0.88, followingDistance: 12, timeGap: 1.2, acceleration: 2.6, deceleration: 5.5, emergencyDecel: 9.0, reactionTime: 0.32, overtakeChance: 0.10, laneChangeAggro: 0.30, recklessChance: 0.05, roadsideStopChance: 0.012, yieldProbability: 0.7, isBus: true, busStopProbability: 0.3 },
+    // "Học sinh cá biệt trốn tiết thực hành GDCD" — TỈ LỆ RẤT THẤP khi spawn
+    // (PERSONALITY_TABLE w:0.03). Phá cách nhưng vẫn gói trong vật lý IDM:
+    // không yield, bám sát, auto công cỏi. Tình huống cụ thể chọn 1/2/3 lúc spawn.
+    GDCD_SKIPPER: { speedFactor: 1.18, followingDistance: 4, timeGap: 0.70, acceleration: 5.8, deceleration: 7.5, emergencyDecel: 10.0, reactionTime: 0.20, overtakeChance: 0.55, laneChangeAggro: 0.95, recklessChance: 0.45, roadsideStopChance: 0, yieldProbability: 0.05, isBus: false, gdcd: true }
+};
+
+// Lời thoại của con "trốn tiết GDCD" — chỉ xuất hiện đúng khoảnh khắc tình
+// huống được kích hoạt, đẩy qua manager._emitDialogue (throttle 1.5s) -> HUD.
+const GDCD_QUOTES = {
+    HIT_RUN: '🚌 NPC: "Tao không biết gì hết!"',
+    OVERDRIVE: '🚌 NPC: "An toàn giao thông là hạnh phúc của mọi nhà. Nhưng nhà tao ở phía trước."',
+    OWNER: '🚌 NPC: "Đường này bố tao xây nên bố mày thích đi kiểu gì kệ tao."'
 };
 // Tên cũ (CAREFUL) vẫn chạy được — TrafficManager/ngoài kia có thể gọi tới.
 DRIVER_TYPES.CAREFUL = DRIVER_TYPES.CAUTIOUS;
@@ -74,6 +86,8 @@ export const AI_STATE = {
     // Trạng thái phụ
     PARKED: 'PARKED', TURNING: 'TURNING', YIELDING: 'YIELDING',
     STOPPED: 'STOPPED', RECOVERING: 'RECOVERING',
+    // Trốn hiện trường sau va chạm (chỉ đúng cho GDCD_SKIPPER case 1)
+    FLEEING: 'FLEEING',
     // Alias cũ (API đọc ngoài: AI_STATE.DRIVING / SLOWING / ...) trỏ về tên mới
     DRIVING: 'CRUISING', SLOWING: 'ACCELERATING', CHANGING_LANE: 'LANE_CHANGING',
     BUS_STOPPING: 'STOPPING', BUS_MERGING: 'MERGING'
@@ -103,8 +117,14 @@ export class TrafficAI {
             roadsideStopChance: base.roadsideStopChance,
             yieldProbability: base.yieldProbability,
             isBus: base.isBus,
-            busStopProbability: base.busStopProbability || 0
+            busStopProbability: base.busStopProbability || 0,
+            gdcd: base.gdcd || false
         };
+
+        // Tình huống "trốn tiết thực hành" của từng con: 1 = hit-run,
+        // 2 = vượt bất chấp, 3 = "đường này bố tao xây...". Chỉ 1 case/xe,
+        // chọn trong constructor (dựa seed nên không giật khi reload).
+        if (this.profile.gdcd) this.gdcdCase = 1 + Math.floor(this.random() * 3);
 
         this.isStatic = isStatic;
         this.state = isParked ? AI_STATE.PARKED : AI_STATE.CRUISING;
@@ -133,7 +153,10 @@ export class TrafficAI {
         this.busStopTimer = 0;
         this.reactTimer = 0;        // phản xạ trễ khi phanh (dùng trong _decide/_updateAccel)
 
-        this.collider = { x: 0, y: 0.5, z: 0, r: HALF_W + 0.6 };
+        // Collider radius: half width + small buffer for safety margin
+        // HALF_W = 1.25 (half of 2.5m bus width), +0.3 = 1.55m radius
+        // This is tighter than before (was HALF_W + 0.6 = 1.85) to prevent "phantom" collisions
+        this.collider = { x: 0, y: 0.5, z: 0, r: HALF_W + 0.3 };
         this.active = true;
         this.colId = -1;
         this.aiLevel = 'NEAR';
@@ -153,6 +176,14 @@ export class TrafficAI {
         this.stop = { phase: 'IDLE', timer: 0, hold: 0, offset: 0 };
         // --- Hành vi VN theo xác suất (traffic memory: cooldown thật) ---
         this.vn = { tailgateTimer: 0, boostTimer: 0 };
+        // --- NPC "học sinh cá biệt GDCD" (spawn hiếm, xem GDCD_SKIPPER) ---
+        // fleeT: TTL trốn chạy; manager despawn sớm khi fleeing.
+        // _gdcdT: đang ở giữa "tiktok" (giây còn lại); _gdcdCd: cd giữa các lần.
+        this.fleeing = false;
+        this.fleeT = 0;
+        this._gdcdT = 0;
+        this._gdcdCd = 12 + this.random() * 25;
+        this.speak = null;   // manager gán: (text) => this._emitDialogue(text)
         this._brakePending = false;
         this._lastVehicles = null;
         this._frame = null;
@@ -306,6 +337,10 @@ export class TrafficAI {
         this.turnTimer = 0;
         this.lc.phase = 'IDLE'; this.lc.kind = null; this.lc.cooldown = 0;
         this.stop.phase = 'IDLE'; this.stop.hold = 0;
+        // Reset state "học sinh cá biệt" khi xe tái thu hồi từ pool: fleeing
+        // sót lại sẽ khiến xe mới spawn bị despawn ngay frame kế (pop ảo).
+        this.fleeing = false; this.fleeT = 0; this._gdcdT = 0;
+        this._gdcdCd = 12 + this.random() * 25;
         this.pathNodes = []; this.currentPathIndex = 0; this._pathFails = 0;
         this._updatePositionFromSegment();
         this._updateVehicle();
@@ -329,11 +364,11 @@ export class TrafficAI {
 
         const meta = this.meta;
         const laneW = meta ? meta.laneW : 3.5;
-        const sameLat = laneW * 0.6;                       // cùng làn
-        // Cửa cứng = tổng bề rộng xe + 0.3m: xe LÁT qua làn mình, xe cản
+        const sameLat = laneW * 0.55;                       // cùng làn - tighter
+        // Cửa cứng = tổng bề rộng xe + 0.2m: xe LÁT qua làn mình, xe cản
         // ở làn kế (cách 3.5m) KHÔNG bị coi là xe dẫn -> vượt mới làm được.
-        const hardLat = BUS_W + 0.3;
-        const candLat = laneW * 0.6;
+        const hardLat = BUS_W + 0.2;
+        const candLat = laneW * 0.55;
         const mine = this.laneOffset;
         const candCenter = (this._scanLane >= 0 && meta) ? meta.laneCenter(this._scanLane) : null;
         const ux = f.ux, uz = f.uz, rx = f.rx, rz = f.rz;
@@ -503,6 +538,10 @@ export class TrafficAI {
         // re-center ở trên).
         this._updateStuckEscape(dt);
 
+        // 2c) "học sinh cá biệt GDCD": mọi override tốc độ/làn đặt ở đây,
+        // IDM (bước 3) vẫn là cổng vật lý cuối — không xuyên xe, không ra đường.
+        this._gdcdBehavior(dt);
+
         // 3) điều khiển dọc (IDM)
         this._updateAccel(dt);
 
@@ -633,6 +672,7 @@ export class TrafficAI {
     }
 
     _updateStateLabel() {
+        if (this.fleeing) { this.state = AI_STATE.FLEEING; return; }   // đang trốn: giữ nhãn
         if (this.stop.phase !== 'IDLE') return;      // FSM tấp lề tự giữ nhãn
         if (this.turning) { this.state = AI_STATE.TURNING; return; }
         if (this.lc.phase === 'COMMIT') { this.state = AI_STATE.LANE_CHANGING; return; }
@@ -660,6 +700,7 @@ export class TrafficAI {
     _considerLaneChange(dt) {
         const meta = this.meta, f = this._frame, lc = this.lc;
         if (!meta || !f || !meta.laneChangeAllowed) return;
+        if (this.fleeing) return;   // đang bỏ chạy khỏi hiện trường: đừng đùa
         if (this.turning || this.lane >= meta.lanesPerDir) return;
         if (lc.cooldown > 0 || this.overtakeCooldown > 0) return;
         // Không đổi làn khi còn <30m là tới hai đầu đoạn (gần ngã/ramp)
@@ -798,6 +839,7 @@ export class TrafficAI {
     // ------------------------------------------------- FSM tấp lề (lề đường)
     _maybeRequestStop(dt) {
         const meta = this.meta, f = this._frame;
+        if (this.fleeing) return;   // vừa gây tai nạn chạy trốn: KHÔNG tấp lề đàng tử tế
         if (!meta || !f) return;
         if (!meta.shoulderAllowed) return;
         if (this.lane !== 0 || this.turning) return;
@@ -923,6 +965,89 @@ export class TrafficAI {
         if (this.vn.boostTimer <= 0 && this.random() < p.recklessChance * dt * 0.2) {
             this.vn.boostTimer = 3 + this.random() * 5;         // vượt nhẹ giới hạn
         }
+    }
+
+    // ----------------------------------------- "học sinh cá biệt trốn GDCD"
+    // Spawn hiếm (GDCD_SKIPPER ~3%). Mỗi con chỉ biết đúng 1 tình huống:
+    //   1: gây tai nạn rồi bỏ chạy  (kích từ manager: gdcdHitRun khi va chạm)
+    //   2: vượt xe bất chấp         (bỏ cổng khe an toàn -> COMMIT ngay)
+    //   3: "đường này bố tao xây"   (đi sát tâm đường ép xe ngược chiều tách)
+    // Mọi mọi thứ vẫn là vỏ bus trên bitum: IDM + emergency brake không bao giờ
+    // cho xe xuyên nhau; laneOffset bị clamp trong _min/_maxOffset.
+    _gdcdBehavior(dt) {
+        const meta = this.meta, f = this._frame;
+        // Đang bỏ chạy (case 1): nhấn ga hết bình. TTL `fleeT` do manager đếm
+        // từng frame — AI không trừ nữa (tránh trừ đôi, TTL giữ đúng 12-18s).
+        // Đặt TRƯỚC guard FAR để xe fleeing vẫn được boost khi đã ra xa.
+        if (this.fleeing) {
+            if (meta && f) this.targetSpeed = Math.max(this.targetSpeed, meta.speedMs * 1.25);
+            this.state = AI_STATE.FLEEING;
+            return;
+        }
+        if (!meta || !f || this.aiLevel === 'FAR') return;
+        if (this._gdcdCd > 0) this._gdcdCd -= dt;
+        if (!this.gdcdCase) return;
+
+        // CASE 3 act đang diễn: trán bám TÂM đường (0.22*half — luôn phía
+        // đúng chiều nhờ _minOffset, ép xe ngược chiều phải phanh/tách).
+        // Đang giải cứu kẹt (_stuckT > 2 = 2 xe đối đầu cùng bám tâm) -> hạ
+        // act NGAY, kẻo override target của _updateStuckEscape = chết đạo. Đặt
+        // cd ngắn để act không kích lại ngay cùng frame (tránh lặp vô tận).
+        if (this.gdcdCase === 3 && this._stuckT > 2) {
+            this._gdcdT = 0;
+            this._gdcdCd = 2 + this.random() * 4;
+        }
+        if (this.gdcdCase === 3 && this._gdcdT > 0) {
+            this._gdcdT -= dt;
+            if (this._gdcdT <= 0) {
+                this._gdcdCd = 20 + this.random() * 25;
+            } else {
+                this.targetLaneOffset = clamp(meta.half * 0.22, this._minOffset(), this._maxOffset());
+            }
+            return;
+        }
+        if (this._gdcdCd > 0) return;
+
+        // CASE 3 kích: đường trống phía trước + đủ nhanh → "làm tới" 8-15s.
+        if (this.gdcdCase === 3 && !this.turning && this.speed > 6 &&
+            this.stop.phase === 'IDLE' && this.lc.phase === 'IDLE' &&
+            (this.scan.leaderGap === Infinity || this.scan.leaderGap > 40)) {
+            this._gdcdT = 8 + this.random() * 7;
+            this.speak?.(GDCD_QUOTES.OWNER);
+            return;
+        }
+
+        // CASE 2 kích: thấy xe chậm phía trước là vượt — KHÔNG chờ CHECK khe
+        // an toàn. Là mascot "An toàn giao thông là hạnh phúc của mọi nhà…".
+        if (this.gdcdCase === 2 && meta.laneChangeAllowed && meta.lanesPerDir >= 2 &&
+            this.lc.phase === 'IDLE' && this.stop.phase === 'IDLE' && !this.turning &&
+            this.speed > 4 && this.lane < meta.lanesPerDir - 1 &&
+            this.scan.leaderGap < Infinity && this.scan.leaderGap < this.profile.followingDistance * 4 &&
+            this.scan.leaderSpeed > 0) {
+            this.lc.phase = 'COMMIT';
+            this.lc.kind = 'OVERTAKING_MOVE';
+            this.lc.target = this.scan.leader || null;
+            this.lc.targetLane = Math.min(meta.lanesPerDir - 1, this.lane + 1);
+            this.lc.timer = 0; this.lc.badT = 0;
+            this.overtakeCooldown = 0;
+            this.speak?.(GDCD_QUOTES.OVERDRIVE);
+            this._gdcdCd = 16 + this.random() * 20;
+        }
+    }
+
+    // Manager gọi khi xe này VỪA va chạm THẬT (narrow overlap đã xác nhận).
+    // Chỉ case 1 phản ứng: "Tao không biết gì hết!" -> quay đầu 180° tại chỗ
+    // (_uTurn chuẩn của game), nhấn ga, fleeT TTL — manager despawn sớm.
+    gdcdHitRun() {
+        if (this.isStatic || this.fleeing || this.gdcdCase !== 1) return false;
+        this.fleeing = true;
+        this.fleeT = 12 + this.random() * 6;
+        this.stop.phase = 'IDLE'; this.stop.hold = 0;
+        this.lc.phase = 'IDLE'; this.lc.kind = null; this.lc.target = null;
+        this._uTurn();                                // quay đầu 180° tại chỗ
+        this.state = AI_STATE.FLEEING;
+        this.speak?.(GDCD_QUOTES.HIT_RUN);
+        return true;
     }
 
     // ---------------------------------------------------------- tích phân

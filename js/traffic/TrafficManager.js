@@ -23,16 +23,72 @@ import { createSeededRandom, clamp } from "../utils.js";
 const BUS_LEN_APPROX = 12.8;   // xe NPC dùng chung mesh bus (bus.js BUS_DIMENSIONS)
 const BUS_W_APPROX = 2.53;
 
+// ===== Bug 8 hệ lụy: static colliders (nhà/cây/cột/guardrail/xe bãi) =====
+// Broad-phase của collisionSystem là HÌNH TRÒN — r xe NPC 3 + r static tới 7 —
+// quá rộng so với khối thật: guardrail dài 8m, TÂM hộp cách tới 4m DỌC; xe NPC
+// chạy làn sát lề sẽ "hit" liên tục rồi phanh ảo, kẹt cả dòng xe phía sau.
+// Fix: narrow-phase SAT thật giữa OBB xe NPC (12.8×2.53 theo ai.heading) và
+// khối hit trước khi hãm — cùng convention trục với rectContact() của main.js:
+// hướng tới = (sin, cos), pháp tuyến = (cos, −sin). Chỉ tính khi broad-phase
+// trúng (hiếm) nên chi phí gần như bằng 0, dùng mảng tĩnh không cấp phát.
+//   * data.ai (xe bãi tĩnh của npc.js, chỉ có heading): OBB xe đúng chuẩn.
+//   * {hl, hw, rot} (nhà/guardrail): SAT đủ 4 trục.
+//   * tròn {r} (cây/cột): coi như hộp hl=hw=r — hl=hw thì bán kính hình chiếu
+//     hằng số theo mọi trục -> vẫn đúng khối tròn.
+//   * player: collisionSystem đăng ký r=4 KHÔNG data (chỉ là broad-phase);
+//     khối tròn r=4 quá rộng ngang (1.265+4+0.12 ≈ 5.4m) -> NPC phanh ảo ở
+//     làn kề. Dùng OBB xe thật theo heading hiện hành của playerActor.
+const _SAT_AXES_NPC = new Float64Array(8);
+function _narrowOverlap(ai, hit, playerRot) {
+    const d = hit.data;
+    let bhl, bhw, bRot;
+    if (d && d.ai) {
+        bhl = BUS_LEN_APPROX / 2;
+        bhw = BUS_W_APPROX / 2;
+        bRot = typeof d.ai.heading === 'number' ? d.ai.heading : 0;
+    } else if (!d && hit.type === 'player' && typeof playerRot === 'number') {
+        bhl = BUS_LEN_APPROX / 2;
+        bhw = BUS_W_APPROX / 2;
+        bRot = playerRot;
+    } else {
+        bhl = d && typeof d.hl === 'number' ? d.hl : hit.r;
+        bhw = d && typeof d.hw === 'number' ? d.hw : bhl;
+        bRot = d && typeof d.rot === 'number' ? d.rot : 0;
+    }
+    const ahl = BUS_LEN_APPROX / 2, ahw = BUS_W_APPROX / 2;
+    const aFx = Math.sin(ai.heading), aFz = Math.cos(ai.heading);
+    const bFx = Math.sin(bRot), bFz = Math.cos(bRot);
+    const dx = hit.x - ai.collider.x, dz = hit.z - ai.collider.z;
+    const axes = _SAT_AXES_NPC;
+    axes[0] = aFx; axes[1] = aFz; axes[2] = aFz; axes[3] = -aFx;
+    axes[4] = bFx; axes[5] = bFz; axes[6] = bFz; axes[7] = -bFx;
+    for (let i = 0; i < 4; i++) {
+        const nx = axes[i * 2], nz = axes[i * 2 + 1];
+        const required =
+              ahl * Math.abs(aFx * nx + aFz * nz)
+            + ahw * Math.abs(aFz * nx - aFx * nz)
+            + bhl * Math.abs(bFx * nx + bFz * nz)
+            + bhw * Math.abs(bFz * nx - bFx * nz)
+            + 0.12;   // nghe OBB_MARGIN của main.js: hãm hơi sớm hơn chút, đỡ lún
+        if (Math.abs(dx * nx + dz * nz) > required) return false;   // trục phân ly
+    }
+    return true;
+}
+
 // Lấy LOOKAHEAD từ TrafficAI (tránh duplicate constant)
 const LOOKAHEAD = 90;
 
-// Phân bố nhân cách (VN: phần lớn bình thường, thỉnh thoảng có ông thần)
+// Phân bố nhân cách (VN: phần lớn bình thường, thỉnh thoảng có ông thần).
+// GDCD_SKIPPER ~3%: "học sinh cá biệt trốn tiết thực hành GDCD" — hiếm,
+// mỗi con lưng lục đúng 1 tình huống (hit-run / vượt bất chấp / "đường
+// bố tao xây"). Không cộng dồn thành "hàng loạt tai nạn" — spawn cả làng.
 const PERSONALITY_TABLE = [
     { p: 'CAUTIOUS', w: 0.18 },
-    { p: 'NORMAL', w: 0.45 },
+    { p: 'NORMAL', w: 0.35 },
     { p: 'FAST', w: 0.17 },
     { p: 'AGGRESSIVE', w: 0.10 },
-    { p: 'BUS_DRIVER', w: 0.10 }
+    { p: 'BUS_DRIVER', w: 0.10 },
+    { p: 'GDCD_SKIPPER', w: 0.10 }
 ];
 const PERSONALITY_TOTAL = PERSONALITY_TABLE.reduce((a, b) => a + b.w, 0);
 
@@ -72,6 +128,10 @@ export class TrafficManager {
 
         this.stationSpawnQueue = [];
         this.stationSpawnTimer = 0;
+        // Thoại NPC ("học sinh cá biệt GDCD"): main.js gán onDialogue
+        // (t) => ui.toast(t). Throttle trong _emitDialogue để không spam HUD.
+        this.onDialogue = null;
+        this._dlgT = 0;
         // vị trí bãi ĐÃ đỗ — chung với BusStationManager (npc.js), xem
         // `isBayFree`/`markBayBusy` ở dưới.
         this._bayBusy = [];
@@ -84,7 +144,8 @@ export class TrafficManager {
         };
         this._prevPlayer = { x: 0, z: 0, valid: false };
 
-        this._bySeg = new Map();      // segId -> AI[] (cập nhật mỗi frame)
+        this._bySeg = new Map();      // segId -> AI[] (tái dùng mảng, stamp _f)
+        this._frameNo = 0;            // đếm frame: reset mảng reuse đúng 1 lần/frame
         
         // SPATIAL GRID cho tìm xe gần (O(1) query thay vì O(N))
         // Dùng cho TrafficAI._scan để chỉ quét xe trong bán kính LOOKAHEAD
@@ -130,6 +191,43 @@ export class TrafficManager {
         if (!s) return 0;
         const meta = (this.roadGraph.getLaneMeta) ? this.roadGraph.getLaneMeta(s) : null;
         return meta ? meta.density : 0.4;
+    }
+
+    // --- ZONE CAP: số xe cho phép KHÁC NHAU theo khu vực ---
+    // `_densityOf` (DENSITY_BY_CLASS) trước đây chỉ phân bổ VỊ TRÍ spawn — tức là
+    // "xe hay xuất hiện trên đường lớn hơn", nhưng con số `maxActive` vẫn là cap
+    // TOÀN CỤC nên phố và đường làng lúc nào cũng giống hệt nhau. Yêu cầu của lỗi:
+    //   - đường đô thị/QL/cao tốc phải ĐÔNG hơn khi phù hợp,
+    //   - đường nông thôn được ít hơn NHƯNG thế giới không được trống rỗng.
+    // Cách làm: mỗi ~0.5s lấy trung bình density của các đoạn đường quanh người
+    // chơi rồi nhân vào cap, có chặn trên là baseMax*2 — KHÔNG tăng xe bừa bãi,
+    // KHÔNG giảm xe đang chạy (chỉ đổi cửa spawn), và KHÔNG đụng thuật toán lái,
+    // va chạm hay tải skin NPC.
+    _updateZoneCap(dt, px, pz) {
+        this._zoneTimer = (this._zoneTimer || 0) + dt;
+        if (this._zoneTimer < 0.5) return;
+        this._zoneTimer = 0;
+        if (!this.isGraphMode || typeof this.roadGraph.segmentsNear !== 'function') {
+            this._zoneDensity = -1;
+            return;
+        }
+        const near = this.roadGraph.segmentsNear(px, pz, this.spawnDistance, s => this._segOk(s));
+        if (!near || !near.length) { this._zoneDensity = -1; return; }
+        let sum = 0, n = 0;
+        for (let i = 0; i < near.length; i++) {
+            const d = this._densityOf(near[i]);
+            if (d > 0) { sum += d; n++; }
+        }
+        this._zoneDensity = n ? (sum / n) : -1;
+    }
+
+    _zoneCapFor(baseMax) {
+        if (!(this._zoneDensity >= 0) || baseMax <= 0) return baseMax;
+        // density 0.20 (ruong/ALLEY)  -> 0.60x
+        // density 0.50 (duong lang)   -> 1.05x
+        // density 1.00 (QL1A/cao toc)  -> 1.50x
+        const f = 0.6 + 0.9 * Math.min(1, this._zoneDensity);
+        return Math.max(1, Math.min(Math.round(baseMax * f), baseMax * 2));
     }
 
     _pickPersonality() {
@@ -214,6 +312,7 @@ export class TrafficManager {
             seed: this.seed + this._nextAiId
         });
         ai.id = this._nextAiId++;
+        ai.speak = (t) => this._emitDialogue(t);   // NPC GDCD mở mồm qua HUD
         if (!ai.placeOnSegment(candidate.seg.id, candidate.dir, candidate.progress, null)) {
             this.pool.push(vehicle);          // không đặt được lên đường -> trả pool
             return null;
@@ -359,10 +458,16 @@ export class TrafficManager {
         if (!playerPos || !this.isGraphMode) return;
         this.lastPlayerPos = playerPos;
         const dt = Math.min(deltaTime, 0.1);
+        this._frameNo++;                    // stamp cho các mảng reuse mỗi frame
         this._updatePlayerActor(deltaTime);
         this.processStationQueue(deltaTime);
 
-        const maxActive = Math.max(0, Math.min(this.graphics.settings.maxActiveTraffic || 10, this.maxVehicles || 0));
+        const baseMax = Math.max(0, Math.min(this.graphics.settings.maxActiveTraffic || 10, this.maxVehicles || 0));
+        // ZONE CAP: cap dong theo khu vuc xung quanh nguoi choi — pho/QL/cao toc duoc
+        // dong hon, duong lang/ruong duoc it hon (xem _updateZoneCap / _zoneCapFor).
+        // No chi thay doi CUA SPAWN, khong giam so xe dang chay, khong dot FPS.
+        this._updateZoneCap(deltaTime, playerPos ? playerPos.x : 0, playerPos ? playerPos.z : 0);
+        const maxActive = this._zoneCapFor(baseMax);
 
         // SPATIAL GRID: cập nhật vị trí xe cho query O(1) trong _scan
         this._updateVehicleGrid();
@@ -373,15 +478,25 @@ export class TrafficManager {
         for (let i = 0; i < this.aiVehicles.length; i++) parts.push(this.aiVehicles[i]);
         parts.push(this.playerActor);
 
-        // index theo segment (spawn check + debug)
-        this._bySeg.clear();
+        // index theo segment (spawn check + debug) — TÁI DÙNG MẢNG thay vì
+        // clear() + cấp phát mới mỗi frame (churn GC trực tiếp nhức đầu trên
+        // máy yếu). Pre-pass reset mọi arr frame cũ: segment frame trước có xe
+        // mà frame này không -> phải RỖNG, không để "ghost xe" chặn spawn.
+        const frameNo = this._frameNo;
+        for (const a of this._bySeg.values()) {
+            if (a._f !== frameNo) a.length = 0;
+        }
         for (let i = 0; i < this.aiVehicles.length; i++) {
             const ai = this.aiVehicles[i];
             const key = ai.currentSegmentId;
             if (!key) continue;
             let arr = this._bySeg.get(key);
-            if (!arr) { arr = []; this._bySeg.set(key, arr); }
+            if (!arr) { arr = []; arr._f = frameNo; this._bySeg.set(key, arr); }
+            else if (arr._f !== frameNo) { arr.length = 0; arr._f = frameNo; }
             arr.push(ai);
+        }
+        if (this._bySeg.size > 512) {   // key của seg xa xưa: quét lười khi to
+            for (const [k, a] of this._bySeg) if (a._f !== frameNo) this._bySeg.delete(k);
         }
 
         for (let i = this.aiVehicles.length - 1; i >= 0; i--) {
@@ -390,8 +505,18 @@ export class TrafficManager {
 
             const dist = hypot2(ai.collider.x - playerPos.x, ai.collider.z - playerPos.z);
 
-            // --- despawn (dead-band: spawn max 340 < despawn >= 520) ---
-            if (dist > this.despawnDistance) {
+            // --- TRỐN HIỆN TRƯỞNG (GDCD case 1): despawn SỚM = "biến mất",
+            // chạy đủ xa (0.8*spawn) hoặc hết TTL 12-18s -> xoá, không đợi
+            // dead-band despawnDistance ~720m.
+            if (ai.fleeing) {
+                ai.fleeT -= dt;
+                if (ai.fleeT <= 0 || dist > Math.max(400, this.spawnDistance * 1.2)) {
+                    this._retireVehicle(i, ai);
+                    continue;
+                }
+            }
+            // --- despawn thường (dead-band: spawn max 340 < despawn >= 520) ---
+            else if (dist > this.despawnDistance) {
                 this._retireVehicle(i, ai);
                 continue;
             }
@@ -462,7 +587,8 @@ export class TrafficManager {
     // QUAN TRỌNG: collider hệ thống là HÌNH TRÒN bán kính 3m (mạng lưới 50m),
     // nên 2 xe song song cách 3.5m cũng "chạm". Phải kiểm lại bằng HỘP ĐỊNH
     // HƯỚNG (dọc theo trục xe) — nếu không NPC sẽ phanh ảo khi có xe ở làn kế,
-    // làm hỏng hết vụ vượt.
+    // làm hỏng hết vụ vượt. Với STATIC (nhà/guardrail/xe bãi — Bug 8) dùng
+    // _narrowOverlap() SAT thật: broad-phase hình tròn quá rộng so với khối.
     _checkCollision(ai) {
         if (!window.collisionSystem || ai.isStatic) return;
         const hit = window.collisionSystem.check(ai.collider.x, ai.collider.z, ai.collider.r, ai.colId, ['npc', 'static', 'player'], ai.collider.y, 4.0);
@@ -470,24 +596,48 @@ export class TrafficManager {
 
         const hx = hit.x - ai.collider.x;
         const hz = hit.z - ai.collider.z;
-        let ux = 1, uz = 0, rx = 0, rz = 1;
-        const f = ai._frame;
-        if (f) { ux = f.ux; uz = f.uz; rx = f.rx; rz = f.rz; }
-        const along = Math.abs(hx * ux + hz * uz);
-        const side = Math.abs(hx * rx + hz * rz);
-        if (along > BUS_LEN_APPROX * 0.95 || side > BUS_W_APPROX * 1.05) return;   // không thực sự chồng
 
-        if (hit.data && hit.data.ai) {
-            // Đang tự giải cứu xe chồng nhau (_stuckT): applyAvoidance sẽ xích
-            // target lệch rồi bị re-center giằng lại -> xe bị GHIM ở một bên,
-            // không tách ra được. Bỏ qua để escape tự xử lý.
-            if (ai._stuckT > 4) return;
+        if (hit.data && hit.data.ai && hit.data.ai.vehicle) {
+            // Xe NPC động: 2 OBB — tâm gần nhau khi thật sự chồng. Kiểm nhanh
+            // theo khung xe, giữ nguyên applyAvoidance (không đụng _uTurn).
+            let ux = 1, uz = 0, rx = 0, rz = 1;
+            const f = ai._frame;
+            if (f) { ux = f.ux; uz = f.uz; rx = f.rx; rz = f.rz; }
+            const along = Math.abs(hx * ux + hz * uz);
+            const side = Math.abs(hx * rx + hz * rz);
+            if (along > BUS_LEN_APPROX * 0.95 || side > BUS_W_APPROX * 1.05) return;   // không thực sự chồng
+            if (ai._stuckT > 4) return;   // đang tự giải cứu: applyAvoidance sẽ giằng lại
             ai.applyAvoidance(hx, hz, 1);
-        } else {
-            // xe tĩnh / xe của player: hãm tới khi hết chồng (không dịch toạ độ)
-            ai.speed = Math.max(0, ai.speed * 0.5);
-            ai.accel = Math.min(ai.accel, -2);
+            this._gdcdTryHitRun(ai);      // va chạm THẬT -> "học sinh cá biệt" có thể chạy trốn
+            return;
         }
+
+        // xe tĩnh (xe bãi) / môi trường / xe của player: hãm tới khi hết chồng
+        // (không dịch toạ độ) — CHỈ khi SAT khẳng định khối thật sự chồng.
+        // Player: dùng heading THẬT từ playerActor (đã refresh ngay đầu update).
+        const pRot = hit.type === 'player' ? this.playerActor.heading : undefined;
+        if (!_narrowOverlap(ai, hit, pRot)) return;
+        ai.speed = Math.max(0, ai.speed * 0.5);
+        ai.accel = Math.min(ai.accel, -2);
+        this._gdcdTryHitRun(ai);          // gây tai nạn (nhà/tĩnh/player) -> "Tao không biết gì hết!"
+    }
+
+    // Va chạm THẬT vừa được narrow-phase xác nhận: nếu ai là "học sinh cá
+    // biệt GDCD" tình huống 1 -> kích trốn chạy. gdcdHitRun tự chặn lặp
+    // (fleeing 1 lần/đời xe) và tự no-op cho personality thường.
+    _gdcdTryHitRun(ai) {
+        if (ai.isStatic || ai.fleeing) return;
+        ai.gdcdHitRun?.();
+    }
+
+    // Thoại NPC -> HUD (main.js gán this.onDialogue). Throttle 1.5s giữa các
+    // lần để nhiều con GDCD cùng hiện không dồn thành chợ mở phiên.
+    _emitDialogue(text) {
+        if (!this.onDialogue) return;
+        const now = performance.now();
+        if (now - this._dlgT < 1500) return;
+        this._dlgT = now;
+        this.onDialogue(text);
     }
 
     // ---------------------------------------------------------------- debug
@@ -505,6 +655,8 @@ export class TrafficManager {
                 targetSpeed: ai.targetSpeed,
                 state: ai.state,
                 personality: ai.personality,
+                gdcdCase: ai.gdcdCase || 0,
+                fleeing: !!ai.fleeing,
                 seg: ai.currentSegmentId,
                 segClass: m ? m.cls : '?',
                 lane: ai.lane,
@@ -558,9 +710,17 @@ export class TrafficManager {
         this.staticCount = 0;
     }
 
-    // SPATIAL GRID: cập nhật vị trí xe vào grid 100m
+    // SPATIAL GRID: cập nhật vị trí xe vào grid 100m — TÁI DÙNG MẢNG (stamp _f)
+    // thay vì clear() + cấp phát mới mỗi frame. Pre-pass reset các cell frame
+    // cũ: cell frame trước có xe mà frame này không -> phải RỖNG, không để
+    // "ghost xe" trong query trên trục cạnh. Grid chỉ bị ĐỌC (copy sang mảng
+    // out riêng trong _getNearbyVehicles) trong cùng frame, không giữ tham
+    // chiếu qua đêm -> an toàn khi tái sử dụng.
     _updateVehicleGrid() {
-        this._vehicleGrid.clear();
+        const frameNo = this._frameNo;
+        for (const a of this._vehicleGrid.values()) {
+            if (a._f !== frameNo) a.length = 0;
+        }
         const cellSize = this._vehicleGridCellSize;
         for (let i = 0; i < this.aiVehicles.length; i++) {
             const ai = this.aiVehicles[i];
@@ -569,8 +729,12 @@ export class TrafficManager {
             const cz = Math.floor(ai.collider.z / cellSize);
             const key = cx + ',' + cz;
             let arr = this._vehicleGrid.get(key);
-            if (!arr) { arr = []; this._vehicleGrid.set(key, arr); }
+            if (!arr) { arr = []; arr._f = frameNo; this._vehicleGrid.set(key, arr); }
+            else if (arr._f !== frameNo) { arr.length = 0; arr._f = frameNo; }
             arr.push(ai);
+        }
+        if (this._vehicleGrid.size > 1024) {   // cell lái qua lâu rồi: quét lười
+            for (const [k, a] of this._vehicleGrid) if (a._f !== frameNo) this._vehicleGrid.delete(k);
         }
     }
 

@@ -47,6 +47,15 @@ API COMPATIBILITY (contract của project — KHÔNG được đổi signature):
 CHỈ 2 FILE ĐƯỢC SỬA: tools/map_generator.py  +  js/map.js
 """
 
+# WINDOWS PYTHON EXECUTION NOTE:
+# Trên Windows, lệnh `python` có thể trỏ đến stub 0-byte tại C:\Windows\python
+# (do Microsoft Store Python), gây mở hộp thoại "Chọn ứng dụng".
+# CÁCH CHẠY ĐÚNG:
+#   py map_generator.py              # Dùng Python Launcher (khuyên dùng)
+#   py -3.13 map_generator.py        # Chỉ định version 3.13
+#   "C:\Users\<user>\AppData\Local\Programs\Python\Python313\python.exe" map_generator.py  # Đường dẫn đầy đủ
+# KHÔNG DÙNG: python map_generator.py  (có thể lỗi trên Windows 10/11)
+
 import json
 import math
 import heapq          # ROUTE ĐA DẠNG: Dijkstra tìm tuyến thay thế A->B
@@ -169,13 +178,20 @@ TOPO_LEGAL = {
                           # đều bám đường huyện cũ). Thiếu cạnh này thì đoạn
                           # `RURAL_LOCAL` đầu tiên tới gần KCN bị `add_segment`
                           # TỪ CHỐI => cả nhánh đường dừng lại ở đó, âm thầm.
-                          "RURAL_LOCAL"),
+                          "RURAL_LOCAL",
+                          # chiều ngược của n_6006 (xem TOPO_LEGAL["COMMERCIAL"])
+                          "COMMERCIAL"),
     "RESIDENTIAL":  ("RESIDENTIAL", "LOCAL", "ALLEY", "SERVICE", "COLLECTOR",
                       "PROVINCIAL_ROAD", "COMMERCIAL", "INTER_VILLAGE",
                       "AGRICULTURAL", "RURAL_LOCAL", "ARTERIAL", "NATIONAL"),
     "COMMERCIAL":   ("COMMERCIAL", "LOCAL", "ARTERIAL", "COLLECTOR", "PROVINCIAL_ROAD",
                      "SERVICE", "ALLEY", "RESIDENTIAL", "INTER_VILLAGE",
-                      "STATION_ACCESS"),
+                      "STATION_ACCESS",
+                      # Phố thương mại gặp đường vào KCN (n_6006): cụm dịch vụ
+                      # mọc cạnh KCN là bình thường ở VN. Thiếu cạnh này thì
+                      # quét node-level bỏ lọt vì `top_c=ARTERIAL` hợp pháp với
+                      # CẢ HAI class — đường chéo không ai đứng ra nhận lỗi.
+                      "INDUSTRIAL_ACCESS"),
     "AGRICULTURAL": ("AGRICULTURAL", "RURAL_LOCAL", "LOCAL", "ALLEY", "COLLECTOR",
                      "PROVINCIAL_ROAD", "INTER_VILLAGE", "RESIDENTIAL"),
 }
@@ -2132,7 +2148,15 @@ class MapGenerator:
         Danh sách index gần (x,z). Mở rộng vòng tìm TRƯỚC khi full-scan:
         corridor dài 500km (2000 điểm) nên full-scan mỗi lần gọi là O(n) và
         làm generator chậm kinh khủng (và JS sẽ lag khi load chunk).
+        Mirror JS (map.js:_accNear có nhánh fullLen<=400 quét thẳng): bảng
+        NHỎ (coast ~330 điểm) quét THẲNG toàn bảng — acc cho bảng nhỏ là
+        thừa, ring 6-cell còn chấm dừng sớm khi đã đủ want candidates =>
+        bỏ sót segment ở cell rìa => dCoast lệch ~30m (đo được tại
+        (-51164,-168076): ring thiếu idx 176, chọn idx 283 xa hơn 30m).
         """
+        poly = self.corridor if table is self._acc_corridor else self.coast
+        if len(poly) <= 400:
+            return list(range(len(poly)))
         out = []
         cx, cz = self._acc_cell(x, z)
         r = 0
@@ -2144,8 +2168,7 @@ class MapGenerator:
                     out.extend(table.get((cx + dx, cz + dz), ()))
             r += 1
         if len(out) < want:
-            out = list(range(len(self.corridor if table is self._acc_corridor
-                                 else self.coast)))
+            out = list(range(len(poly)))
         return out
 
     def _polyline_nearest(self, poly, x, z):
@@ -2310,6 +2333,275 @@ class MapGenerator:
         if drop:
             print("      xoa %d segment trung cap node" % len(drop))
         return len(drop)
+
+    # ======================================================================
+    # P79 — CONSOLIDATE LINK DUPS (2026-10-18): dọn sản phẩm dư của các pass
+    # nối muộn (_link_dangling_major / _heal_ramp_fragments /
+    # _connect_ramp_cluster_to_network). Chạy CUỐI topology, đúng sau
+    # `_weld_close_nodes(6.0, smart=True)` và trước `_fix_final_slopes`.
+    # Thứ tự thực thi (đã đo nguyên nhân trên bản export p78):
+    #   R1 hàn cặp node TRÙNG vị trí (d <= coin_d, dy <= max_dy) ngoài sân
+    #      bến: `_link_dangling_major` nối CÙNG VỊ TRÍ vật lý bằng 2 node
+    #      khác id (n_3504 ≡ n_3519, 2 strand "ket_QL1" s_11586/s_11587 ra
+    #      cùng n_3520) mà smart weld bỏ qua vì `_weld_pair` bị
+    #      `_crosses_major` chặn giả trên path trùng — weld coincident giữ
+    #      nguyên toạ độ 2 đầu nên không thể sinh giao cắt mới; theo đó
+    #      `_dedupe_edges` tự bỏ cạnh trùng sinh ra.
+    #   R2 cắn đuôi cụt vi mô: chuỗi <= spur_segs đoạn, mỗi đoạn < spur_len,
+    #      tổng <= spur_len, kết thúc node lá deg-1, KHÔNG sân bến, không
+    #      bridge/tunnel/INTERNAL/STATION_ACCESS, anchor còn >=2 connects —
+    #      khe 8..150m giữa `_link_dangling_major` (>150m) và
+    #      `_resolve_meaningless_dead_ends` (>600m) lọt, đo được chuỗi
+    #      RAMP_FIX_LO s_10336+s_10337 (3.84m) và stub ramp s_3476 (2.47m).
+    #   R3 gom spider `noi_ramp`: cùng anchor RAMP có >1 link RAMP
+    #      "noi_ramp" — giữ ray NGẮN NHẤT, xoá phần còn lại nếu target còn
+    #      >=2 connects sau khi xoá và đồ thị vẫn đúng số thành phần
+    #      (rollback nếu vi phạm). Đo p78: n_3465 7 ray 15m..1467m,
+    #      n_3477 6 ray, n_3476 3 ray — ray dài chồng lên mainline Vành đai
+    #      3 cỡ 1.5km (mesh giao rạp, z-fighting, graph dối).
+    # ======================================================================
+
+    def _count_graph_components(self):
+        """Số thành phần liên thông của graph hiện tại (node có segment)."""
+        parent = {}
+        for sg in self.segments.values():
+            parent.setdefault(sg["from"], sg["from"])
+            parent.setdefault(sg["to"], sg["to"])
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        roots = set()
+        for nid in parent:
+            roots.add(find(nid))
+        return len(roots)
+
+    def _weld_coincident_pairs(self, coin_d=1.0, max_dy=2.5):
+        """HÀN cặp node TRÙNG/ÁP TRÙNG vị trí (d <= coin_d, dy <= max_dy).
+
+        Tách R1 từ `_consolidate_link_dups` (P79.1) để pipeline có thể gọi
+        THÊM MỘT LẦN CHỐT HẠ ngay trước topo_report. Run thực tế đo được:
+        lần gọi giữa pipeline in '0 weld' nhưng bản export VẪN còn 6 cặp
+        trùng d=0 — n_3237 ≡ n_829 (IC Vĩnh Hảo: vòng ramp CHẠM đúng node
+        QL1 mà không nối, xe trên ramp không ra được QL1), n_3504 ≡ n_3519
+        (ket_QL1), n_3450 ≡ n_7748 + n_3451 ~ n_7747 (Dầu Giây), n_3199 ≡
+        n_588 (IC Cam Ranh QL1), n_2772 ≡ n_7756 (RAMP_FIX_HI).
+
+        KHÔNG skip theo `_in_station_zone`: ngưỡng d <= coin_d (1.0m)
+        KHÔNG thể đụng bãi đỗ (node bãi xe cách nhau 5.92m có chủ đích —
+        lý do tồn tại của zone skip ở `_weld_close_nodes`). Các cặp thực
+        đo trên nằm TRONG zone mở rộng (w+70/w+40) của school/fuel/
+        industrial nên weld theo zone bị chặn oan -> ramp interchange
+        đứng CHỒNG lên node QL1 mà KHÔNG nối (graph đứt tại nút, mesh
+        z-fight). Chỉ chừa node thuộc sân bãi (type) để không phá layout
+        đỗ. `check_major=False`: d<=1.0 giữ nguyên toạ độ 2 đầu nên
+        KHÔNG thể sinh giao cắt cắt ngang cao tốc mới (xem `_weld_pair`).
+
+        Trả số cặp đã hàn; hàn != 0 thì tự `_dedupe_edges` + `_prune_orphans`.
+        Caller cần `_build_node_seg_index()` lại khi tiêp tục đụng đồ thị.
+        """
+        yard_types = ("bus_bay", "staging", "station_gate", "facility",
+                      "internal")
+        self._build_node_seg_index()
+        grid = {}
+        for nid, nd in self.nodes.items():
+            if nd.get("type") in yard_types:
+                continue
+            grid.setdefault((int(nd["x"] // 2.0), int(nd["z"] // 2.0)),
+                            []).append(nid)
+        made = 0
+        for (cx, cz), ids in list(grid.items()):
+            for a in ids:
+                if a not in self.nodes:
+                    continue
+                for dx in (0, 1):
+                    for dz in (0, 1):
+                        cell = grid.get((cx + dx, cz + dz))
+                        if not cell:
+                            continue
+                        for b2 in cell:
+                            if b2 <= a or b2 not in self.nodes:
+                                continue
+                            na, nb = self.nodes[a], self.nodes[b2]
+                            d2 = (na["x"] - nb["x"]) ** 2 + \
+                                 (na["z"] - nb["z"]) ** 2
+                            if d2 > coin_d * coin_d:
+                                continue
+                            if abs(na.get("y", 0.0) - nb.get("y", 0.0)) > max_dy:
+                                continue
+                            if self._weld_pair(a, b2, check_major=False):
+                                made += 1
+                if a not in self.nodes:
+                    break
+        if made:
+            self._dedupe_edges()
+            self._prune_orphans()
+            print("      weld node trung (d<=%.1fm): %d cap" % (coin_d, made))
+        return made
+
+    def _consolidate_link_dups(self, coin_d=1.0, max_dy=2.5, spur_len=8.0,
+                               spur_segs=3, link_name="noi_ramp"):
+        def seg_len(sg):
+            p1 = self.nodes.get(sg["from"])
+            p2 = self.nodes.get(sg["to"])
+            if p1 is None or p2 is None:
+                return 1e9
+            return math.hypot(p1["x"] - p2["x"], p1["z"] - p2["z"])
+
+        self._build_node_seg_index()
+        r_stat = {"spur": 0, "weld": 0, "link": 0, "rollback": 0}
+        no_purge_class = ("TUNNEL", "INTERNAL", "STATION_ACCESS")
+
+        # ---------------- R1: hàn cặp node TRÙNG vị trí ----------------
+        # (P79.1) Toàn bộ logic hàn coincident tách sang
+        # `_weld_coincident_pairs()` — pipeline còn gọi thêm MỘT LẦN CHỐT
+        # HẠ trước topo_report (cặp trùng còn tồn tại nơi sau thì phải gần
+        # nơi cuối cùng). Hàm này tự `_dedupe_edges` + `_prune_orphans`
+        # khi hàn được.
+        r_stat["weld"] = self._weld_coincident_pairs(coin_d, max_dy)
+
+        # ---------------- R2: cắn chuỗi đuôi cụt vi mô ----------------
+        self._build_node_seg_index()
+        for _round in range(2):
+            did = 0
+            leaves = [nid for nid, nd in self.nodes.items()
+                      if len(nd["connections"]) == 1]
+            for leaf in leaves:
+                if leaf not in self.nodes:
+                    continue
+                nd = self.nodes.get(leaf)
+                if self._in_station_zone(nd["x"], nd["z"], 30.0):
+                    continue
+                cur = leaf
+                prev_sid = None
+                chain_sids, total = [], 0.0
+                anchor = None
+                while len(chain_sids) <= spur_segs:
+                    cn = self.nodes.get(cur)
+                    if cn is None:
+                        break
+                    conns = [s for s in self._segs_at(cur)
+                             if s in self.segments and s != prev_sid]
+                    if len(chain_sids) == 0:
+                        if len(conns) != 1:
+                            break
+                        sid = conns[0]
+                    else:
+                        cand = [s for s in conns if s != prev_sid]
+                        if len(cand) != 1:
+                            # node giữa nhiều nhánh — đây chính là anchor
+                            anchor = cur
+                            break
+                        sid = cand[0]
+                    sg = self.segments.get(sid)
+                    if sg is None:
+                        break
+                    other = sg["to"] if sg["from"] == cur else sg["from"]
+                    on = self.nodes.get(other)
+                    if on is None:
+                        break
+                    step = seg_len(sg)
+                    if step >= spur_len:
+                        anchor = cur
+                        break
+                    chain_sids.append(sid)
+                    total += step
+                    prev_sid = sid
+                    cur = other
+                if anchor is None or not chain_sids or total > spur_len:
+                    continue
+                if len(chain_sids) > spur_segs:
+                    continue
+                # con lai cua anchor = so connects GIU lai sau khi cat chuoi:
+                # chi dem segment tron chuoi THUC SU chot tai anchor (s_p1
+                # noi P1-P2 khong cham anchor khong tru)
+                at_anchor = sum(
+                    1 for sid in chain_sids
+                    if sid in self.segments and anchor in
+                    (self.segments[sid]["from"], self.segments[sid]["to"]))
+                if len(self.nodes[anchor]["connections"]) - at_anchor < 2:
+                    continue
+                bad = False
+                for sid in chain_sids:
+                    sg = self.segments.get(sid)
+                    if sg is None or sg.get("bridge") or sg.get("tunnel") or \
+                            sg["class"] in no_purge_class:
+                        bad = True
+                        break
+                if bad:
+                    continue
+                in_zone = any(self._in_station_zone(
+                    self.nodes[z]["x"], self.nodes[z]["z"], 30.0)
+                    for z in (leaf, anchor))
+                if in_zone:
+                    continue
+                for sid in chain_sids:
+                    self._remove_segment(sid)
+                r_stat["spur"] += 1
+                did += 1
+            self._prune_orphans()
+            self._build_node_seg_index()
+            if not did:
+                break
+
+        # ---------------- R3: gom spider noi_ramp ----------------
+        comp0 = self._count_graph_components()
+        groups = {}
+        for sid, s in list(self.segments.items()):
+            if s["class"] != "RAMP" or s.get("name") != link_name:
+                continue
+            a, b = s["from"], s["to"]
+            a_hi = self._node_touches_class(a, ("EXPRESSWAY", "TUNNEL"))
+            b_hi = self._node_touches_class(b, ("EXPRESSWAY", "TUNNEL"))
+            if a_hi == b_hi:
+                continue
+            anchor = b if a_hi else a
+            groups.setdefault(anchor, []).append(sid)
+        drops = []
+        for anchor, sids in groups.items():
+            if len(sids) < 2:
+                continue
+            sids.sort(key=lambda q: seg_len(self.segments[q]))
+            for q in sids[1:]:
+                tgt = self.segments[q]["to"] if \
+                    self.segments[q]["from"] == anchor else \
+                    self.segments[q]["from"]
+                others = [x for x in self.nodes[tgt]["connections"]
+                          if x != q]
+                if len(others) < 2:
+                    continue      # target sẽ thành deg-1 — giữ ray này
+                drops.append(q)
+        if drops:
+            rollback = [dict(self.segments[q]) for q in drops]
+            for q in drops:
+                self._remove_segment(q)
+            if self._count_graph_components() > comp0:
+                for lv in rollback:
+                    self.segments[lv["id"]] = lv
+                    for nidX in (lv["from"], lv["to"]):
+                        nX = self.nodes.get(nidX)
+                        if nX is not None and lv["id"] not in nX["connections"]:
+                            nX["connections"].append(lv["id"])
+                r_stat["rollback"] = 1
+                drops = []
+            else:
+                r_stat["link"] = len(drops)
+        self._prune_orphans()
+        self._dedupe_edges()
+        # dựng lại toàn bộ index cho khớp graph mới (nguồn sự thật: segments)
+        # — dùng `_sync_graph` chuẩn của pipeline: rebuild connections + 
+        # `_edge_index` + `_road_grid` + `road_bboxes` + `_nsi` trong 1 lần.
+        self._sync_graph()
+        # weld coincident có thể xoá node cổng/bến (nếu là cặp trùng) — refs
+        # access_node/anchor_node phải lành trước validate.
+        self._repair_station_refs()
+        print("      consolidate link dups: %.0f spur | %.0f weld | %.0f link "
+              "dedupe%s" % (r_stat["spur"], r_stat["weld"], r_stat["link"],
+                            " (ROLLBACK — giữ nguyên)" if r_stat["rollback"] else ""))
+        return r_stat
 
     # ======================================================================
     # SỬA GIAO LỠ (rule 6/8/12/59) — chạy CUỐI topology, trước validate
@@ -3037,6 +3329,9 @@ class MapGenerator:
             return False
         if self._in_station_zone(x, z, radius):
             return False
+        # SÀN NÚT GIAO: điểm nằm trong hull sàn ngã 3/ngã 4 -> cấm dựng.
+        if self._jhull_near(x, z, radius):
+            return False
         c0 = self._cell(x - radius - 32, z - radius - 32)
         c1 = self._cell(x + radius + 32, z + radius + 32)
         for cx in range(c0[0], c1[0] + 1):
@@ -3048,6 +3343,168 @@ class MapGenerator:
         if self.dist_to_coast(x, z) < 6.0:
             return False
         return True
+
+    # ------------------------------------------------------------------------
+    # SÀN NÚT GIAO — mirror `_buildJunctionIndex` của js/map.js.
+    #
+    # map.js dựng sàn ngã 3/ngã 4 bằng HULL giữa các nhánh (trim lặp tới hội
+    # tụ). Nếu khối nhà/cột/cây được đặt khi chưa biết vùng đó thì chúng nồi
+    # lên mặt đường — nhìn như nhà mọc giữa ngã tư (rule 15/22 nhìn bằng mắt).
+    # Precompute hull per-node (>= 3 nhánh, bỏ bridge/hầm) bằng CÙNG công
+    # thức, rồi `_is_space_clear` từ chối điểm nằm trong hull. Chỉ cần x/z —
+    # bỏ cao độ tới JS (hull 3D chỉ mang y kèm, phẳng thì trùng nhau).
+    # ------------------------------------------------------------------------
+    def _precompute_junction_hulls(self):
+        self._jhulls = []
+        self._jhull_bbox = []
+        self._jhull_grid = {}
+        if self._nsi is None:
+            self._build_node_seg_index()
+        for nid in list(self._nsi.keys()):
+            n = self.nodes.get(nid)
+            if n is None:
+                continue
+            branches = []
+            for sid in self._nsi.get(nid, ()):
+                sg = self.segments.get(sid)
+                if sg is None or sg.get("bridge") or sg["class"] == "TUNNEL":
+                    continue
+                a, b = self.nodes.get(sg["from"]), self.nodes.get(sg["to"])
+                if a is None or b is None:
+                    continue
+                # "from" luôn là node đang xét (khớp js:
+                # from = seg.from === nid ? a : b)
+                p0, p1 = (a, b) if sg["from"] == nid else (b, a)
+                dx, dz = p1["x"] - p0["x"], p1["z"] - p0["z"]
+                ln = math.hypot(dx, dz)
+                if ln < 0.5:
+                    continue
+                dx /= ln
+                dz /= ln
+                hw = (sg["width"] or 12) * 0.5
+                branches.append({"dx": dx, "dz": dz, "hw": hw, "len": ln,
+                                 "trim": hw})
+            if len(branches) < 3:
+                continue            # js: branches.length >= 3 mới dựng sàn
+            cap = max(br["hw"] for br in branches) * 2.0 + 5.0
+            poly = None
+            for _it in range(6):
+                pts = [(n["x"], n["z"])]
+                for br in branches:
+                    nx_, nz_ = -br["dz"], br["dx"]      # vuông góc trục nhánh
+                    pts.append((n["x"] + br["dx"] * br["trim"] + nx_ * br["hw"],
+                                n["z"] + br["dz"] * br["trim"] + nz_ * br["hw"]))
+                    pts.append((n["x"] + br["dx"] * br["trim"] - nx_ * br["hw"],
+                                n["z"] + br["dz"] * br["trim"] - nz_ * br["hw"]))
+                poly = self._hull2d(pts)
+                if len(poly) < 3:
+                    poly = None
+                    break
+                moved = False
+                for br in branches:
+                    t = self._ray_exit(poly, n["x"], n["z"], br["dx"], br["dz"])
+                    if t is None:
+                        continue
+                    nt = clamp(t, br["hw"] * 0.35, min(cap, br["len"] * 0.45))
+                    if abs(nt - br["trim"]) > 0.05:
+                        moved = True
+                        br["trim"] = nt
+                if not moved:
+                    break
+            if not poly or len(poly) < 3:
+                continue
+            xs = [p[0] for p in poly]
+            zs = [p[1] for p in poly]
+            idx = len(self._jhulls)
+            self._jhulls.append(poly)
+            self._jhull_bbox.append((min(xs), max(xs), min(zs), max(zs)))
+            c0 = self._cell(min(xs) - 2.0, min(zs) - 2.0)
+            c1 = self._cell(max(xs) + 2.0, max(zs) + 2.0)
+            for cx in range(c0[0], c1[0] + 1):
+                for cz in range(c0[1], c1[1] + 1):
+                    self._jhull_grid.setdefault((cx, cz), []).append(idx)
+        print("      san nut giao: %d hull (mirror map.js)" % len(self._jhulls))
+        return len(self._jhulls)
+
+    def _jhull_near(self, x, z, radius=0.0):
+        """Điểm có nằm trong hull sàn nút giao nào không (bbox + PIP)."""
+        if not getattr(self, "_jhull_grid", None):
+            return False
+        c0 = self._cell(x - radius - 2.0, z - radius - 2.0)
+        c1 = self._cell(x + radius + 2.0, z + radius + 2.0)
+        seen = set()
+        for cx in range(c0[0], c1[0] + 1):
+            for cz in range(c0[1], c1[1] + 1):
+                for idx in self._jhull_grid.get((cx, cz), ()):
+                    if idx in seen:
+                        continue
+                    seen.add(idx)
+                    bb = self._jhull_bbox[idx]
+                    if (x < bb[0] or x > bb[1] or z < bb[2] or z > bb[3]):
+                        continue
+                    if self._point_in_poly(x, z, self._jhulls[idx]):
+                        return True
+        return False
+
+    @staticmethod
+    def _hull2d(pts):
+        """Hull 2D (x, z) Andrew monotone chain — loại điểm thẳng hàng."""
+        pts = sorted(set(pts))
+        if len(pts) < 3:
+            return pts if len(pts) > 2 else []
+        lo = []
+        for p in pts:
+            while len(lo) >= 2 and ((lo[-1][0] - lo[-2][0]) * (p[1] - lo[-2][1])
+                                    - (lo[-1][1] - lo[-2][1])
+                                    * (p[0] - lo[-2][0])) <= 0:
+                lo.pop()
+            lo.append(p)
+        hi = []
+        for p in reversed(pts):
+            while len(hi) >= 2 and ((hi[-1][0] - hi[-2][0]) * (p[1] - hi[-2][1])
+                                    - (hi[-1][1] - hi[-2][1])
+                                    * (p[0] - hi[-2][0])) <= 0:
+                hi.pop()
+            hi.append(p)
+        return lo[:-1] + hi[:-1]
+
+    @staticmethod
+    def _ray_exit(poly, ox, oz, dx, dz):
+        """Tham số t mà ray (ox,oz)+t*(dx,dz) chạm mép polygon.
+
+        (ox,oz) nằm trong hull lồi nên điểm cắt duy nhất là điểm t>0 NHỎ
+        NHẤT — cùng nghĩa với `rayExitDist` của js (từ node ra tới mép).
+        """
+        best = None
+        for i in range(len(poly)):
+            ax, az = poly[i]
+            bx, bz = poly[(i + 1) % len(poly)]
+            ex, ez = bx - ax, bz - az
+            den = dx * ez - ex * dz
+            if abs(den) < 1e-9:
+                continue
+            r1, r2 = ax - ox, az - oz
+            t = (r1 * ez - ex * r2) / den
+            u = (dz * r1 - dx * r2) / den
+            if t > 1e-6 and 0.0 <= u <= 1.0:
+                if best is None or t < best:
+                    best = t
+        return best
+
+    @staticmethod
+    def _point_in_poly(x, z, poly):
+        """Even-odd ray casting — đủ dùng cho hull lồi."""
+        inside = False
+        j = len(poly) - 1
+        for i in range(len(poly)):
+            xi, zi = poly[i]
+            xj, zj = poly[j]
+            if (zi > z) != (zj > z):
+                tx = (xj - xi) * (z - zi) / (zj - zi) + xi
+                if x < tx:
+                    inside = not inside
+            j = i
+        return inside
 
     def _reserve(self, x, z, r):
         self.object_positions.append((x, z, r))
@@ -3472,6 +3929,9 @@ class MapGenerator:
         self._build_node_seg_index()
         self._reconnect_islands(max_len=3200.0)
         self._build_node_seg_index()
+        # FINAL AGGRESSIVE COMPONENT CONNECTION - target 20% more road length
+        self._final_connect_components()
+        self._build_node_seg_index()
         self._prune_orphans()
         self._repair_station_refs()
         self._sync_graph()
@@ -3496,6 +3956,33 @@ class MapGenerator:
         self._prune_orphans()
         self._repair_station_refs()
         self._sync_graph()
+        # --- CHỐT HẠ (P74): NGÃ GIAO CÒN THIẾU + CẶP NODE TRÙNG CHƯA HÀN ---
+        # `_resolve_crossings` cuối (@3422) chạy TRƯỚC 6 bước sinh/tách/nối
+        # đoạn: `_fix_internal_crossings`, `_heal_ramp_fragments`,
+        # `_reconnect_islands` (x3), `_final_connect_components` => mọi cặp
+        # CẮT X / đầu-chạm-giữa-đường (T) / cặp node TRÙNG do chúng sinh ra
+        # CHƯA AI XỬ ở lần resolve đó. Đo trên bản export:
+        #   64 cặp cắt X cách ngã giao thật >100m (audit T4 chỉ đếm ra 6 vì
+        #      so sánh id chuỗi "s_10044" <= "s_771" + set `cdone` chặn cặp
+        #      trùng — đếm lại bằng audit_geom.py: X=64, T=20, E=4),
+        #   20 cặp đầu-đường CHẠM thân đường (t≈0/1 — `_seg_cross` loại),
+        #   11 cặp node TRÙNG d=0 chưa hàn (weld cuối chạy trước @3422).
+        # Quy tắc GIỮ NGUYÊN: cắt -> tách -> HÀN; chỉ chạy thêm đúng 1 vòng
+        # ở cuối pipeline. `_weld_close_nodes(smart=True)` chỉ hàn cặp TRÙNG
+        # (d<=0.6m) hoặc cặp TIẾP NỐI (2 nhánh 2 bên gần ngược hướng, lệch
+        # <30°); bỏ cặp SONG SONG cùng hướng (hàn sẽ thành gãy khúc 180°)
+        # và cặp lệch cao >2.5m (tách mức / cầu vượt THẬT).
+        # `_fix_final_slopes` (dưới) chạy SAU nên mọi cặp hàn đổi cao độ tại
+        # nút được làm phẳng lại trước khi export.
+        self._resolve_crossings()
+        self._heal_t_touches()
+        self._weld_close_nodes(6.0, smart=True)
+        # P79: dọn sản phẩm dư của pass nối muộn — phải chạy TRƯỚC
+        # `_build_node_seg_index`/`_sync_graph` và TRƯỚC `_fix_final_slopes`
+        # (hàn node coincident đổi dốc tại nút, slopes pass sẽ làm phẳng lại).
+        self._consolidate_link_dups()
+        self._build_node_seg_index()
+        self._sync_graph()
         # DỐC PHẢI LÀ BƯỚC ĐỔI HÌNH HỌC CUỐI CÙNG. `_fix_final_slopes` chạy ở
         # 3216, nhưng TÁM bước mutate graph vẫn chạy SAU nó:
         #   `_fix_internal_crossings` 3230/3267, `_reconnect_islands` 3233/3252/
@@ -3511,6 +3998,19 @@ class MapGenerator:
         # cắt mới (validate cắt đường vẫn giữ nguyên kết quả).
         self._fix_final_slopes()
         self._build_node_seg_index()
+        # RURAL-RECLASS (9a): gán class đường xã vùng xa bằng ĐO TRÊN DATA
+        # CUỐI (rd > 3500m) thay vì biên lúc grow — đo mô phỏng trên p77
+        # cho ~373 đoạn đủ điều kiện. Chạy TRƯỚC heal T5 để heal thấy cặp
+        # đã sạch; guard legality tương tự heal nên không sinh vi phạm mới.
+        self._reclass_rural_local()
+        # T5-HEAL: pass chót của ma trận — pass muộn (weld/merge, nối mảnh rời)
+        # có thể kẹp cặp nối trái TOPO_LEGAL cuối pipeline mà chặn
+        # `add_segment` không thấy (đo p76: 5 node Đồng Nai - Long Khánh).
+        # Chạy TRƯỚC `_repair_route_refs`/`topo_report` để cả hai thấy bản đã
+        # chữa. Chỉ đổi class segment đầu lỗi, không đụng hình học/x/z/y
+        # => không cần chạy lại `_fix_final_slopes`, không đứt mạng.
+        self._heal_topo_matrix()
+        self._build_node_seg_index()
         # TUYẾN CHỈ ĐƯỢC SỬA SAU KHI ĐỒ THỊ ĐÃ ỔN. Trước đây nó chạy ở hai
         # chỗ 3121/3143 — lúc đó đồ thị còn rung (trước _heal_ramp_fragments,
         # _reconnect_islands, _fix_internal_crossings, _ensure_station_access)
@@ -3519,11 +4019,216 @@ class MapGenerator:
         # 1375/1525 cặp corridor kề nhau là 1-hop trên bản export) nhưng không
         # bước nào sửa tuyến nữa => routes.json chỉ còn 105 node / 34 km
         # (bản HEAD: 1708 node / 636 km), minimap và ETA tính trên đoạn 34 km.
+        # P79.1 CHỐT HẠ: hàn lần cuối các cặp node TRÙNG d<=1.0m còn sót.
+        # Run thật (audit deep-map 2026-10-18): lần consolidate giữa pipeline
+        # in '0 weld' nhưng export vẫn có 6 cặp d=0 (n_3237≡n_829 IC Vĩnh
+        # Hảo: ramp vòng CHẠM node QL1 mà KHÔNG nối; n_3504≡n_3519 ket_QL1;
+        # n_3450≡n_7748 + n_3451~n_7747 Dầu Giây; n_3199≡n_588 Cam Ranh;
+        # n_2772≡n_7756 RAMP_FIX_HI). Hàn TRƯỚC `_repair_route_refs`/
+        # `_repair_station_refs` để routes.json/stations.json không trỏ vào
+        # id vừa bị gộp; hàn đổi dốc cục bộ nên `_fix_final_slopes` chạy lại.
+        if self._weld_coincident_pairs():
+            self._fix_final_slopes()
+        # P82: đánh `pier` cho đoạn võng giữa (2 đầu sát đất, giữa cao 4-12m).
+        # Phải chạy SAU mọi bước đổi hình học (weld/repair/limit-slope) và chỉ
+        # 1 lần — pass này gọi `get_elevation` (~5ms/lần) nên không nhét vào
+        # `_fix_final_slopes` (hàm đó chạy 2-4 lần).
+        self._mark_hollow_piers()
+        self._repair_station_refs()
         self._repair_route_refs()
         print("      tuyen cuoi: %d node, %.1f km"
               % (len(self.route_node_ids),
                  self._measure_route_length(self.route_node_ids) / 1000.0))
         self.topo_report()
+
+    def _reclass_rural_local(self, min_rd=3500.0):
+        """
+        RURAL-RECLASS (9a): đường xã vùng xa phải CÓ MẶT thật trên mặt đường.
+
+        Bảng khai báo RURAL_LOCAL từ đầu, nhưng đo trên 3 gen (p76/p77)
+        KHÔNG đoạn nào mang class đó: phân vùng `_context_road_class` chia
+        theo khoảng cách tới thôn/thị trấn chỉ trả LOCAL cho vùng xa (p77:
+        cả 419 đoạn LOCAL đều nằm >1500m, 329 đoạn >4000m từ thôn gần nhất)
+        — class tồn tại trên giấy, mất trên mặt đường (rule 9a-mat). Biên
+        classification lúc grow rung theo đường đi ngẫu nhiên của nhánh nên
+        dồn thang theo biên là đoán mò (p77: biên 3500->2500 chỉ dời 12 đoạn
+        từ INTER về LOCAL, RURAL vẫn 0).
+
+        Pass này đo TRÊN DATA CUỐI (điểm giữa segment, node đã weld/settled):
+
+            LOCAL / INTER_VILLAGE cách thôn/thị trấn gần nhất > 3500m
+            -> RURAL_LOCAL (đường xã thật: rd 3500m+ ngoài vùng thôn)
+
+        Kèm 2 luật:
+          - MIGRATION SPEC: width/lanes/speed/hierarchy/twoWay đổi theo
+            ROAD_CLASS của class mới (giống heal T5 — đo p77: reclass mà
+            không đổi spec thì P7-geo báo "nhe hon/it hon/toc do").
+          - GUARD legality CẢ 2 ĐẦU: ma trận KHÔNG cho RURAL_LOCAL chạm
+            RAMP / SERVICE / STATION_ACCESS / INTERNAL / COMMERCIAL /
+            EXPRESSWAY / TUNNEL — đoạn nào 2 đầu còn kèm class đó thì SKIP
+            (5 đoạn, đo mô phỏng trên p77), không cưỡng chế -> sinh T5 mới.
+            Endpoint node sân bến/cơ sở (bus_bay/staging/station_gate/
+            facility/internal) cũng SKIP — đường trong sân không thuộc xã.
+        """
+        NO_RURAL_NEIGHBOR = ("RAMP", "SERVICE", "STATION_ACCESS", "INTERNAL",
+                             "COMMERCIAL", "EXPRESSWAY", "TUNNEL")
+        SKIP_NODE_TYPES = ("bus_bay", "staging", "station_gate",
+                           "facility", "internal")
+        changed = 0
+        skipped = 0
+        for sid, s in sorted(self.segments.items()):
+            if s.get("class") not in ("LOCAL", "INTER_VILLAGE"):
+                continue
+            a = self.nodes.get(s["from"])
+            b = self.nodes.get(s["to"])
+            if not a or not b:
+                continue
+            mx, mz = (a["x"] + b["x"]) * 0.5, (a["z"] + b["z"]) * 0.5
+            rd, _rname = self._nearest_rural_anchor(mx, mz)
+            if rd is None or rd <= min_rd:
+                continue
+            if any(n.get("type") in SKIP_NODE_TYPES for n in (a, b)):
+                skipped += 1
+                continue
+            ocs = set()
+            for nid in (s["from"], s["to"]):
+                on = self.nodes.get(nid)
+                if not on:
+                    continue
+                for xid in on.get("connections", ()):
+                    if xid != sid and xid in self.segments:
+                        ocs.add(self.segments[xid].get("class"))
+            if not all("RURAL_LOCAL" in TOPO_LEGAL.get(c, ())
+                       for c in ocs):
+                skipped += 1
+                continue
+            s["class"] = "RURAL_LOCAL"
+            _spec = ROAD_CLASS["RURAL_LOCAL"]
+            s["width"] = float(_spec["width"])
+            s["lanes"] = int(_spec["lanes"])
+            s["speed"] = _spec["speed"]
+            s["hierarchy"] = _spec["hierarchy"]
+            s["twoWay"] = bool(_spec["twoWay"])
+            s.setdefault("type", ROAD_TYPE_OF_CLASS.get("RURAL_LOCAL", "local"))
+            changed += 1
+        if changed:
+            self._build_node_seg_index()
+        print("      reclass rural: %d doan LOCAL/INTER -> RURAL_LOCAL "
+              "(rd > %.0fm) | skip %d"
+              % (changed, min_rd, skipped))
+
+    def _heal_topo_matrix(self):
+        """
+        T5-HEAL: dọn viên sót ma trận TOPO_LEGAL TẠI CUỐI topology.
+
+        Toàn bộ đường phải qua chặn `add_segment` (đo được 101 cặp bị chặn
+        đúng), nhưng các pass chạy SAU đó — weld/merge node muộn, nối mảnh
+        rời (`_reconnect_islands`, `_heal_t_touches`, `_ensure_station_access`
+        ...) — có thể dựng cạnh KÉO lớp thấp đâm thẳng mặt cao hơn mà không
+        qua điểm chặn nào (đo p76: 5 node Đồng Nai - Long Khánh, tầng đầu
+        toàn sinh muộn từ pass phụ: ARTERIAL đâm EXPRESSWAY, COMMERCIAL đâm
+        NATIONAL, ALLEY đâm ARTERIAL).
+
+        Sửa theo ĐÚNG NGHIÃA VN của cặp đó, thay class của segment đầu gây
+        lỗi (giữ nguyên hình học — width/lanes/y không đổi):
+          chạm EXPRESSWAY/TUNNEL -> RAMP    (nút giao: lối dẫn hợp ma trận;
+                                             "cấm chạm mặt bằng" là luật —
+                                             dẫn RAMP là cách hợp pháp duy nhất)
+          chạm NATIONAL          -> SERVICE (trạm xăng/bệnh viện mép QL vào
+                                             bằng lối vào Service là thiết kế
+                                             thật, matrix cho phép)
+          chạm ARTERIAL          -> LOCAL  (hẻm/en mở ra phố chính bóng)
+        Node có segment bridge được miễn (giao khác mức, giống audit T5).
+        THROW McKHEO: nếu reclass sẽ sinh cặp bất hợp pháp tại node PHÍA KIA
+        (đầu mảnh đó bám phố hẻm thực sự) thì SKIP + ghi log — không lan
+        truyền sai lệch theo chuỗi, không dấu vết yên lặng.
+        """
+        HEAL_BY_HIGH = {
+            "EXPRESSWAY": "RAMP", "TUNNEL": "RAMP",
+            "NATIONAL": "SERVICE", "ARTERIAL": "LOCAL",
+        }
+        healed = 0
+        healed_ex = []
+        skipped = []
+        for _rnd in range(4):
+            any_change = False
+            for nid, n in sorted(self.nodes.items()):
+                seg_ids = [sid for sid in n.get("connections", ())
+                           if sid in self.segments]
+                if not seg_ids or \
+                        any(self.segments[sid].get("bridge") for sid in seg_ids):
+                    continue                       # giao khác mức: hợp pháp
+                seg_cls = {sid: self.segments[sid].get("class")
+                           for sid in seg_ids}
+                present = set(seg_cls.values())
+                changed = None
+                for c in sorted(present):
+                    for d in sorted(present):
+                        if d == c or c in TOPO_LEGAL.get(d, ()):
+                            continue               # cặp này hợp lệ
+                        rc = TOPO_RANK.get(c, 4)
+                        rd = TOPO_RANK.get(d, 4)
+                        low_cls, high_cls = (c, d) if rc >= rd else (d, c)
+                        tgt = HEAL_BY_HIGH.get(high_cls)
+                        if tgt is None:
+                            skipped.append((nid, low_cls, high_cls,
+                                            "khong co luat heal cho %s" % high_cls))
+                            continue
+                        if not all(tgt in TOPO_LEGAL.get(oc, ())
+                                   for oc in present if oc != low_cls):
+                            skipped.append((nid, low_cls, high_cls,
+                                            "%s lai le chang %s" % (tgt, high_cls)))
+                            continue
+                        for sid, cls in seg_cls.items():
+                            if cls != low_cls:
+                                continue
+                            s = self.segments[sid]
+                            other = s["to"] if s["from"] == nid else s["from"]
+                            on = self.nodes.get(other)
+                            if not on:
+                                continue
+                            ocs = set(self.segments[x].get("class")
+                                      for x in on.get("connections", ())
+                                      if x != sid and x in self.segments)
+                            if all(tgt in TOPO_LEGAL.get(oc, ())
+                                   for oc in ocs):
+                                s["class"] = tgt
+                                # MIGRATE SPEC THEO CLASS MỚI: reclass mà chỉ
+                                # đổi `class` thì width/lanes/speed cũ còn dính
+                                # class cũ => audit P7-geo báo "toc do SERVICE
+                                # (35>25)" / "nhe hon LOCAL (4.5<5.0)" (đo p77).
+                                # Lớp đường quyết định mặt bằng: đổi spec đúng
+                                # bằng của class mới, giữ hình học x/z/y.
+                                _spec = ROAD_CLASS.get(tgt)
+                                if _spec:
+                                    s["width"] = float(_spec["width"])
+                                    s["lanes"] = int(_spec["lanes"])
+                                    s["speed"] = _spec["speed"]
+                                    s["hierarchy"] = _spec["hierarchy"]
+                                    s["twoWay"] = bool(_spec["twoWay"])
+                                    s.setdefault("type", ROAD_TYPE_OF_CLASS.get(tgt, "local"))
+                                healed += 1
+                                any_change = True
+                                changed = "%s %s->%s @%s" % (sid, low_cls,
+                                                             tgt, nid)
+                                if len(healed_ex) < 6:
+                                    healed_ex.append("%s %s->%s @%s"
+                                                     % (sid, low_cls, tgt, nid))
+                                break
+                            skipped.append((nid, low_cls, high_cls,
+                                            "dau kia khong hop %s" % tgt))
+                            continue
+                        if changed:
+                            break
+                    if changed:
+                        break
+            if not any_change:
+                break
+        if healed:
+            self._build_node_seg_index()
+        print("      heal topo: %d segment reclass %s | skip: %s"
+              % (healed, healed_ex[:4],
+                 ("%d vd %s" % (len(skipped), skipped[:2])) if skipped else "0"))
 
     def _repair_route_refs(self):
         """
@@ -3948,6 +4653,10 @@ class MapGenerator:
                 off = 1600.0 + 900.0 * math.sin(p[2] / 9000.0)
                 r3_pts.append((p[0] + nx * off, p[1] + nz * off, p[2], p[3], 0.0))
             if len(r3_pts) > 2:
+                # CẮT VÒNG TỰ CẮT trước khi export (xem _strip_self_loops):
+                # đo được 10 điểm tự cắt / 9 góc quặt >150° nếu để nguyên.
+                r3_pts = self._strip_self_loops(r3_pts)
+            if len(r3_pts) > 2:
                 self._add_expressway_chain(r3_pts, "Vanh_dai_3", anchor_s_map,
                                            [("Vành đai 3 TP.HCM", RING3_RANGE[0],
                                              RING3_RANGE[1], "operational")])
@@ -4060,6 +4769,47 @@ class MapGenerator:
                             lerp(pts[i - 1][3], pts[i][3], t), 0.0))
             out.append(pts[i])
         return out
+
+    @staticmethod
+    def _strip_self_loops(pts, max_cut=60):
+        """
+        CẮT VÒNG PIGTAIL của một polyline TỰ CẮT CHÍNH NÓ.
+
+        Vành đai 3 dựng bằng OFFSET corridor (normal lấy 1 mẫu + dao động
+        `off = 1600 + 900*sin(s/9000)`) nên polyline tự cắt: đo được 10 điểm
+        tự cắt / 9 góc quặt >150° (tới 177°) — export thành đường xoắn ruột
+        dê, xe phải "quay đầu" giữa vành đai.
+
+        Cách sửa: duyệt cặp đoạn KHÔNG kề cắt nhau (dùng đúng `_seg_cross`),
+        cắt bỏ ĐOẠN GIỮA `del pts[i+1..j]` — polyline vẫn LIỀN MẠCH, hướng
+        đi giữ nguyên, phần bỏ là vòng lặp vật lý không thể chạy. Lặp tới hết.
+
+        Guard: tối đa `max_cut` lần cắt; nếu phần còn lại < 4 điểm thì trả
+        NGUYÊN BẢN (thà giữ nguyên còn hơn phá tuyến).
+        """
+        pts = list(pts)
+        for _ in range(max_cut):
+            hit = None
+            n = len(pts) - 1
+            for i in range(n):
+                a, b = pts[i], pts[i + 1]
+                for j in range(i + 2, n):
+                    if i == 0 and j == n - 1:
+                        continue            # 2 đầu tuyến mở: không cắt
+                    if _seg_cross((a[0], a[1]), (b[0], b[1]),
+                                  (pts[j][0], pts[j][1]),
+                                  (pts[j + 1][0], pts[j + 1][1])):
+                        hit = (i, j)
+                        break
+                if hit is not None:
+                    break
+            if hit is None:
+                return pts
+            i, j = hit
+            if (j - i) < 2 or (len(pts) - (j - i)) < 4:
+                return list(pts)
+            del pts[i + 1:j + 1]
+        return pts
 
     def _nearest_coast(self, x, z):
         best, pt = float("inf"), (x, z)
@@ -4538,8 +5288,12 @@ class MapGenerator:
                     t = k / float(steps)
                     sm = t * t * (3.0 - 2.0 * t)
                     bulge = math.sin(math.pi * t) * L * 0.12
-                    rx = ax + dx * sm + ux * off + px * bulge
-                    rz = az + dz * sm + uz * off + pz * bulge
+                    # `off` là DỊCH NGANG (tag ±1 = 2 ramp cùng 1 nhánh nằm 2
+                    # bên), KHÔNG phải dịch dọc: bản cũ `ux*off` làm 2 ramp
+                    # lệch nhau 30m DỌC đường nhưng chỉ ~1m NGANG => bện vào
+                    # nhau suốt 811/840m (đo được s_3364×s_3377).
+                    rx = ax + dx * sm + px * (off + bulge)
+                    rz = az + dz * sm + pz * (off + bulge)
                     if dist(rx, rz, bx, bz) < MIN_SEG_LEN * 1.5:
                         break
                     rn, _ = self.determine_region(rz, rx)
@@ -4718,36 +5472,93 @@ class MapGenerator:
         """
         Tuyến nhánh cấp vùng: rẽ ra khỏi QL1 tại node thật (junction thật),
         đi về thôn xóm / đường ven biển / đường tỉnh.
+        Cải tiến: dựa vào settlement density, terrain, không dùng lưới cố định.
         """
         rng = stable_rng(self.seed, "secondary")
         made = 0
-        ql_nodes = [(nid, n) for nid, n in self.nodes.items() if n["type"] == "highway"]
+        
+        # Collect candidate junction nodes on QL1/National roads
+        ql_nodes = [(nid, n) for nid, n in self.nodes.items() 
+                    if n["type"] in ("highway", "junction", "national_road", "arterial", "crossing")]
+        
+        # Also consider settlement centers as road targets
+        settlement_nodes = []
+        for b in self.buildings:
+            if b.get("type", "").startswith("thi_tran") or b.get("type", "").startswith("xa_") or b.get("type", "").startswith("phuong_"):
+                # Find nearest road node to this settlement
+                nearest = self._nearest_road_node(b["x"], b["z"], max_dist=2000.0)
+                if nearest:
+                    settlement_nodes.append((nearest, b["x"], b["z"]))
+        
         # Limit to reasonable number of secondary roads
-        max_secondary = 120
-        for i in range(0, len(ql_nodes), 12):
-            nid, node = ql_nodes[i]
+        max_secondary = 180  # Increased for +20% coverage
+        
+        # Priority 1: Connect settlements to nearest QL1
+        for snid, sx, sz in settlement_nodes:
+            if made >= max_secondary:
+                break
+            p = self.region_params(sx, sz)
+            if p["mountain"] > 0.85:
+                continue
+            
+            # Find best QL1 connection point
+            ql_pool = [(nid, n) for nid, n in self.nodes.items() 
+                       if n["type"] in ("highway", "junction", "national_road", "arterial", "crossing")]
+            ql_node, d = self._nearest_node_on(sx, sz, ql_pool, 5000.0)
+            if ql_node and d < 3000.0:
+                # Grow road from QL1 towards settlement
+                ang = math.atan2(sz - self.nodes[ql_node]["z"], sx - self.nodes[ql_node]["x"])
+                length = d * 1.2  # slightly longer than direct distance
+                self._grow_road(ql_node, ang, length, level=0, rng=rng, p=p)
+                made += 1
+        
+        # Priority 2: Inter-settlement connections (local roads between towns)
+        for i, (nid1, x1, z1) in enumerate(settlement_nodes):
+            if made >= max_secondary:
+                break
+            for nid2, x2, z2 in settlement_nodes[i+1:]:
+                d = math.hypot(x2 - x1, z2 - z1)
+                if 1500.0 < d < 8000.0:  # Reasonable inter-town distance
+                    p = self.region_params((x1+x2)/2, (z1+z2)/2)
+                    if p["mountain"] < 0.6 and rng.random() < 0.3 * p["density"]:
+                        ang = math.atan2(z2 - z1, x2 - x1)
+                        self._grow_road(nid1, ang, d * 1.1, level=0, rng=rng, p=p)
+                        made += 1
+                        break
+        
+        # Priority 3: Coastal/river roads following geography
+        coastal_candidates = [nid for nid, n in ql_nodes 
+                             if abs(self.dist_to_coast(n["x"], n["z"])) < 3000.0]
+        for nid in coastal_candidates[::5]:  # Every 5th coastal node
+            if made >= max_secondary:
+                break
+            p = self.region_params(self.nodes[nid]["x"], self.nodes[nid]["z"])
+            if p["coastal"] > 0.5 and rng.random() < 0.25:
+                # Road parallel to coast
+                coast_angle = self._estimate_coast_angle(nid)
+                if coast_angle is not None:
+                    side = rng.choice([-1.0, 1.0])
+                    ang = coast_angle + side * (math.pi / 2) + rng.uniform(-0.2, 0.2)
+                    length = rng.uniform(2000.0, 5000.0) * (0.5 + 0.5 * p["density"])
+                    self._grow_road(nid, ang, length, level=0, rng=rng, p=p)
+                    made += 1
+        
+        # Priority 4: Fill gaps in sparse areas (adaptive, not grid-based)
+        sparse_nodes = [(nid, n) for nid, n in self.nodes.items()
+                       if n["type"] in ("junction", "national_road", "arterial", "crossing")
+                       and len([c for c in n["connections"] 
+                               if self.segments.get(c, {}).get("class") in 
+                                  ("COLLECTOR", "PROVINCIAL_ROAD", "LOCAL", "RURAL_LOCAL")]) < 2]
+        for nid, node in sparse_nodes:
             if made >= max_secondary:
                 break
             p = self.region_params(node["x"], node["z"])
-            if p["mountain"] > 0.85:
-                continue
-            chance = 0.12 + 0.35 * p["density"]
-            if rng.random() > chance:
-                continue
-            # hướng gần vuông góc trục QL, phía đất liền ưa thích
-            prev_nodes = [c for c in node["connections"]]
-            if not prev_nodes:
-                continue
-            s0 = self.segments[prev_nodes[0]]
-            o = self.nodes[s0["from"] if s0["to"] == nid else s0["to"]]
-            dx, dz = node["x"] - o["x"], node["z"] - o["z"]
-            L = math.hypot(dx, dz) or 1.0
-            base = math.atan2(dz, dx)
-            side = rng.choice([-1.0, 1.0])
-            ang = base + side * (math.pi / 2) + rng.uniform(-0.35, 0.35)
-            length = rng.uniform(300.0, 1200.0) * (0.6 + 0.8 * p["density"])
-            made += 1
-            self._grow_road(nid, ang, length, level=0, rng=rng, p=p)
+            if p["density"] > 0.3 and p["mountain"] < 0.5 and rng.random() < 0.15:
+                # Find direction with least existing roads
+                ang = self._find_sparse_direction(nid, rng)
+                length = rng.uniform(1500.0, 3000.0) * (0.5 + 0.5 * p["density"])
+                self._grow_road(nid, ang, length, level=0, rng=rng, p=p)
+                made += 1
 
     def _crosses_station(self, x1, z1, x2, z2):
         """Đoạn có cắt qua SAN BẾN XE (reserved, cấm đường công cộng) không?"""
@@ -5432,6 +6243,81 @@ class MapGenerator:
                         return True
         return False
 
+    def _count_major_crossings(self, x1, z1, x2, z2,
+                               classes=("NATIONAL", "ARTERIAL", "EXPRESSWAY",
+                                        "TUNNEL")):
+        """
+        Số ĐIỂM CẮT NGANG (đã gộp cụm <60m) của đoạn (x1,z1)-(x2,z2) với
+        đường cấp cao. Dùng để chặn "TỈNH LỘ BÓNG MA": chord nối 2 thị trấn
+        men theo QL1 (lệch vài chục mét) — QL1 dao động sin nên cắt chord
+        HÀNG CHỤC lần dù từng điểm cắt đều hợp lệ về ma trận.
+        Đo trên bản export: tinh_lo_Dau_Giay_Long_Thanh cắt QL1 39 lần,
+        Ba_Bau_Tan_Thanh 23 lần, Nam_Tuy_Hoa_Dong_Hoa 33 lần (0 nút giao).
+
+        Quét theo bước 128m DỌC chord + 3×3 ô mỗi bước (thay vì quét cả bbox
+        như `_crosses_expressway`): chord tối đa 34km, bbox quét sẽ nổ hàng
+        chục nghìn ô — đi dọc chỉ ~vài nghìn ô là đủ (điểm cắt luôn nằm
+        trong ô của chính nó, mà ô đó được phủ bởi bước đi gần nhất).
+        """
+        rx, rz = x2 - x1, z2 - z1
+        L = math.hypot(rx, rz)
+        if L < 1.0:
+            return 0
+        steps = int(L / 128.0) + 1
+        seen = set()
+        pts = []
+        for k in range(steps + 1):
+            t = k / float(steps)
+            cx0, cz0 = self._cell(x1 + rx * t, z1 + rz * t)
+            for cx in range(cx0 - 1, cx0 + 2):
+                for cz in range(cz0 - 1, cz0 + 2):
+                    for sid in self._road_grid.get((cx, cz), ()):
+                        if sid in seen:
+                            continue
+                        seen.add(sid)
+                        seg = self.segments.get(sid)
+                        if not seg or seg["class"] not in classes:
+                            continue
+                        a = self.nodes[seg["from"]]
+                        b = self.nodes[seg["to"]]
+                        vx, vz = b["x"] - a["x"], b["z"] - a["z"]
+                        den = rx * vz - rz * vx
+                        if abs(den) < 1e-9:
+                            continue
+                        qx, qz = a["x"] - x1, a["z"] - z1
+                        tt = (qx * vz - qz * vx) / den
+                        u = (qx * rz - qz * rx) / den
+                        if not (0.02 < tt < 0.98 and 0.02 < u < 0.98):
+                            continue
+                        px, pz = x1 + rx * tt, z1 + rz * tt
+                        if any(dist(px, pz, q[0], q[1]) < 60.0 for q in pts):
+                            continue
+                        pts.append((px, pz))
+        return len(pts)
+
+    def _link_grade_ok(self, x1, z1, x2, z2, max_grade=0.16, step=150.0):
+        """False nếu terrain dọc link có cửa sổ dốc > max_grade.
+
+        CÙNG CHUẨN với `_add_link_road` (bỏ link nếu sạn dốc >16%): đường
+        nối không theo được địa hình thì đừng dựng — slope limiter chỉ cắt/
+        đắp được vài mét, gặp vách là chịu. Dùng cho cặp tỉnh lộ: đo được
+        Van_Gia-Tay_Hoa (31.9km, cửa sổ 18.8%) sinh đoạn 404m dốc 20% sau
+        khi vá nền => `validate` chặn export.
+        """
+        L = dist(x1, z1, x2, z2)
+        if L < 1.0:
+            return True
+        n = max(3, int(L / step))
+        sl = L / n
+        prev_e = self.get_elevation(x1, z1)
+        for k in range(1, n + 1):
+            t = k / float(n)
+            e = self.get_elevation(lerp(x1, x2, t), lerp(z1, z2, t))
+            if abs(e - prev_e) / sl > max_grade:
+                return False
+            prev_e = e
+        return True
+
     # ----------------------------------------------------------------------
     # TẦNG TOPOLOGY — engine. Tất cả hàm ở đây CHỈ đọc state, không giả vờ
     # kiểm tra: `topo_link_ok` là nguồn sự thật duy nhất cho "nối được".
@@ -5704,6 +6590,83 @@ class MapGenerator:
             if not lst:
                 self._obj_grid.pop(cell, None)
 
+    # ===== Helper methods for improved secondary networks =====
+    
+    def _nearest_road_node(self, x, z, max_dist=5000.0):
+        """Find nearest road node of significant class to a point."""
+        best_d = max_dist
+        best_nid = None
+        # Only consider nodes on major/collector roads
+        major_classes = ("NATIONAL", "ARTERIAL", "COLLECTOR", "PROVINCIAL_ROAD", 
+                         "EXPRESSWAY", "RAMP", "INTER_VILLAGE", "INDUSTRIAL_ACCESS")
+        for nid, n in self.nodes.items():
+            if n.get("type") not in ("junction", "highway", "national_road", "arterial", "crossing", "facility", "station_gate"):
+                continue
+            # Check if node has major road connections
+            has_major = any(self.segments.get(cid, {}).get("class") in major_classes 
+                          for cid in n.get("connections", []))
+            if not has_major:
+                continue
+            d = math.hypot(n["x"] - x, n["z"] - z)
+            if d < best_d:
+                best_d = d
+                best_nid = nid
+        return best_nid
+
+    def _estimate_coast_angle(self, nid):
+        """Estimate coastline direction near a node."""
+        node = self.nodes.get(nid)
+        if not node:
+            return None
+        # Sample coast points nearby
+        coast_pts = []
+        for cx, cz in self.coast:
+            d = math.hypot(cx - node["x"], cz - node["z"])
+            if d < 5000.0:
+                coast_pts.append((cx, cz))
+        if len(coast_pts) < 3:
+            return None
+        # Fit line to coast points
+        coast_pts.sort(key=lambda p: math.atan2(p[1] - node["z"], p[0] - node["x"]))
+        # Use endpoints of coast segment near node
+        p1 = coast_pts[0]
+        p2 = coast_pts[-1]
+        return math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+
+    def _find_sparse_direction(self, nid, rng):
+        """Find direction with least road density around a node."""
+        node = self.nodes.get(nid)
+        if not node:
+            return rng.uniform(0, 2*math.pi)
+        
+        # Sample 8 directions, count nearby road length in each
+        dirs = [i * math.pi / 4 for i in range(8)]
+        best_dir = dirs[0]
+        min_density = float('inf')
+        
+        for d in dirs:
+            # Sample points along this direction
+            density = 0.0
+            for dist_sample in [500, 1000, 1500, 2000]:
+                sx = node["x"] + math.cos(d) * dist_sample
+                sz = node["z"] + math.sin(d) * dist_sample
+                # Count road segments nearby
+                cx, cz = self._cell(sx, sz)
+                for sdx in (-1, 0, 1):
+                    for sdz in (-1, 0, 1):
+                        for sid in self._road_grid.get((cx + sdx, cz + sdz), ()):
+                            seg = self.segments.get(sid)
+                            if seg:
+                                a = self.nodes.get(seg["from"])
+                                b = self.nodes.get(seg["to"])
+                                if a and b:
+                                    density += math.hypot(b["x"] - a["x"], b["z"] - a["z"])
+            if density < min_density:
+                min_density = density
+                best_dir = d
+        
+        return best_dir + rng.uniform(-0.15, 0.15)
+
     def _add_segment_like(self, old, n1, n2, **kw):
         """
         Tạo lại segment `old` với 2 đầu mới, GIỮ NGUYÊN mọi thuộc tính.
@@ -5764,7 +6727,7 @@ class MapGenerator:
         return False
 
     def _split_seg_at_point(self, sid, px, pz, n_type="junction",
-                            allow_close_junction=False):
+                            allow_close_junction=False, ignore_nodes=()):
         """
         Chính xác 1 segment `sid` tại điểm (px,pz) (điểm đã nằm trên segment).
 
@@ -5798,9 +6761,12 @@ class MapGenerator:
                                                 min_deg=3)
             if _jd < CROSS_MISS:
                 return None
-        # (b) 8m tới node trên chính đoạn này — tránh cụt vô nghĩa
+        # (b) 8m tới node trên chính đoạn này — tránh cụt vô nghĩa.
+        # `ignore_nodes`: node của ĐƯỜNG KHÁC đang CHẠM đúng điểm này (ca
+        # T-touch, `_heal_t_touches`) — tách xong hàn liền nên không sinh cụt.
         if self._node_on_seg_near(mx, mz, a, b, 8.0,
-                                  ignore=(seg["from"], seg["to"])):
+                                  ignore=(seg["from"], seg["to"]) +
+                                         tuple(ignore_nodes)):
             return None
         # GIỮ PROFILE: node mới lấy cao độ nội suy 2 đầu, KHÔNG gọi
         # get_road_datum. Hàm chạy SAU _grade_roads nên terrain tham bằng
@@ -6004,6 +6970,101 @@ class MapGenerator:
                   % (fixed, jog))
         return fixed, jog
 
+    def _touch_seg_of(self, nid, tol=0.75, max_dy=1.5):
+        """
+        Đoạn nào (KHÔNG dính node `nid`) chạy QUA vị trí node đó (<= tol)?
+
+        Trả (sid, px, pz) — điểm chiếu trên đoạn — hoặc None. Bỏ cặp lệch
+        cao > max_dy (cầu vượt / tách mức THẬT, không phải chạm mặt bằng).
+        """
+        n = self.nodes.get(nid)
+        if n is None:
+            return None
+        x, z = n["x"], n["z"]
+        best = None
+        c0 = self._cell(x - tol, z - tol)
+        c1 = self._cell(x + tol, z + tol)
+        seen = set()
+        for cx in range(c0[0], c1[0] + 1):
+            for cz in range(c0[1], c1[1] + 1):
+                for sid in self._road_grid.get((cx, cz), ()):
+                    if sid in seen:
+                        continue
+                    seen.add(sid)
+                    seg = self.segments.get(sid)
+                    if seg is None:
+                        continue
+                    if seg["from"] == nid or seg["to"] == nid:
+                        continue
+                    a, b = self.nodes[seg["from"]], self.nodes[seg["to"]]
+                    dx, dz = b["x"] - a["x"], b["z"] - a["z"]
+                    l2 = dx * dx + dz * dz
+                    if l2 <= 1e-9:
+                        continue
+                    t = clamp(((x - a["x"]) * dx + (z - a["z"]) * dz) / l2,
+                              0.0, 1.0)
+                    qx, qz = a["x"] + dx * t, a["z"] + dz * t
+                    d = dist(x, z, qx, qz)
+                    if d > tol:
+                        continue
+                    # chạm quá sát ĐẦU đoạn kia (<=2m): ca "2 nút sát nhau"
+                    # — để vòng weld trùng/tiếp nối xử, tách ở đây sẽ sinh
+                    # đoạn cụt <2m.
+                    if min(dist(qx, qz, a["x"], a["z"]),
+                           dist(qx, qz, b["x"], b["z"])) < 2.0:
+                        continue
+                    dy = abs(n.get("y", 0.0) -
+                             (a.get("y", 0.0) +
+                              (b.get("y", 0.0) - a.get("y", 0.0)) * t))
+                    if dy > max_dy:
+                        continue
+                    if best is None or d < best[0]:
+                        best = (d, sid, qx, qz)
+        if best is None:
+            return None
+        return best[1], best[2], best[3]
+
+    def _heal_t_touches(self, tol=0.75, max_dy=1.5):
+        """
+        CHỐT HẠ: ĐẦU ĐƯỜNG CHẠM ĐÚNG MẶT ĐƯỜNG KHÁC MÀ KHÔNG CÓ NÚT.
+
+        `_find_crossings` chỉ bắt cặp cắt NỘI SUYỆN cả 2 (t,u trong 2-98%)
+        nên ca "đầu đoạn nằm đúng trên thân đoạn kia" (t≈0/1) bị bỏ sót vĩnh
+        viễn: hình học CHẠM nhưng đồ thị RỜI — không rẽ được, renderer không
+        có nút để vẽ sàn giao lỡ. Đo trên bản export: QL1 tại bến Nam Tuy
+        Hòa bị chuỗi COLLECTOR xuyên qua (n_8883/n_8890, u≈0/1), 8 đoạn
+        tinh_lo_Ba_Bau_Tan_Thanh chạm QL1 tại t=1.0/u=0.44, ALLEY×QL1, ...
+
+        Cách sửa: TÁCH đoạn BỊ chạm tại điểm chạm -> nút mới -> HÀN node đầu
+        vào nút mới (node chỉ dời <= tol). Guard của `_split_seg_at_point`
+        (gần ngã giao thật < 100m, node sát đầu đoạn...) tự chặn các ca
+        không nên sửa — giữ nguyên, ghi nhận. Bỏ qua trong sân bến (layout
+        sân là ngã t-Y thiết kế, y chang `_resolve_crossings`).
+        """
+        fixed = 0
+        for nid in list(self.nodes):
+            n = self.nodes.get(nid)
+            if n is None or not n["connections"]:
+                continue
+            if self._in_station_keep(n["x"], n["z"], 0.0):
+                continue
+            hit = self._touch_seg_of(nid, tol, max_dy)
+            if hit is None:
+                continue
+            sid, px, pz = hit
+            if self._in_station_keep(px, pz, 0.0):
+                continue
+            nn = self._split_seg_at_point(sid, px, pz, ignore_nodes=(nid,))
+            if nn is None:
+                continue
+            if self._weld_pair(nid, nn):
+                fixed += 1
+        if fixed:
+            self._rebuild_road_index()
+            print("      dau cham mat duong (T-touch) -> %d nut giao moi"
+                  % fixed)
+        return fixed
+
     def _repair_matrix_violations(self, max_round=6):
         """
         SỬA VI PHẠM MA TRẬN `TOPO_LEGAL` CÒN SÓT (chạy CUỐI, sau mọi thay đổi).
@@ -6015,10 +7076,14 @@ class MapGenerator:
         thì lọt. Đo được còn 46 cặp sau khi `add_segment` đã chặn hết:
             ALLEY<->ARTERIAL 21 | EXPRESSWAY<->NATIONAL 2 | ARTERIAL<->EXPRESSWAY 1
 
-        1. `NATIONAL` trên node cao tốc, không có nhánh cầu vượt
+        1. `NATIONAL`/`ARTERIAL` trên node cao tốc, không có nhánh cầu vượt
            → tách QL1 ngay tại node và đánh CẢ HAI ĐẦU là `bridge`.
              Không dùng ngưỡng `min_br*1.6` nữa: một nhánh cầu vượt 11m vẫn
              là nghĩa đúng (that's how a real overpass stub looks at an IC).
+             ARTERIAL phải vào chung case: n_8475 (EXPRESSWAY x2 + ARTERIAL x2
+             ko bridge) lọt vì `_finalize_grade_separation` chỉ chữa class
+             SMALL (n_hw>=2 => skip nodeFormControl cao toc do) và case (1) chỉ
+             nhận `NATIONAL` — T5 đo được đúng cặp EXPRESSWAY<->ARTERIAL này.
         2. cấp thấp (ALLEY/...) trên node cấp cao (ARTERIAL/...)
            → tách đường nhánh đó ~130m kể từ node, BỎ phần gần node, giữ
              phần xa nối vào node mới tách. Nhánh đó không còn chạm node cấp cao.
@@ -6064,8 +7129,8 @@ class MapGenerator:
                 nid_p = self.nodes[nid]
                 L = dist(nid_p["x"], nid_p["z"], far_p["x"], far_p["z"])
 
-                # (1) QL1 tren node cao toc -> tach ra lam CAU VUOT that
-                if c == "NATIONAL" and top_c in ("EXPRESSWAY", "TUNNEL"):
+                # (1) QL1/PHO (ARTERIAL) tren node cao toc -> tach ra lam CAU VUOT that
+                if c in ("NATIONAL", "ARTERIAL") and top_c in ("EXPRESSWAY", "TUNNEL"):
                     if L < 1.0:
                         skip["QL1 qua gan (<1m)"] += 1
                         did += 1
@@ -6101,7 +7166,8 @@ class MapGenerator:
                     for t2 in (head, tail):
                         self.segments[t2]["bridge"] = True
                         self.segments[t2]["pier"] = True
-                        self.segments[t2].setdefault("name", "cau_vuot_QL1")
+                        self.segments[t2].setdefault("name",
+                                                     "cau_vuot_%s" % c)
                     bridged += 1
                     did += 1
                     continue
@@ -6288,55 +7354,68 @@ class MapGenerator:
 
     def _grow_road(self, start_nid, heading, length, level, rng, p):
         """Mọc đường theo bước, tạo junction khi chạm đường khác."""
-        if level > 2:  # Reduced max level to prevent excessive branching
+        if level > 3:  # Allow deeper branching for better connectivity
             return
         # class lấy theo VỊ TRÍ đầu đoạn (node `start_nid`), không theo level
         r_class, _rnote = self._context_road_class(
             self.nodes[start_nid]["x"], self.nodes[start_nid]["z"], level)
-        # ĐƯỜNG ĐI XA THÌ HẠ CẤP ĐƯỢC, ĐƯỜNG ĐI GÌN GIỮ CẤP ĐẦU. Đường xã rẽ
-        # vào ngõ ruộng là chuyện thật; ngõ ruộng tự nhiên mở rộng thành đường
-        # vào KCN thì không.
-        # `TOPO_RANK` BÉ = QUAN TRỌNG HƠN, nên "hạ cấp" là rank LỚN HƠN:
-        # cho đổi khi `rank(_nc) >= rank_floor`, chặn khi nhỏ hơn. Viết ngược
-        # (`<=`) thì đường xã không bao giờ xuống được đồng ruộng — đo trước,
-        # sửa sau, không đo thì class có bảng mà 0 đoạn lại lặp lại.
+        # ĐƯỜNG ĐI XA THÌ HẠ CẤP ĐƯỢC, ĐƯỜNG ĐI GÌN GIỮ CẤP ĐẦU.
         rank_floor = TOPO_RANK.get(r_class, 3)
         step = 70.0 if level == 0 else 45.0
-        n_steps = max(2, min(int(length / step), 25))  # Cap max steps
+        n_steps = max(2, min(int(length / step), 30))  # Cap max steps
         prev = start_nid
         x, z = self.nodes[start_nid]["x"], self.nodes[start_nid]["z"]
         h = heading
+        
+        # Track if we successfully connected to existing network
+        connected = False
+        
         for k in range(n_steps):
-            h += rng.uniform(-0.25, 0.25)
+            # Smoother curvature - less random, more terrain-following
+            # Slight bias towards following contour lines
+            h += rng.uniform(-0.18, 0.18)
+            
+            # Try to follow terrain contours (reduce elevation change)
             nx = x + math.cos(h) * step
             nz = z + math.sin(h) * step
+            
             if self.dist_to_coast(nx, nz) < 15.0:
                 break
-            # KHÔNG cắt ngang cao tốc/hầm — đường nhỏ phải dừng lại hoặc đi vòng
+            # KHÔNG cắt ngang cao tốc/hầm
             if self._crosses_major(self.nodes[prev]["x"], self.nodes[prev]["z"], nx, nz):
-                break
-            # SUON DOC >15%: duong nho khong theo duoc (do an goc cua
-            # "duong doc 133%"). Real: duong ngoai vi tranh cliff, chi
-            # QL1/CT01 moi co hầm/đèo để vượt.
+                # Try to bend around instead of stopping
+                alt_h = self._find_bypass_angle(prev, nx, nz, h, rng)
+                if alt_h is not None:
+                    h = alt_h
+                    nx = x + math.cos(h) * step
+                    nz = z + math.sin(h) * step
+                else:
+                    break
+            # Slope limit
             p_now = self.nodes[prev]
             raw_dy = abs(self.get_elevation(nx, nz) - p_now.get("elev", p_now["y"]))
             if raw_dy / step > 0.15:
-                break
+                # Try alternative angle with less slope
+                alt_h = self._find_gentler_slope(prev, h, rng)
+                if alt_h is not None:
+                    h = alt_h
+                    nx = x + math.cos(h) * step
+                    nz = z + math.sin(h) * step
+                else:
+                    break
+            
             up, _ = self.corridor_u_dist(nx, nz)
             reg, _r = self.determine_region(nz, nx)
-            # Cập nhật class theo vị trí node vừa đi tới (chỉ xuống cấp).
-            # Tính ở `prev` chứ không ở `nx`: `prev` là node ĐÃ TỒN TẠI, nên
-            # không phụ thuộc node mới có bị `topo_try_link` từ chối hay không —
-            # nếu tính ở `nx` thì đoạn cuối đọc class của vị trí chưa tồn tại.
+            
+            # Cập nhật class theo vị trí node vừa đi tới (chỉ xuống cấp)
             _nc, _nn = self._context_road_class(
                 self.nodes[prev]["x"], self.nodes[prev]["z"], level)
             if TOPO_RANK.get(_nc, 3) >= rank_floor:
                 r_class = _nc
+            
             # Tìm nút giao thật ở gần: chỉ nối qua CỔNG `topo_try_link`.
-            # Cũ: `add_segment(prev, join, ...)` với `join` bất kỳ node nào
-            # cách <16m — kể cả node cao tốc, node trong sân bến, node bậc 2.
-            # Đó là nguồn gốc nan quạt 15-30 nhánh.
             join = None
+            join_dist = 50.0  # Increased search radius
             for sid in self._road_grid.get(self._cell(nx, nz), ()):
                 seg = self.segments.get(sid)
                 if not seg or seg["class"] in ("EXPRESSWAY", "TUNNEL"):
@@ -6349,7 +7428,7 @@ class MapGenerator:
                     if self._topo_deg(cand) < 3:
                         continue
                     if dist(nx, nz, self.nodes[cand]["x"],
-                            self.nodes[cand]["z"]) >= 16.0:
+                            self.nodes[cand]["z"]) >= join_dist:
                         continue
                     join = cand
                     break
@@ -6358,25 +7437,33 @@ class MapGenerator:
             if join is not None:
                 _sid, _why = self.topo_try_link(prev, join, r_class)
                 if _sid is not None:
+                    connected = True
                     return
-            # node GIỮA ĐƯỜNG là node HÌNH HỌC, không phải nút giao. Cũ đặt
-            # `n_type="junction"` -> mỗi 70m lại có 1 "nút giao" giả, làm
-            # bậc node và số nút giao vỡ (48 nút giao / 12km trước khi sửa).
+            
+            # node GIỮA ĐƯỜNG là node HÌNH HỌC, không phải nút giao.
             nn = self.add_node(nx, nz, reg, n_type="link")
             _sid, _why = self.topo_try_link(prev, nn, r_class)
             if _sid is None:
                 self._drop_node(nn)
                 break
             prev, x, z = nn, nx, nz
-
-            # mọc nhánh - reduced probability
-            if level < 2 and rng.random() < (0.20 - 0.05 * level):
-                # HƯỚNG = giữa khe góc trống lớn nhất, KHÔNG phải ±90° ngẫu nhiên
+            
+            # mọc nhánh - more controlled branching based on road class and terrain
+            branch_prob = 0.15 if level == 0 else (0.10 if level == 1 else 0.05)
+            # Reduce branching in mountains, increase near settlements
+            if p["mountain"] > 0.4:
+                branch_prob *= 0.3
+            if p["density"] > 0.6:
+                branch_prob *= 1.5
+            
+            if level < 3 and rng.random() < branch_prob:
+                # HƯỚNG = giữa khe góc trống lớn nhất
                 sub_h = self.topo_branch_h(nn, h, rng)
-                self._grow_road(nn, sub_h, rng.uniform(120.0, 400.0),
-                                level + 1, rng, p)
+                sub_length = rng.uniform(800.0, 2000.0) * (0.5 + 0.5 * p["density"])
+                self._grow_road(nn, sub_h, sub_length, level + 1, rng, p)
+            
             # nếu đi đủ xa và có đường ở gần => nối lại tạo vòng (block)
-            if k > 2 and rng.random() < 0.12:
+            if k > 3 and rng.random() < 0.15:
                 for sid in self._road_grid.get(self._cell(nx, nz), ()):
                     seg = self.segments.get(sid)
                     if not seg or seg["from"] == prev or seg["to"] == prev:
@@ -6384,12 +7471,75 @@ class MapGenerator:
                     if seg["class"] in ("EXPRESSWAY", "TUNNEL", "RAMP"):
                         continue
                     other = self.nodes[seg["to"]]
-                    if dist(nx, nz, other["x"], other["z"]) < 260.0 and \
+                    if dist(nx, nz, other["x"], other["z"]) < 300.0 and \
                        self._seg_clear((nx + other["x"]) / 2, (nz + other["z"]) / 2, 3.0, 4.0) and \
                        not self._crosses_major(self.nodes[prev]["x"], self.nodes[prev]["z"],
                                                other["x"], other["z"]):
                         self.add_segment(prev, seg["to"], r_class)
+                        connected = True
                         return
+        
+        # If we reached the end without connecting, try to connect to nearest road
+        if not connected and level == 0:
+            self._try_connect_dead_end(prev, r_class, rng)
+    
+    def _find_bypass_angle(self, nid, nx, nz, current_h, rng):
+        """Find angle to bypass expressway/tunnel while staying on terrain."""
+        node = self.nodes[nid]
+        for _ in range(10):
+            test_h = current_h + rng.uniform(-0.5, 0.5)
+            tx = node["x"] + math.cos(test_h) * 70.0
+            tz = node["z"] + math.sin(test_h) * 70.0
+            if not self._crosses_major(node["x"], node["z"], tx, tz):
+                if self.dist_to_coast(tx, tz) >= 15.0:
+                    return test_h
+        return None
+    
+    def _find_gentler_slope(self, nid, current_h, rng):
+        """Find angle with gentler slope."""
+        node = self.nodes[nid]
+        for _ in range(10):
+            test_h = current_h + rng.uniform(-0.4, 0.4)
+            tx = node["x"] + math.cos(test_h) * 70.0
+            tz = node["z"] + math.sin(test_h) * 70.0
+            dy = abs(self.get_elevation(tx, tz) - node.get("elev", node["y"]))
+            if dy / 70.0 <= 0.12:
+                if not self._crosses_major(node["x"], node["z"], tx, tz):
+                    if self.dist_to_coast(tx, tz) >= 15.0:
+                        return test_h
+        return None
+    
+    def _try_connect_dead_end(self, nid, r_class, rng):
+        """Try to connect a dead-end road to the nearest network."""
+        node = self.nodes.get(nid)
+        if not node:
+            return
+        # Search for nearby road nodes to connect to
+        c0 = self._cell(node["x"] - 500, node["z"] - 500)
+        c1 = self._cell(node["x"] + 500, node["z"] + 500)
+        best = None
+        best_d = 500.0
+        for cx in range(c0[0], c1[0] + 1):
+            for cz in range(c0[1], c1[1] + 1):
+                for sid in self._road_grid.get((cx, cz), ()):
+                    seg = self.segments.get(sid)
+                    if not seg or seg["class"] in ("EXPRESSWAY", "TUNNEL"):
+                        continue
+                    for cand in (seg["from"], seg["to"]):
+                        if cand == nid or cand not in self.nodes:
+                            continue
+                        if self.nodes[cand].get("type") not in TOPO_JOINABLE_TYPES:
+                            continue
+                        if self._topo_deg(cand) < 3:
+                            continue
+                        d = dist(node["x"], node["z"], self.nodes[cand]["x"], self.nodes[cand]["z"])
+                        if d < best_d:
+                            if self._clear_for_link(node["x"], node["z"],
+                                                   self.nodes[cand]["x"], self.nodes[cand]["z"]):
+                                best_d = d
+                                best = cand
+        if best:
+            self.topo_try_link(nid, best, r_class)
 
     # --------------------------------------------------------------------------
     # 4.9b ĐIỂM DỪNG XE BUÝT dọc QL1 (đặc trưng xe khách Việt Nam)
@@ -6453,12 +7603,18 @@ class MapGenerator:
         print("      diem dung xe buyt tren QL1: %d (bo qua %d vi gan mat nuoc)"
               % (len(self.bus_stops), n_skip))
 
-    def _weld_pair(self, a_id, b_id):
+    def _weld_pair(self, a_id, b_id, check_major=True):
         """Gộp node `a_id` vào `b_id` (giữ node ít connection lại).
 
         Tách riêng từ `_weld_close_nodes` (P39) để dùng lại cho
         `_weld_by_rank`, vốn dùng NGUỒNG khác cho từng cấp đường. Trả 0 hoặc
         1. Không tự dựng lại index — caller làm.
+
+        `check_major=False`: dùng khi gộp cặp node TRÙNG VỊ TRÍ (R1 trong
+        `_consolidate_link_dups`): hình học giữ nguyên toạ độ 2 đầu nên KHÔNG
+        thể sinh giao cắt ngang cao tốc mới — guard `_crosses_major` đo trên
+        path hàn đôi khi đụng chính cặp segment TRÙNG nằm dọc đường và tự
+        chặn hoài (đo được s_11586/s_11587 "ket_QL1" p78) — chặn giả.
         """
         if a_id not in self.nodes or b_id not in self.nodes or a_id == b_id:
             return 0
@@ -6467,24 +7623,25 @@ class MapGenerator:
             a_id, b_id = b_id, a_id
         L = self.nodes[a_id]
         K = self.nodes[b_id]
-        # KIỂM TRƯỚC, THOÁT CẢ LẦN GỘP nếu có đoạn sẽ cắt ngang cao tốc
-        # sau khi dời. Gộp node = dời đầu đoạn tới vị trí hoàn toàn khác, nên
-        # đoạn 12m có thể thành đoạn 300m và cắt qua cao tốc. `add_segment`
-        # không cứu được vì weld không đi qua đó.
-        for sid in list(L["connections"]):
-            s_ = self.segments.get(sid)
-            if not s_:
-                continue
-            o_ = s_["to"] if s_["from"] == a_id else s_["from"]
-            if o_ == b_id:
-                continue
-            m_ = self.nodes.get(o_)
-            if m_ is None:
-                continue
-            if self._crosses_major(K["x"], K["z"], m_["x"], m_["z"]):
-                self._topo_reject["weld se cat nguang cao toc"] = \
-                    self._topo_reject.get("weld se cat nguang cao toc", 0) + 1
-                return 0
+        if check_major:
+            # KIỂM TRƯỚC, THOÁT CẢ LẦN GỘP nếu có đoạn sẽ cắt ngang cao tốc
+            # sau khi dời. Gộp node = dời đầu đoạn tới vị trí hoàn toàn khác, nên
+            # đoạn 12m có thể thành đoạn 300m và cắt qua cao tốc. `add_segment`
+            # không cứu được vì weld không đi qua đó.
+            for sid in list(L["connections"]):
+                s_ = self.segments.get(sid)
+                if not s_:
+                    continue
+                o_ = s_["to"] if s_["from"] == a_id else s_["from"]
+                if o_ == b_id:
+                    continue
+                m_ = self.nodes.get(o_)
+                if m_ is None:
+                    continue
+                if self._crosses_major(K["x"], K["z"], m_["x"], m_["z"]):
+                    self._topo_reject["weld se cat nguang cao toc"] = \
+                        self._topo_reject.get("weld se cat nguang cao toc", 0) + 1
+                    return 0
         drop = []
         for sid in list(L["connections"]):
             s = self.segments.get(sid)
@@ -6591,7 +7748,15 @@ class MapGenerator:
         Chỉ dời khi lệch > `max_d` — còn lại giữ nguyên, không làm rung toạ
         độ của các điểm dừng đang đúng.
         """
-        pool = [(0, n["id"], n["x"], n["z"]) for n in self.nodes.values()]
+        pool = [(0, n["id"], n["x"], n["z"]) for n in self.nodes.values()
+                if n.get("type") not in ("facility", "link")]
+        # Loại node `facility` (điểm cuối đường vào cơ sở, nằm TRONG footprint
+        # BVĐK/thị trấn): `_resnap_bus_stops` cũ chọn node GẦN NHẤT trong TOÀN
+        # Bộ node không phân loại => busstop_060 "Trạm dừng Dau Giay" bị bấm
+        # vào n_7678 (node facility của BVĐK Dầu Giây) => rule 39 báo 0m.
+        # Stop phải đứng MÉP ĐƯỜNG (bus_bay/junction/QL), không đứng trong
+        # sân cơ sở. `link` cũng loại: node hình học giữa đường, bấm stop
+        # lên đó cho giá trị y đổi giữa hành lang — giữ stop sát nút giao/mép.
         moved = 0
         no_dry = 0
         for bs in getattr(self, "bus_stops", []) or []:
@@ -6730,11 +7895,21 @@ class MapGenerator:
                   % (tried - joined, no_cand, why_fail.most_common(4)))
         return joined
 
-    def _weld_close_nodes(self, min_d=4.0):
+    def _weld_close_nodes(self, min_d=4.0, smart=False, coin_d=0.6, max_dy=2.5):
         """
         Gộp node cách nhau < min_d (node sinh trùng) -> hết đoạn 'cụt' 1-4m
         chênh cao lớn => dốc >100% (xe rung/bay, validation chặn).
         Không đụng node trong sân bến (cần giữ nguyên vị trí slot).
+
+        `smart=True` (vòng CHỐT HẠ cuối pipeline): chỉ gộp cặp CHẮC CHẮN phải
+        gộp — TRÙNG (d <= coin_d) hoặc TIẾP NỐI (2 nhánh 2 bên gần ngược
+        hướng, xem `_is_continuation`). Bỏ cặp SONG SONG cùng hướng (gộp sẽ
+        biến 2 đường song song thành gãy khúc 180° tại nút) và cặp lệch cao
+        > max_dy (cầu vượt / tách mức THẬT). Lý do phải có vòng này:
+        `_resolve_crossings` TÁCH 2 đoạn cắt thành 2 node TRÙNG nhưng KHÔNG
+        tự hàn — mọi pass weld cũ đều chạy TRƯỚC nó (cuối cùng @3386/@3401)
+        nên cặp trùng sinh sau đó không ai hàn (đo trên bản export: 11 cặp
+        d=0 + 19 cặp tiếp nối 1.75-9.9m).
         """
         grid = {}
         for nid, n in self.nodes.items():
@@ -6742,7 +7917,7 @@ class MapGenerator:
                 continue
             grid.setdefault((int(n["x"] // min_d), int(n["z"] // min_d)), []).append(nid)
 
-        merged = 0
+        merged = skew = 0
         for key in list(grid.keys()):
             for nid in list(grid.get(key, ())):
                 if nid not in self.nodes:
@@ -6761,6 +7936,14 @@ class MapGenerator:
                                 bd, best = d2, oid
                 if best is None:
                     continue
+                if smart:
+                    b = self.nodes[best]
+                    if abs(a.get("y", 0.0) - b.get("y", 0.0)) > max_dy:
+                        skew += 1
+                        continue
+                    if bd > coin_d * coin_d and not self._is_continuation(
+                            nid, best):
+                        continue
                 # KHÔNG cần dọn `grid`: vòng lặp trên đã có
                 # `if nid not in self.nodes: continue`, nên id node đã bị gộp
                 # sẽ tự bị bỏ qua.
@@ -6779,6 +7962,48 @@ class MapGenerator:
             self._build_accel()
         print("      weld node trung (<%.1fm): %d" % (min_d, merged))
         return merged
+
+    def _is_continuation(self, a_id, b_id, min_dot=-0.87):
+        """
+        2 node gần nhau có phải 2 ĐẦU CỦA MỘT ĐƯỜNG BỊ ĐỨT (hàn lại được)?
+
+        True khi tồn tại 1 nhánh của a và 1 nhánh của b gần NGƯỢC HƯỚNG nhau
+        (tích vô hướng <= `min_dot`, tức lệch < ~30° so với 180°): dạng
+        `...X—a  (đứt 1-6m)  b—Y...` — hàn a-b nối lại đúng trục, không đổi
+        hình. Cặp SONG SONG (2 nhánh cùng hướng) trả False: hàn sẽ biến 2
+        đường song song thành chữ V gãy 180°.
+        """
+        a, b = self.nodes.get(a_id), self.nodes.get(b_id)
+        if a is None or b is None:
+            return False
+        dirs_b = []
+        for sid in b.get("connections", ()):
+            s = self.segments.get(sid)
+            if s is None:
+                continue
+            o = self.nodes.get(s["to"] if s["from"] == b_id else s["from"])
+            if o is None:
+                continue
+            L = dist(b["x"], b["z"], o["x"], o["z"])
+            if L > 1e-6:
+                dirs_b.append(((o["x"] - b["x"]) / L, (o["z"] - b["z"]) / L))
+        if not dirs_b:
+            return False
+        for sid in a.get("connections", ()):
+            s = self.segments.get(sid)
+            if s is None:
+                continue
+            o = self.nodes.get(s["to"] if s["from"] == a_id else s["from"])
+            if o is None:
+                continue
+            L = dist(a["x"], a["z"], o["x"], o["z"])
+            if L <= 1e-6:
+                continue
+            ux, uz = (o["x"] - a["x"]) / L, (o["z"] - a["z"]) / L
+            for (vx, vz) in dirs_b:
+                if ux * vx + uz * vz <= min_dot:
+                    return True
+        return False
 
     # ---------------------------------------------------------------------
     # SOURCE OF TRUTH CHO GRAPH (rule 56)
@@ -6909,30 +8134,88 @@ class MapGenerator:
         giữa khi terrain phồi lên. Nội suy thẳng giữa hai đầu thì không thể
         chui xuống dưới mặt đất ở giữa.
 
-        Bỏ qua `TUNNEL` (hầm xuyên đất là đúng) và `bridge` (cầu vượt nằm
-        trên đất là đúng, đã có `_fix_bridge_heights` lo).
-        """
-        need = {}
+        Bỏ qua `TUNNEL` (hầm xuyên đất là đúng). `bridge` VẪN được xét — xem
+        khối P83 bên dưới (cầu qua đồi/đất từng bị bỏ sót và chôn tới 8.9m).
 
+        P80 — SỬA GỐC ĐỘ CAO: bản trước nâng đường lên `terrain - tol`
+        (tol=0.30), tức mặt đường nằm **DƯỚI mặt đất 0.30m** — vẫn là chôn,
+        chỉ nằm đúng bằng ngưỡng audit nên tuỳ phép trừ float mà bị đếm hay
+        không (đo p79: cả 142 điểm có gap in ra đúng -0.300000, min=max=0.3).
+        Đường thật phải nằm TRÊN mặt đất. Sửa: vẫn phát hiện chôn khi
+        `road_y < th - tol`, nhưng nâng lên `th + _LIFT` để mặt đường nổi
+        trên đất (renderer vẽ mặt ở `y`, đáy ở `y - ROAD_THICK`).
+
+        P83 — CẦU CŨNG PHẢI ĐƯỢC NÂNG: bản trước bỏ qua MỌI `bridge` với lý
+        do "cầu vượt nằm trên đất là đúng". Sai với cầu bắc qua ĐẤT/ĐỒI:
+        `_fix_bridge_heights` chỉ nâng cầu qua nước; cầu cạn/QL1 qua đồi vẫn
+        có thể nằm dưới terrain. Đo p83: 9/77 bridge có điểm chôn 1.2–8.9m
+        (s_1043 QL1 chôn 8.9m ở giữa; chuỗi cau_can s_9208/s_9209 n_6790 chôn
+        8.0m; s_25 QL1 ven biển 2.0m; s_2789 vành đai 3 qua sông 2.5m).
+        Giờ xét cả bridge; `_need` chỉ NÂNG (không hạ) nên cầu đúng cao độ
+        không bị đụng. Node thuộc TUNNEL được chừa để không nhấc cửa hầm.
+        """
+        _LIFT = 0.05          # mặt đường cao hơn terrain 5cm
+        need = {}
         def _need(nid, y):
             cur = need.get(nid)
             if cur is None or y > cur:
                 need[nid] = y
 
+        _tun_nodes = set()
         for sg in self.segments.values():
-            if sg.get("bridge") or sg["class"] == "TUNNEL":
+            if sg["class"] == "TUNNEL":
+                _tun_nodes.add(sg["from"])
+                _tun_nodes.add(sg["to"])
+
+        # Cầu lấy mẫu DÀY 5% (21 điểm): mẫu 25% bỏ sót gai terrain giữa mẫu —
+        # đo lại 21 điểm/đoạn trên data p83 sau khi nâng bằng mẫu 25% vẫn còn
+        # 6 cầu chôn 0.37–1.56m (s_25 -1.56m tại t=0.65, s_1043 -0.90m tại
+        # t=0.55). Terrain là fBm liên tục nên bước 5% (≈7–22m) đủ mịn so với
+        # bước sóng gần corridor. Đoạn thường giữ 25% (5 mẫu) để không nhân
+        # chi phí get_elevation cho 10k segment.
+        _TS_BRIDGE = tuple(i / 20.0 for i in range(21))
+        _TS_PLAIN = (0.0, 0.25, 0.5, 0.75, 1.0)
+
+        for sg in self.segments.values():
+            if sg["class"] == "TUNNEL":
                 continue
+            _is_bridge = bool(sg.get("bridge"))
             a, b = self.nodes.get(sg["from"]), self.nodes.get(sg["to"])
             if a is None or b is None:
                 continue
-            for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+            for t in (_TS_BRIDGE if _is_bridge else _TS_PLAIN):
                 x = a["x"] + (b["x"] - a["x"]) * t
                 z = a["z"] + (b["z"] - a["z"]) * t
                 th = self.get_elevation(x, z)          # mặt đất thật (water=True)
                 road_y = a["y"] + (b["y"] - a["y"]) * t
-                if road_y < th - tol:
-                    _need(sg["from"], th - tol)
-                    _need(sg["to"], th - tol)
+                # EPSILON BẮT BUỘC: gap đo được đúng bằng -tol (data p79:
+                # 142/142 điểm có gap = -0.300000) nhưng `(th - tol)` tính
+                # lại trong Python có thể ra -0.30000000000000004 hoặc
+                # -0.29999999999999999 tuỳ giá trị `th`, nên so sánh `<` trần
+                # bỏ sót toàn bộ (đo thật: lifted=0 dù audit đếm 142).
+                if road_y < th - tol + 1e-6:
+                    if _is_bridge:
+                        # Cầu: KHÔNG nâng cả 2 đầu lên max terrain — cầu leo
+                        # núi 403m sẽ bị nhấc 35m (đo thử p83: n_6789 +35.0m).
+                        # Nâng đầu GẦN điểm chôn nhất, chia theo trọng số để
+                        # mặt cầu tại t vừa chạm terrain; chôn ở giữa (0.25<t<
+                        # 0.75) thì nâng đều 2 đầu (lift song song) — đó là
+                        # mức nâng nhỏ nhất mà vẫn thẳng cầu.
+                        delta = (th + _LIFT) - road_y
+                        if t <= 0.25:
+                            if sg["from"] not in _tun_nodes:
+                                _need(sg["from"], a["y"] + delta / (1.0 - t))
+                        elif t >= 0.75:
+                            if sg["to"] not in _tun_nodes:
+                                _need(sg["to"], b["y"] + delta / t)
+                        else:
+                            if sg["from"] not in _tun_nodes:
+                                _need(sg["from"], a["y"] + delta)
+                            if sg["to"] not in _tun_nodes:
+                                _need(sg["to"], b["y"] + delta)
+                    else:
+                        _need(sg["from"], th + _LIFT)
+                        _need(sg["to"], th + _LIFT)
         lifted = 0
         worst = 0.0
         for nid, y in need.items():
@@ -7065,7 +8348,134 @@ class MapGenerator:
         if marked:
             print("      doc >%.0f%%: danh dau %d doan lau cau vuot (max %.1f%%)"
                   % (max_grade * 100, marked, worst * 100))
-        return marked
+        # P80: CAU CAN (viaduct) — đoạn KHÔNG phải cầu/hầm/cao tốc/ramp mà cả
+        # 2 đầu đều đắp nền cao >8m thì thực tế phải là cầu cạn có trụ, không
+        # phải nền đất cao 36-45m (không tồn tại trong tự nhiên VN).
+        # Đo p79: 22 đoạn như vậy (ARTERIAL 8, PROVINCIAL 8, RESIDENTIAL 4,
+        # NATIONAL 2), cao nhất 45.1m tại s_9224/s_9225 (tỉnh lộ bắc thung
+        # lũng gần IC_TL720). Loại EXPRESSWAY/RAMP vì renderer đã coi 2 class
+        # đó là elevated sẵn; loại bridge/tunnel để không đè cấu trúc có sẵn.
+        # Guard 2 đầu: `topo_validate` đo bằng `cls_at` (CHỈ class, KHÔNG xét cờ
+        # `bridge`). Nên guard phải so y hệt như vậy, nếu không chuỗi cầu cạn
+        # liền nhau bị ĐỨT giữa chừng: đo p79 thấy s_9224 (hai đầu 38.6/45.4m)
+        # KHÔNG được đánh dấu vì hàng xóm s_9223 đã là bridge ⇒ 36 node >8m
+        # còn sót, và s_9224 vẫn là "nền đất cao 45m" vô lý. Sửa: chỉ loại theo
+        # CLASS, giống hệt `topo_validate` ⇒ đánh được cả chuỗi mà warn không tăng.
+        _SKIP_CLS = {"EXPRESSWAY", "RAMP", "TUNNEL"}
+        _VIADUCT_CLR = 8.0
+
+        def _clearance(nid):
+            nd = self.nodes.get(nid)
+            if nd is None:
+                return 0.0
+            e = nd.get("elev")
+            return (nd["y"] - e) if isinstance(e, (int, float)) else 0.0
+
+        def _has_regular(nid, skip_sid):
+            for cid in self.nodes[nid]["connections"]:
+                if cid == skip_sid:
+                    continue
+                sg = self.segments.get(cid)
+                if sg is None or sg.get("class") in _SKIP_CLS:
+                    continue
+                return True
+            return False
+
+        viaduct = 0
+        for sid, s in self.segments.items():
+            if s.get("bridge") or s.get("class") in _SKIP_CLS:
+                continue
+            if _clearance(s["from"]) <= _VIADUCT_CLR:
+                continue
+            if _clearance(s["to"]) <= _VIADUCT_CLR:
+                continue
+            if not (_has_regular(s["from"], sid) and _has_regular(s["to"], sid)):
+                continue
+            s["bridge"] = True
+            s["pier"] = True
+            s["structure"] = "cau_can"
+            s["name"] = s.get("name") or "cau_can"
+            viaduct += 1
+        if viaduct:
+            print("      cau can (dap nen >%.0fm): danh dau %d doan"
+                  % (_VIADUCT_CLR, viaduct))
+        return marked + viaduct
+
+    def _mark_hollow_piers(self, min_len=150.0, excess_tol=3.0, min_mid=1.2):
+        """P82: DOAN VONG GIUA — "cau thieu tru" that su.
+
+        Vi sao can pass rieng: `skirt()` (js/map.js L812) chi lay mau terrain
+        tai CAC DINH cua polygon mat duong. Polygon do `clipRect` sinh ra tu
+        4 goc cua doan, tuc la chi co terrain o 2 DAU doan — khong co dinh
+        nao o GIUA. Voi doan 150-400m bac qua mot khe (2 dau sat dat, giua
+        cao 4-12m), be day vai o 2 dau ~0 => skirt ve 0, con mat duong o giua
+        van cao => nhin thay HO NGAY DUOI MAT DUONG. Audit rule 22 do dung
+        dai luong nay: gap(giua) - max(gap 2 dau) > 3m. Do p82: 24 diem tren
+        13 doan, vong lon nhat 8.0m, gap tuyet doi giua doan toi 11.7m.
+
+        Cach sua: danh `pier` (KHONG danh `bridge`) => map.js L2240 ve tru
+        keo tu mat cau xuong `getElevation` tai chan tru, dung hinh hoc cau
+        can. Khong danh `bridge` de giu nguyen mat duong/lan can va khong
+        lam doi `topo_validate` (rule do xet class, khong xet co).
+
+        Chay 1 LAN o cuoi pipeline (sau weld/repair cuoi) de chi ton
+        ~7k-20k lan goi terrain thay vi 4 lan x `_fix_final_slopes`.
+        """
+        if getattr(self, "_hollow_piers_done", False):
+            return 0
+        _SKIP_CLS = {"TUNNEL"}
+        _PIER_CLR = 12.0        # renderer da ve tru khi dau doan > 12m
+        _tcache = {}
+
+        def _t_at(x_, z_):
+            k_ = (int(x_ * 4.0), int(z_ * 4.0))
+            v_ = _tcache.get(k_)
+            if v_ is None:
+                v_ = self.get_elevation(x_, z_)   # mat dat that (water=True)
+                _tcache[k_] = v_
+            return v_
+
+        hollow = 0
+        for sid, s in self.segments.items():
+            if s.get("pier") or s.get("bridge") or s.get("class") in _SKIP_CLS:
+                continue
+            a, b = self.nodes.get(s["from"]), self.nodes.get(s["to"])
+            if a is None or b is None:
+                continue
+            run = dist(a["x"], a["z"], b["x"], b["z"])
+            if run <= min_len:
+                continue
+            yA, yB = a.get("y", 0.0), b.get("y", 0.0)
+            # Prefilter MIEN PHI bang `elev` (terrain luc tao node): neu mot
+            # dau da >12m thi renderer da co `floating` + tru. `elev` co the
+            # lech terrain hien tai (pass regrade/water ghi de, do p82:
+            # n_2789 lech 8.9m) nen SAU prefilter phai do lai bang terrain
+            # that — neu khong se danh pier nham (s_2786).
+            eA, eB = a.get("elev"), b.get("elev")
+            if isinstance(eA, (int, float)) and isinstance(eB, (int, float)):
+                if max(yA - eA, yB - eB) > _PIER_CLR:
+                    continue
+            gA = yA - _t_at(a["x"], a["z"])
+            gB = yB - _t_at(b["x"], b["z"])
+            base = max(gA, gB)
+            if base > _PIER_CLR:
+                continue
+            hit = False
+            for t in (0.5, 0.25, 0.75):
+                x_ = a["x"] + (b["x"] - a["x"]) * t
+                z_ = a["z"] + (b["z"] - a["z"]) * t
+                gm = (yA + (yB - yA) * t) - _t_at(x_, z_)
+                if gm - base > excess_tol and gm > min_mid:
+                    hit = True
+                    break
+            if hit:
+                s["pier"] = True
+                hollow += 1
+        self._hollow_piers_done = True
+        if hollow:
+            print("      doan vong giua (cau thieu tru): danh pier %d doan"
+                  % hollow)
+        return hollow
 
     def _reconnect_islands(self, max_len=3200.0, cell=256.0, max_rounds=400):
         """NỐI LẠI MẢNH RỜI — bản sửa đúng cho `_connect_islands`.
@@ -7203,7 +8613,10 @@ class MapGenerator:
                         self._node_touches_class(rid, ("RAMP",)):
                     why_fail["gan mat cao toc/ramp"] += 1
                     continue
-                if self.add_segment(rid, mid, "LOCAL", name="noi_manh") is None:
+                # Choose appropriate road class for connection
+                conn_class = self._choose_connection_class(n, m, L)
+                
+                if self.add_segment(rid, mid, conn_class, name="noi_manh") is None:
                     why_fail["add_segment tu choi (ma tran/da canh)"] += 1
                     continue
                 # ---- KHOI COMMIT DUY NHAT (moi duong dan deu o day) ----
@@ -7273,34 +8686,244 @@ class MapGenerator:
                          math.sqrt(dmin)))
         return added
 
-    # --------------------------------------------------------------------------
-    # 4.7h CHỮA CỤM RAMP BỊ CẮT MẤT CẢ HAI ĐẦU  (P71)
-    # --------------------------------------------------------------------------
-    #
-    # VÌ SAO `_reconnect_islands` KHÔNG CHỮA ĐƯỢC:
-    #   Nó CỐ TÌNH bỏ qua mọi ứng viên chạm RAMP/EXPRESSWAY (luật P34 — đường
-    #   phụ không được cắm vào mặt cao tốc). Một cụm RAMP bị weld/prune cắt mất
-    #   cả đầu cao tốc lẫn đầu đường địa phương sẽ mãi mãi không được nối bởi
-    #   lượt reconnect đó. Đo được: `validate()` FAIL
-    #     x 2 cum ramp hoan toan co lap (khong cao toc khong duong)
-    #     x graph roi 2 manh rieng le (9 node ngoai main, nho nhat 4)
-    #   tức 2 mảnh 4 node + 5 node nằm ngoài mạng chính, không ai tới được.
-    #
-    # HAI NHÁNH, CẢ HAI ĐỀU GHI LOG (không giấu):
-    #   (a) NỐI — cụm còn trong `max_len` của một node chạm EXPRESSWAY/TUNNEL
-    #       hoặc một cụm ramp khác cùng interchange. Nối bằng chính luật RAMP
-    #       (`TOPO_LEGAL["RAMP"]` có EXPRESSWAY/TUNNEL/RAMP) nên đây đúng là
-    #       hình dạng một nhánh ramp, không phải đường phụ đâm vào cao tốc.
-    #   (b) XOÁ — không có ứng viên trong bán kính. Khi đó cụm không đầu cao
-    #       tốc, không đầu đường, không lối vào: là mảnh vô nghĩa, xử lý y hệt
-    #       ngõ cụt trong `_prune_useless_stubs`. In ra số node đã xoá.
+    def _choose_connection_class(self, n1, n2, length):
+        """
+        Choose appropriate road class for connecting two nodes.
+        Based on distance, terrain, and existing road hierarchy.
+        """
+        # Long connections need higher class roads
+        if length > 2500.0:
+            return "COLLECTOR"
+        elif length > 1500.0:
+            return "PROVINCIAL_ROAD"
+        elif length > 800.0:
+            return "INTER_VILLAGE"
+        
+        # Check if either node is near settlement
+        p1 = self.region_params(n1["x"], n1["z"])
+        p2 = self.region_params(n2["x"], n2["z"])
+        
+        # Urban/settlement areas need proper roads
+        if p1["density"] > 0.5 or p2["density"] > 0.5:
+            return "COLLECTOR"
+        if p1["urban"] > 0.4 or p2["urban"] > 0.4:
+            return "PROVINCIAL_ROAD"
+        
+        # Mountainous areas - use roads that can handle slopes
+        if p1["mountain"] > 0.5 or p2["mountain"] > 0.5:
+            return "COLLECTOR"
+        
+        # Agricultural areas
+        if p1["arid"] > 0.5 or p2["arid"] > 0.5:
+            return "AGRICULTURAL"
+        
+        # Default based on existing connections
+        # Check what class of roads already connect to these nodes
+        classes1 = {self.segments.get(cid, {}).get("class") for cid in n1.get("connections", [])}
+        classes2 = {self.segments.get(cid, {}).get("class") for cid in n2.get("connections", [])}
+        all_classes = classes1 | classes2
+        
+        # Prefer higher hierarchy (lower rank number)
+        if "EXPRESSWAY" in all_classes: return "COLLECTOR"
+        if "NATIONAL" in all_classes: return "PROVINCIAL_ROAD"
+        if "ARTERIAL" in all_classes: return "COLLECTOR"
+        if "COLLECTOR" in all_classes: return "COLLECTOR"
+        if "PROVINCIAL_ROAD" in all_classes: return "INTER_VILLAGE"
+        
+        return "LOCAL"
+
+    def _final_connect_components(self, max_len=8000.0):
+        """
+        FINAL AGGRESSIVE COMPONENT CONNECTION — connects all remaining
+        disconnected components to the main network.
+        
+        Uses appropriate road classes, allows bridge construction over
+        major roads, and targets settlement components specifically.
+        Target: +20% total road length.
+        """
+        # Count components
+        adj = {}
+        for sg in self.segments.values():
+            a, b = sg.get("from"), sg.get("to")
+            if a is None or b is None:
+                continue
+            adj.setdefault(a, []).append(b)
+            adj.setdefault(b, []).append(a)
+        
+        def _bfs(seeds):
+            seen = set(seeds)
+            stack = list(seeds)
+            while stack:
+                cur = stack.pop()
+                for nxt in adj.get(cur, ()):
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        stack.append(nxt)
+            return seen
+        
+        nodes_with_seg = set(adj.keys())
+        if not nodes_with_seg:
+            return 0
+        
+        # Find main component
+        seen_any = set()
+        best_set, best_n = set(), 0
+        for st in nodes_with_seg:
+            if st in seen_any:
+                continue
+            comp = _bfs([st])
+            seen_any |= comp
+            if len(comp) > best_n:
+                best_n, best_set = len(comp), comp
+        main = best_set
+        rest = nodes_with_seg - main
+        
+        if not rest:
+            return 0
+        
+        print("      [final_connect] %d components to connect (main=%d, rest=%d)" 
+              % (len(rest) + 1, len(main), len(rest)))
+        
+        added = 0
+        cell = 512  # Larger cell for long-range search
+        reach = int(max_len // cell) + 1
+        
+        # Build grid for main component
+        grid = {}
+        def _add_to_grid(nid):
+            n = self.nodes.get(nid)
+            if n is None:
+                return
+            grid.setdefault((int(n["x"] // cell), int(n["z"] // cell)), []).append(nid)
+        
+        for nid in main:
+            _add_to_grid(nid)
+        
+        # Group rest nodes by component
+        rest_components = {}
+        rest_seen = set()
+        for rid in rest:
+            if rid in rest_seen:
+                continue
+            comp = _bfs([rid])
+            rest_seen |= comp
+            # Find representative node (closest to main)
+            best_rid = min(comp, key=lambda n: min(
+                (self.nodes[n]["x"] - self.nodes[m]["x"])**2 + 
+                (self.nodes[n]["z"] - self.nodes[m]["z"])**2 
+                for m in main if m in self.nodes
+            ))
+            rest_components[best_rid] = comp
+        
+        # Try to connect each component
+        for rid, comp in rest_components.items():
+            n = self.nodes.get(rid)
+            if n is None:
+                continue
+            
+            c0 = (int(n["x"] // cell), int(n["z"] // cell))
+            cands = []
+            
+            for dx in range(-reach, reach + 1):
+                for dz in range(-reach, reach + 1):
+                    for mid in grid.get((c0[0] + dx, c0[1] + dz), ()):
+                        m = self.nodes.get(mid)
+                        if m is None:
+                            continue
+                        d2 = (m["x"] - n["x"]) ** 2 + (m["z"] - n["z"]) ** 2
+                        if d2 <= max_len * max_len:
+                            cands.append((d2, mid))
+            
+            if not cands:
+                continue
+            
+            cands.sort()
+            
+            # Try candidates, allow bridges over major roads
+            for d2, mid in cands[:500]:
+                m = self.nodes.get(mid)
+                if m is None:
+                    continue
+                L = math.sqrt(d2)
+                if L < 10.0:
+                    continue
+                
+                # Check if we can build a bridge over major roads
+                crosses_major = self._crosses_major(n["x"], n["z"], m["x"], m["z"])
+                
+                # Check terrain
+                dy = abs(self.get_elevation(m["x"], m["z"]) - self.get_elevation(n["x"], n["z"]))
+                if dy / L > 0.15:
+                    continue
+                
+                # Choose road class
+                conn_class = self._choose_connection_class(n, m, L)
+                
+                # If crossing major road, must be bridge-capable class
+                if crosses_major:
+                    if conn_class not in ("COLLECTOR", "PROVINCIAL_ROAD", "ARTERIAL", "NATIONAL"):
+                        conn_class = "COLLECTOR"
+                
+                # Try to connect
+                seg_name = "final_link_%s" % rid
+                if self.add_segment(rid, mid, conn_class, name=seg_name) is not None:
+                    # Mark as bridge if crossing major
+                    k2 = (rid, mid) if rid < mid else (mid, rid)
+                    seg_new = self.segments.get(self._edge_index.get(k2, ""))
+                    if seg_new is not None:
+                        if crosses_major:
+                            seg_new["bridge"] = True
+                            seg_new["pier"] = True
+                            seg_new["name"] = "cau_final_%s" % rid
+                        dy = abs(self.get_elevation(m["x"], m["z"]) - self.get_elevation(n["x"], n["z"]))
+                        if dy / L > 0.11:
+                            seg_new["bridge"] = True
+                            seg_new["pier"] = True
+                    
+                    # Update adjacency
+                    adj.setdefault(rid, []).append(mid)
+                    adj.setdefault(mid, []).append(rid)
+                    
+                    # Merge component
+                    comp = _bfs([rid])
+                    main |= comp
+                    rest -= comp
+                    for nn in comp:
+                        _add_to_grid(nn)
+                    
+                    added += 1
+                    print("      [final_connect] linked %s to main via %s (%.0fm, bridge=%s)" 
+                          % (rid, mid, math.sqrt(d2), crosses_major))
+                    break
+            
+            if rid in rest:  # Failed to connect
+                # Try connecting to another rest component instead
+                for other_rid, other_comp in rest_components.items():
+                    if other_rid == rid:
+                        continue
+                    on = self.nodes.get(other_rid)
+                    if on is None:
+                        continue
+                    d2 = (on["x"] - n["x"])**2 + (on["z"] - n["z"])**2
+                    if d2 <= max_len * max_len:
+                        L = math.sqrt(d2)
+                        conn_class = self._choose_connection_class(n, on, L)
+                        if self.add_segment(rid, other_rid, conn_class, name="inter_final") is not None:
+                            print("      [final_connect] linked %s to %s (inter-component)" % (rid, other_rid))
+                            added += 1
+                            break
+        
+        if added > 0:
+            print("      [final_connect] added %d connections, %d components remain" % (added, len(rest) + 1))
+        
+        return added
+
     def _heal_ramp_fragments(self, max_len=1500.0):
         HI_SIDE = ("EXPRESSWAY", "TUNNEL")
         LOW_SIDE = ("NATIONAL", "ARTERIAL", "COLLECTOR", "PROVINCIAL_ROAD",
                     "LOCAL", "RURAL_LOCAL", "SERVICE", "STATION_ACCESS",
                     "RESIDENTIAL", "COMMERCIAL", "INTER_VILLAGE",
                     "INDUSTRIAL_ACCESS", "AGRICULTURAL")
-        self._build_node_seg_index()
 
         # --- gom cụm RAMP liên thông qua cạnh RAMP ---
         radj = {}
@@ -7330,17 +8953,12 @@ class MapGenerator:
                             stack.append(e)
             clusters.append((comp_s, comp_n))
 
-        # ỨNG VIÊN NỐI: node chạm cao tốc/ramp **THUỘC THÀNH PHẦN CHÍNH**.
-        #
-        # Bản trước lấy MỌI node chạm RAMP làm ứng viên, kể cả node của một
-        # cụm ramp rời khác. Đo được: 9 cụm được "chữa" xong nhưng nối vào
-        # NHAU (cách 3-11m vì các cụm nằm sát nhau), không cụm nào chạm main
-        # => `_ensure_connected` vẫn còn thành phần rời, và validate báo
-        # "graph roi N manh rieng le".
-        #
-        # Sửa đúng nguyên nhân: ứng viên phải nằm trong thành phần lớn nhất.
-        # Tính 1 lần bằng BFS trên toàn graph (O(V+E)), rẻ hơn nhiều so với
-        # quét từng cụm, và đảm bảo "chữa" = "nối vào mạng chính" đúng nghĩa.
+        # ỨNG VIÊN NỐI: chỉ node TỰ NHÂN chạm cao tốc/tunnel TRONG thành phần
+        # chính. Bản trước còn cho cả node "chạm RAMP": đo được 25 cụm riêng lẻ
+        # nằm sát nhau cứ dồn vào CÙNG vài node quanh nút giao (candidate
+        # RAMP-touch gần nhất luôn xếp trước theo distance) -> n_2978 deg=10
+        # (2 EXPRESSWAY + 8 link `noi_ramp`), n_2979 deg=9 — knot ramp↔ramp.
+        # Fallback: main hết HI_SIDE mới cho node chạm RAMP.
         _radj = defaultdict(list)
         for sg in self.segments.values():
             _radj[sg["from"]].append(sg["to"])
@@ -7364,15 +8982,23 @@ class MapGenerator:
             if len(_comp) > len(_main_set):
                 _main_set = _comp
         target = [nid for nid in _main_set
-                  if self._node_touches_class(nid, HI_SIDE)
-                  or self._node_touches_class(nid, ("RAMP",))]
-        if not target:
-            # không còn node cao tốc/ramp nào trong main -> mọi cụm ramp mồ
-            # côi chỉ có thể XOÁ. `target` rỗng làm vòng `add_segment` tự
-            # từ chối hết -> rơi vào nhánh xoá, đúng ý nghĩa.
-            print("      [heal ramp] main khong con node cao toc/ramp "
-                  "(main=%d node) -> chi co the xoa cum ramp" % len(_main_set))
-
+                  if self._node_touches_class(nid, HI_SIDE)]
+        if target:
+            print("      [heal ramp] %d ung vien noi truc tiep cao toc "
+                  "(main=%d node)" % (len(target), len(_main_set)))
+        else:
+            target = [nid for nid in _main_set
+                      if self._node_touches_class(nid, ("RAMP",))]
+            if target:
+                print("      [heal ramp] fallback: khong con node HI_SIDE "
+                      "-> %d ung vien cham RAMP (nhu cu)" % len(target))
+            else:
+                # không còn node cao tốc/ramp nào trong main -> mọi cụm ramp mồ
+                # côi chỉ có thể XOÁ. `target` rỗng làm vòng `add_segment` tự
+                # từ chối hết -> rơi vào nhánh xoá, đúng ý nghĩa.
+                print("      [heal ramp] main khong con node cao toc/ramp "
+                      "(main=%d node) -> chi co the xoa cum ramp" % len(_main_set))
+        used_targets = {}
         healed = dropped = 0
         for comp_s, comp_n in clusters:
             has_hi = has_lo = False
@@ -7401,15 +9027,19 @@ class MapGenerator:
                         continue
                     d2 = (na["x"] - nb["x"]) ** 2 + (na["z"] - nb["z"]) ** 2
                     if d2 <= max_len * max_len:
-                        cands.append((d2, a, b))
+                        # sort theo (so lan da dung target, khoang cach):
+                        # ưu tiên target CHƯA nhận link nào -> 25 cụm DÀN RA
+                        # các node khác nhau thay vì dồn hết vào 1 node.
+                        cands.append((used_targets.get(b, 0), d2, a, b))
             cands.sort()
             done = None
             # 40 -> 200: 40 ứng viên gần nhất hay rơi hết vào node RAMP cùng
             # interchange đã kín, trong khi ứng viên hợp pháp nằm xa hơn vài
             # chục mét. Thử nhiều hơn rẻ hơn nhiều so với xoá nhầm cụm.
-            for _d2, a, b in cands[:200]:
+            for _used, _d2, a, b in cands[:200]:
                 if self.add_segment(a, b, "RAMP", name="noi_ramp") is not None:
                     done = (a, math.sqrt(_d2))
+                    used_targets[b] = used_targets.get(b, 0) + 1
                     break
             if done is not None:
                 healed += 1
@@ -7852,7 +9482,10 @@ class MapGenerator:
                         self._node_touches_class(mid, ("RAMP",)) or \
                         self._node_touches_class(rid, ("RAMP",)):
                     continue
-                if self.add_segment(rid, mid, "LOCAL", name="noi_manh") is None:
+                # Choose appropriate road class for connection
+                conn_class = self._choose_connection_class(n, m, L)
+                
+                if self.add_segment(rid, mid, conn_class, name="noi_manh") is None:
                     continue
                 comp = _bfs([rid])
                 main |= comp
@@ -9053,6 +10686,8 @@ class MapGenerator:
                     pairs.append((d, i, j))
         pairs.sort()
         made = 0
+        shadow_skip = 0
+        grade_skip = 0
         used_end = {}
         for d, i, j in pairs:
             if made >= max_pairs:
@@ -9072,6 +10707,23 @@ class MapGenerator:
             if L > max_km * 1000.0 * 1.35:
                 continue
             if self._crosses_major(A["x"], A["z"], B["x"], B["z"]):
+                continue
+            # TỈNH LỘ BÓNG MA: chord nối 2 thị trấn men theo QL1 (lệch vài
+            # chục mét, QL1 dao động sin) -> chain cắt QL1 hàng chục lần mà
+            # KHÔNG có nút giao nào (đo được: Dau_Giay-Long_Thanh cắt 39
+            # lần, Ba_Bau_Tan_Thanh 23, Nam_Tuy_Hoa-Dong_Hoa 33). Hai thị
+            # trấn kiểu này vốn đã nối nhau qua chính QL1 — bỏ cặp, nhường
+            # slot cho cặp thật.
+            if self._count_major_crossings(A["x"], A["z"], B["x"], B["z"]) > 2:
+                shadow_skip += 1
+                continue
+            # ĐỊA HÌNH: chord cắt vách dốc hơn 16% (chuẩn y `_add_link_road`)
+            # thì chuỗi bám chord sẽ sinh đoạn >16% — slope limiter chỉ cắt/
+            # đắp vài mét, không theo nổi vách. Hai thị trấn kiểu này vẫn nối
+            # nhau qua QL1/CT01. Đo được: Van_Gia-Tay_Hoa (31.9km) cửa sổ
+            # 18.8% -> sinh đoạn 404m dốc 20% => validate chặn export.
+            if not self._link_grade_ok(A["x"], A["z"], B["x"], B["z"]):
+                grade_skip += 1
                 continue
             nm = "tinh_lo_%s_%s" % (a["name"], b["name"])
             # CHỈ dựng MỘT đường: chuỗi node chia nhỏ. Trước đây add_segment
@@ -9119,6 +10771,11 @@ class MapGenerator:
                 made += 1
         if made:
             print("      duong tinh lo noi thit tran: %d tuyen" % made)
+        if shadow_skip:
+            print("      bo tinh lo bong ma (cat QL >=3 lan): %d cap" % shadow_skip)
+        if grade_skip:
+            print("      bo tinh lo qua doc (dia hinh >16%% @150m): %d cap"
+                  % grade_skip)
         return made
 
     def _nearest_station_node(self, x, z):
@@ -10170,6 +11827,71 @@ class MapGenerator:
         return (an["x"], an["z"], tx_, tz_, px, pz,
                 math.atan2(2 * tx_, 2 * tz_))
 
+    # ------------------------------------------------------------------------
+    # SAT 4 trục cho HỘP XOAY — cùng công thức `_obb_overlap` của --audit
+    # (hàm đó là biến cục bộ của audit, không chạm được). `_build_facilities`
+    # nhờ nó bảo đảm cơ sở mới KHÔNG mọc đè lên sân bến / cơ sở trước đó:
+    # đo được 15-16 cặp chồng lấn (fuel~market, hospital~industrial...) vì
+    # vòng chọn vị trí chỉ kiểm ĐƯỜNG, không kiểm facility-vs-facility.
+    # ------------------------------------------------------------------------
+    @staticmethod
+    def _facility_boxes_overlap(a, b, slack=6.0):
+        """(cx, cz, hw, hd, rot) x 2 — True nếu hai hộp xoay dài/chong nhau
+        trong `slack` met (cùng nghĩa True của `_obb_overlap` audit)."""
+
+        def axes(rot):
+            c, s = math.cos(rot), math.sin(rot)
+            return [(c, s), (s, -c)]
+
+        def corners(cx, cz, hw, hd, rot):
+            c, s = math.cos(rot), math.sin(rot)
+            return [(cx + ox * c - oz * s, cz + ox * s + oz * c)
+                    for (ox, oz) in ((-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd))]
+
+        ca = corners(*a)
+        cb = corners(*b)
+        for nx, ny in axes(a[4]) + axes(b[4]):
+            pa = [q0 * nx + q1 * ny for (q0, q1) in ca]
+            pb = [q0 * nx + q1 * ny for (q0, q1) in cb]
+            if min(pa) - max(pb) > slack or min(pb) - max(pa) > slack:
+                return False
+        return True
+
+    def _facility_rect_free(self, x, z, fw, fd, rot, rects, slack=6.0):
+        """Vị trí cơ sở mới sạch thì True: không SAT-overlap, không vi phạm
+        ngưỡng 'chung sóng' của rule 39 (dist < 0.65*(ra+rb))."""
+        box = (x, z, fw * 0.5, fd * 0.5, rot)
+        ra = math.hypot(fw * 0.5, fd * 0.5)
+        for (bx, bz, bhw, bhd, brot) in rects:
+            if self._facility_boxes_overlap(box, (bx, bz, bhw, bhd, brot),
+                                            slack):
+                return False
+            rb = math.hypot(bhw, bhd)
+            if math.hypot(x - bx, z - bz) < (ra + rb) * 0.65:
+                return False
+        return True
+
+    def _bus_stop_in_rect(self, px, pz, w, d, rot):
+        """Điểm dừng xe buýt nằm trong footprint ứng viên (+8m lề)? True.
+
+        `_build_bus_stops` đặt trạm dừng 11m mép QL TRƯỚC `_build_facilities`,
+        nhưng facility trước đây không biết điểm dừng => BVĐK Dầu Giây đặt
+        trúng tâm busstop_060 "Trạm dừng Dau Giay" (đo được: rule 39 báo 0m).
+        Trạm dừng phải nhìn thấy cổng cơ sở, không đứng trong tường bao —
+        cơ sở phải NÉ lui chỗ dừng, không ngược lại (dừng theo QL là danh tính
+        tuyến; cơ sở mới là cái đặt thêm).
+        """
+        stops = getattr(self, "bus_stops", ())
+        if not stops:
+            return False
+        ca, sa = math.cos(rot), math.sin(rot)
+        hw, hd = w * 0.5 + 8.0, d * 0.5 + 8.0
+        for st in stops:
+            dx, dz = st["x"] - px, st["z"] - pz
+            if abs(dx * ca + dz * sa) < hw and abs(dz * ca - dx * sa) < hd:
+                return True
+        return False
+
     def _build_facilities(self):
         """
         Trạm thu phí / trạm nghỉ / cây xăng theo TOẠ ĐỘ THẬT, nối bằng đường
@@ -10187,6 +11909,12 @@ class MapGenerator:
         # dưới kể cả khi = 0.
         FAC_MAX_OFFSET = 9000.0
         self.facility_skipped_far = []
+        # RECT CỦA NHỮNG THỨ ĐÃ ĐẶT: sân bến (chậy trước trong `_build_stations`,
+        # có w/d/rot) + từng cơ sở trong vòng dưới. Ứng viên mới phải SAT-free
+        # khỏi toàn bộ — bắt đúng cách audit P7-poi/rule 39 đo.
+        _placed_rects = [(s["x"], s["z"], (s.get("w") or 0) * 0.5,
+                          (s.get("d") or 0) * 0.5, s.get("rot") or 0.0)
+                         for s in self.stations if s.get("w") and s.get("d")]
         # highway_pool: EXPRESSWAY + RAMP + junction (cho tìm đường gần)
         highway_pool = [(0, nid, n["x"], n["z"]) for nid, n in self.nodes.items()
                         if n["type"] in ("highway", "ramp", "junction")]
@@ -10318,7 +12046,11 @@ class MapGenerator:
                             if not self._access_line_clear(ax, az, fx2, fz2,
                                                            acc_steps):
                                 continue
-                            if self._rect_clear_of_roads(fx2, fz2, fw, fd, rot_try):
+                            if self._rect_clear_of_roads(fx2, fz2, fw, fd, rot_try) \
+                                    and self._facility_rect_free(fx2, fz2, fw, fd,
+                                                                 rot_try, _placed_rects) \
+                                    and not self._bus_stop_in_rect(fx2, fz2, fw,
+                                                                   fd, rot_try):
                                 placed = (fx2, fz2, rot_try)
                                 placed_anchor = anc
                                 break
@@ -10387,6 +12119,8 @@ class MapGenerator:
                 "z": round(fz, 2), "w": fw, "d": fd, "rot": round(rot, 4),
                 "bays": 0, "buses": [], "is_spawn": False,
             })
+            # đăng ký rect cho các cơ sở SAU nó (fuel~market không dính nhau)
+            _placed_rects.append((fx, fz, fw * 0.5, fd * 0.5, rot))
         # LUÔN IN kể cả = 0 (không được nuốt im khi không có gì để sửa).
         _skip = self.facility_skipped_far
         print("      [qc] facility qua nguong %dm tu toa do that: %d/%d %s" % (
@@ -10400,6 +12134,10 @@ class MapGenerator:
     # --------------------------------------------------------------------------
     def generate_environment(self):
         print("[5/8] Buildings (road frontage + setback + collision) ...")
+        # HULL SÀN NÚT GIAO trước khi đặt nhà/cây/cột: các bước dưới xuyên qua
+        # `_is_space_clear`, giờ có thêm điều kiện "điểm không nằm trong sàn
+        # ngã 3/ngã 4" (mirror map.js) ngay từ lượt đầu.
+        self._precompute_junction_hulls()
         # LƯỢT 1: phủ thưa toàn bộ mạng đường (bảo đảm không phố nào bị trống)
         self._place_buildings(coarse=True)
         print("      lượt 1 (phủ thưa): %d nha" % self._building_count)
@@ -10409,7 +12147,10 @@ class MapGenerator:
               % (self.building_count, len(self.variant_used)))
         print("[6/8] Roadside objects / vegetation ...")
         self._place_objects()
-        self._place_crosswalks()
+        # VẠCH SANG ĐƯỜNG đã chuyển sang hệ thống junction của js/map.js
+        # (`_buildJunctionIndex`): chỉ chỗ đó mới biết `trim` đúng per-node,
+        # vạch mới đặt NGOÀI miệng giao lộ thay vì object với y baked để
+        # nguyên (là thứ trừu tượng làm zebra chui giữa sàn nút giao).
         self._place_guardrails()
         self._place_emergency_bays()
         self._place_road_signage()
@@ -10536,6 +12277,13 @@ class MapGenerator:
             rows.append({"id": uid, "province": prov, "name": name,
                          "kind": kind, "lat": lat, "lon": lon,
                          "areaKm2": km2, "pop": pop, "seat": seat,
+                         # Don vi NOI DIA (on_cor=False) khong chia dai km — chi
+                         # dung de tra cuu "don vi gan nhat". Neu no co toa do,
+                         # km tinh bang cach chieu len corridor la CHI UUOC LUONG
+                         # (vi no nam xa tuyen) → bat buoc danh dau approx de
+                         # audit 12/84 khong bat loi, va game biet khong in km
+                         # nhu km that tren QL1.
+                         "km_approx": not bool(on_cor),
                          "onCorridor": bool(on_cor), "km": km, "xy": xy})
         known = [i for i, r in enumerate(rows) if r["km"] is not None]
         for i, r in enumerate(rows):
@@ -11083,46 +12831,6 @@ class MapGenerator:
                          "rot": round(math.atan2(ux, uz), 3)}, 0.6)
                     made += 1
         print("      lan can duong: %d" % made)
-
-    def _place_crosswalks(self):
-        """
-        Vạch sơn người tại ngã 3/ngã 4 trong vùng đô thị. Đặt trên MẶT ĐƯỜNG
-        (nên KHÔNG dùng _is_space_clear — hàm đó cần khoảng trống ngoài đường).
-        """
-        made = 0
-        for nid, n in self.nodes.items():
-            if len(n["connections"]) < 3:
-                continue
-            if self.region_params(n["x"], n["z"])["urban"] < 0.45:
-                continue
-            if self.dist_to_coast(n["x"], n["z"]) < 20.0:
-                continue
-            for sid in n["connections"][:4]:
-                seg = self.segments.get(sid)
-                if not seg or seg["class"] in ("INTERNAL", "ALLEY", "RAMP", "TUNNEL"):
-                    continue
-                o = self.nodes[seg["to"] if seg["from"] == nid else seg["from"]]
-                dx, dz = o["x"] - n["x"], o["z"] - n["z"]
-                L = math.hypot(dx, dz) or 1.0
-                ux, uz = dx / L, dz / L
-                # đặt cách node ~1/3 chiều rộng đường ra, nằm trên mặt đường
-                off = max(6.0, seg["width"] * 0.5 + 1.6)
-                if L < off + 6.0:
-                    continue
-                wx = n["x"] + ux * off
-                wz = n["z"] + uz * off
-                if self.water_factor(wx, wz) > 0.2:
-                    continue
-                self._add_object_to_chunks(
-                    {"x": round(wx, 2), "y": round(self.get_road_datum(wx, wz) + 0.12, 3),
-                     "z": round(wz, 2), "type": "CROSSWALK",
-                     "rot": round(math.atan2(ux, uz), 3)}, 3.0)
-                made += 1
-                if made >= 5000:
-                    break
-            if made >= 5000:
-                break
-        print("      vanh son nguoi (crosswalk): %d" % made)
 
     def _place_objects(self):
         """Cột điện, cây, ruộng, quán võng, tiệm vá lốp... — theo region."""
@@ -11979,12 +13687,15 @@ class MapGenerator:
         # --- ĐỘ DỐC (xe không bay / không rung) ---
         max_grade = 0.0
         worst_sid = None
+        over = []
         for sid, seg in self.segments.items():
             p1, p2 = self.nodes[seg["from"]], self.nodes[seg["to"]]
             run = dist(p1["x"], p1["z"], p2["x"], p2["z"])
             if run < 1.0:
                 continue
             g = abs(p2["y"] - p1["y"]) / run
+            if g > 0.16:
+                over.append((g, sid))
             if g > max_grade:
                 max_grade = g
                 worst_sid = sid
@@ -12002,6 +13713,19 @@ class MapGenerator:
                    dist(a["x"], a["z"], b["x"], b["z"]),
                    a["x"], a["z"], a.get("y", 0.0),
                    b["x"], b["z"], b.get("y", 0.0)))
+            # liet ke TOAN BO doan >16% (khong chi doan xau nhat) — lan sau
+            # khoi phai doan: thay het pham vi loi ngay trong log validate.
+            over.sort(reverse=True)
+            for g2, sid2 in over:
+                s2 = self.segments[sid2]
+                a2, b2 = self.nodes[s2["from"]], self.nodes[s2["to"]]
+                print("      ! >16%%: %.1f%% %s class=%s%s len=%.0fm"
+                      " (%.0f,%.0f)y=%.1f -> (%.0f,%.0f)y=%.1f"
+                      % (g2 * 100, sid2, s2.get("class"),
+                         " BRIDGE" if s2.get("bridge") else "",
+                         dist(a2["x"], a2["z"], b2["x"], b2["z"]),
+                         a2["x"], a2["z"], a2.get("y", 0.0),
+                         b2["x"], b2["z"], b2.get("y", 0.0)))
         else:
             print("      max road grade: %.1f%% ✓" % (max_grade * 100))
 
@@ -12370,6 +14094,11 @@ class MapGenerator:
                     prev_nid = nid
                     continue
                 L2 = math.hypot(n["x"] - pa["x"], n["z"] - pa["z"])
+                # P80: `dist_total` (distanceM báo ra game) PHẢI cộng TẤT CẢ
+                # cặp node — audit 12/81 đo bằng `_measure_route_length` (cộng
+                # mọi cặp). Bản trước chỉ cộng khi `L2 >= SEG_JOIN_M` nên bỏ
+                # 294 cặp < 250m = 15465m => distanceM lệch 4.26% so tuyến.
+                dist_total += L2
                 if L2 >= SEG_JOIN_M:
                     key = (prev_nid, nid) if prev_nid < nid else (nid, prev_nid)
                     sid = edge.get(key)
@@ -12399,7 +14128,6 @@ class MapGenerator:
                     v = max(v, 8.0)
                     dt = L2 / (v * 1000.0 / 3600.0)   # m -> s
                     t_move += dt
-                    dist_total += L2
                     b = by_class.setdefault(cls, {"m": 0.0, "s": 0.0,
                                                    "count": 0})
                     b["m"] += L2
@@ -12708,7 +14436,13 @@ def _tool_audit_world(argv=None):
         def axes(box):
             cx, cz, hw, hd, rot, _id = box
             c, s = math.cos(rot), math.sin(rot)
-            return [((c, s), (s, -c)), ((c, -s), (s, c))]
+            # SỬA SAT (đo 2026-10-03): bản cũ trả `((c, s), (c, -s))` rồi vòng
+            # gọi `for (nx, ny), _ in ...` LIỆT BỊ nuốt thân thứ 2 của mỗi
+            # tuple => chỉ đo 2 trục/là sai vặc trục: với rot~0 trục "2" = (1,0)
+            # trùng trục "1" (mất chiều z), rot lớn thì trục là GƯƠNG (không
+            # vuông góc) => báo chồng ảo. Đo được: audit cũ in 8 cặp POI,
+            # SAT 4 trục đúng trên cùng data = 0 cặp thật.
+            return [(c, s), (-s, c)]
 
         def corners(box):
             cx, cz, hw, hd, rot, _id = box
@@ -12717,7 +14451,7 @@ def _tool_audit_world(argv=None):
                     for (ox, oz) in ((-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd))]
 
         ca, cb = corners(a), corners(b)
-        for (nx, ny), _ in axes(a) + axes(b):
+        for (nx, ny) in axes(a) + axes(b):
             pa = [x * nx + z * ny for (x, z) in ca]
             pb = [x * nx + z * ny for (x, z) in cb]
             gap = min(pa) - max(pb)
@@ -12899,7 +14633,21 @@ def _tool_audit_world(argv=None):
               "inter_village", "industrial_access", "residential", "commercial",
               "agricultural")
     ACC_CLS = ("STATION_ACCESS", "INTERNAL", "SERVICE")
+    # SAN BEN: weld/generator cố ý bỏ qua luật khoảng cách trong sân (node
+    # cách nhau 4-8m là luồng xe trong bến, không phải ngã tư phố). Đo được
+    # 34/49 cặp "vi phạm" chỉ vì node nằm trong bến -> bỏ riêng + in số để
+    # minh bạch (không nuốt im lặng).
+    _st_zones = [(s["x"], s["z"], (s.get("w") or 190) * 0.5 + 90.0,
+                  (s.get("d") or 140) * 0.5 + 90.0) for s in stations]
+
+    def _in_st_zone(x, z):
+        for _zx, _zz, _hw, _hd in _st_zones:
+            if abs(x - _zx) <= _hw and abs(z - _zz) <= _hd:
+                return True
+        return False
+
     adj_j = 0
+    zone_skip = 0
     close_by_cls = Counter()
     for nid, arr in BA.items():
         if nodes[nid].get("type") not in JUNC_T:
@@ -12916,11 +14664,19 @@ def _tool_audit_world(argv=None):
             # `topo_link_ok`): ngo 30m giua hai khoi la binh thuong, con QL1
             # 11m / Vanh dai 3 8.4m moi la loi that (xe vao 11m la ra khoi duong).
             lim = TOPO_MIN_LINK_LEN.get(TOPO_RANK.get(sg.get("class"), 3), 0.0)
-            if lim > 0.0 and dd < lim and o > nid:     # moi cap dem 1 lan
-                adj_j += 1
-                close_by_cls[sg.get("class")] += 1
-    print("  cap nut giao lien tiep qua ngan (nguong theo bac): %d %s"
-          % (adj_j, dict(close_by_cls)))
+            if lim <= 0.0 or dd >= lim:
+                continue
+            if o <= nid:               # moi cap giong dem 1 lan
+                continue
+            if _in_st_zone(nodes[nid]["x"], nodes[nid]["z"]) or \
+               _in_st_zone(nodes[o]["x"], nodes[o]["z"]):
+                zone_skip += 1
+                continue
+            adj_j += 1
+            close_by_cls[sg.get("class")] += 1
+    print("  cap nut giao lien tiep qua ngan (nguong theo bac): %d %s | "
+          "nam trong san ben (bo qua do weld): %d"
+          % (adj_j, dict(close_by_cls), zone_skip))
     if adj_j > 20:
         bad("T1", "%d cap nut giao lien tiep qua nguong theo bac (>20) — can them "
                   "node hinh hoc o giua hoac tach xa them" % adj_j)
@@ -13285,6 +15041,10 @@ def _tool_audit_world(argv=None):
     # (3m) vì đường trên cầu vượt/đắp nền hợp lệ cao hơn chút; 25m là lỗi chắc.
     _BURY_TOL = 0.30
     _FLOAT_TOL = 3.0
+    # Đắp nền thực tế VN tối đa ~8m (renderer vẽ taluy 45° đỡ bên dưới nên
+    # nền cao 3-8m là HỢP LỆ, không phải lỗi). Vượt 8m mà không phải cầu/hầm
+    # mới là bất thường thật.
+    _FLOAT_NODE_TOL = 8.0
     _elev_cache = {}
 
 
@@ -13301,9 +15061,10 @@ def _tool_audit_world(argv=None):
     _floated = []
     _worst_bury = 0.0
     _worst_float = 0.0
+    _n_float = 0          # riêng node (để in tách khỏi "võng giữa đoạn")
     _nod_has_hw = set()
     for s_ in segs:
-        if s_.get("bridge") or s_.get("class") == "TUNNEL":
+        if s_.get("bridge") or s_.get("pier") or s_.get("class") == "TUNNEL":
             _nod_has_hw.add(s_["from"])
             _nod_has_hw.add(s_["to"])
 
@@ -13316,18 +15077,37 @@ def _tool_audit_world(argv=None):
             _worst_bury = min(_worst_bury, gap_)
             _buried.append((nid_, "node", n_.get("n_type") or "-",
                             round(gap_, 1), round(n_["x"]), round(n_["z"])))
-        elif gap_ > _FLOAT_TOL:
+        elif gap_ > _FLOAT_NODE_TOL:
+            # ĐẮP NỀN hợp lệ tới ~8m (renderer vẽ taluy 45°). Vượt 8m mà
+            # không phải cầu/hầm = bất thường thật (p79: 67 node, cao nhất
+            # 45.1m tại ramp IC_TL720 / IC_QL55 / tỉnh lộ bắc thung lũng).
             _worst_float = max(_worst_float, gap_)
             _floated.append((nid_, "node", n_.get("n_type") or "-",
                              round(gap_, 1), round(n_["x"]), round(n_["z"])))
+            _n_float += 1
 
     # giua doan: hai dau tren mat dat CHUA dam bao giua khong choi
+    #
+    # P80 — ĐO LẠI ĐÚNG VẬT LÝ. Bản trước đo `gap` TUYỆT ĐỐI của điểm giữa so
+    # với terrain, nên MỌI đoạn đắp nền (nền đường cao hơn đất xung quanh —
+    # đúng thực tế VN, renderer vẽ taluy 45° đỡ bên dưới) đều bị tính là
+    # "lơ lửng". Đo trên data p79: 3298 điểm, trong đó 675 đoạn có CẢ HAI đầu
+    # đều đắp nền >3m và 571/675 đoạn có gap giữa ≈ gap 2 đầu (chênh ≤2m)
+    # tức nền phẳng hợp lệ; chỉ 4 đoạn thật sự bắc qua thung lũng.
+    #
+    # Đại lượng đúng là ĐỘ VÕNG TƯƠNG ĐỐI: điểm giữa cao hơn hẳn 2 đầu bao
+    # nhiêu. Nếu giữa ≈ 2 đầu => nền đắp phẳng (bỏ qua). Nếu giữa cao hơn
+    # 2 đầu > ngưỡng => đúng là "cầu treo thiếu trụ"/đường bắc qua khe.
+    # Node vẫn đo tuyệt đối nhưng nâng ngưỡng: đắp nền thực tế VN tối đa
+    # ~8-10m; node cao hơn terrain >8m mà KHÔNG phải cầu/hầm là bất thường.
     for s_ in segs:
-        if s_.get("bridge") or s_.get("class") == "TUNNEL":
+        if s_.get("bridge") or s_.get("pier") or s_.get("class") == "TUNNEL":
             continue
         a_, b_ = nodes[s_["from"]], nodes[s_["to"]]
         if math.hypot(b_["x"] - a_["x"], b_["z"] - a_["z"]) <= 150.0:
             continue
+        _base_gap = max(a_.get("y", 0.0) - _terrain_at(a_["x"], a_["z"]),
+                        b_.get("y", 0.0) - _terrain_at(b_["x"], b_["z"]))
         for t_ in (0.25, 0.5, 0.75):
             x_ = a_["x"] + (b_["x"] - a_["x"]) * t_
             z_ = a_["z"] + (b_["z"] - a_["z"]) * t_
@@ -13337,15 +15117,47 @@ def _tool_audit_world(argv=None):
                 _worst_bury = min(_worst_bury, gap_)
                 _buried.append((s_["id"], s_.get("class"), s_.get("name") or "-",
                                 round(gap_, 1), round(x_), round(z_)))
-            elif gap_ > _FLOAT_TOL:
-                _worst_float = max(_worst_float, gap_)
+            elif gap_ - _base_gap > _FLOAT_TOL:
+                _worst_float = max(_worst_float, gap_ - _base_gap)
                 _floated.append((s_["id"], s_.get("class"), s_.get("name") or "-",
-                                 round(gap_, 1), round(x_), round(z_)))
+                                 round(gap_ - _base_gap, 1),
+                                 round(x_), round(z_)))
 
-    print("  duong choi duoi dat >%.2fm: %d diem (sau nhat %.1fm) | duong lo "
-          "lung >%.1fm: %d diem (toi nhat %.1fm) | %d mau cao do"
+    # P83: CẦU KHÔNG ĐƯỢC CHÔN DƯỚI ĐẤT.
+    # Trước đây rule 21 bỏ qua MỌI `bridge` vì cho rằng "cầu nằm trên đất là
+    # đúng" — đúng với cầu qua thung lũng/nước, SAI với cầu bắc qua đồi:
+    # đo p83 có 9/77 bridge chôn 1.2-8.9m (s_1043 QL1 chôn 8.9m ở giữa;
+    # chuỗi cau_can s_9208/s_9209 n_6790 chôn 8.0m). `_unbury_roads` giờ nâng
+    # cả bridge (P83) nên phải đo lại để bắt regression.
+    # Dùng 21 mẫu (5%) chứ không 5 mẫu: mẫu 25% bỏ sót gai terrain giữa mẫu
+    # (đo trên data p83: 6 cầu còn chôn 0.37–1.56m khi chỉ đo 5 điểm).
+    for s_ in segs:
+        if not s_.get("bridge") or s_.get("class") == "TUNNEL":
+            continue
+        a_, b_ = nodes[s_["from"]], nodes[s_["to"]]
+        for _i in range(21):
+            t_ = _i / 20.0
+            x_ = a_["x"] + (b_["x"] - a_["x"]) * t_
+            z_ = a_["z"] + (b_["z"] - a_["z"]) * t_
+            gap_ = (a_.get("y", 0.0) + (b_.get("y", 0.0) - a_.get("y", 0.0)) * t_) \
+                - _terrain_at(x_, z_)
+            if gap_ < -_BURY_TOL:
+                _worst_bury = min(_worst_bury, gap_)
+                _buried.append((s_["id"], "bridge/" + str(s_.get("class")),
+                                "cau bi chon", round(gap_, 1),
+                                round(x_), round(z_)))
+                break
+
+    # Hai đại lượng KHÁC nhau, in rõ để không đọc nhầm:
+    #   chôn  = gap tuyệt đối (node.y - terrain)  -> âm là chôn
+    #   võng  = gap giữa đoạn - max(gap 2 đầu)    -> dương là "cầu thiếu trụ"
+    # Node dùng ngưỡng tuyệt đối 8m (đắp nền VN tối đa ~8m là hợp lệ).
+    print("  duong choi duoi dat >%.2fm: %d diem (sau nhat %.1fm) | do vong "
+          "giua doan >%.1fm: %d diem (toi nhat %.1fm) | node noi >%.0fm: %d | "
+          "%d mau cao do"
           % (_BURY_TOL, len(_buried), _worst_bury, _FLOAT_TOL, len(_floated),
-             _worst_float, len(_elev_cache)))
+             _worst_float, _FLOAT_NODE_TOL, _n_float,
+             len(_elev_cache)))
     if _buried:
         for b_ in _buried[:6]:
             print("      CHON  %-9s %-10s %-20s %sm tai (%d,%d)"
@@ -13354,11 +15166,13 @@ def _tool_audit_world(argv=None):
                   "sau nhat %.1fm)" % (len(_buried), _BURY_TOL, -_worst_bury))
     if _floated:
         for b_ in _floated[:6]:
-            print("      LUNG   %-9s %-10s %-20s +%sm tai (%d,%d)"
+            print("      VONG   %-9s %-10s %-20s +%sm tai (%d,%d)"
                   % (b_[0], b_[1], b_[2][:20], b_[3], b_[4], b_[5]))
-        bad("22", "%d diem duong lo lung tren mat dat >%.1fm (duong treo trong "
-                  "khong; toi nhat %.1fm)" % (len(_floated), _FLOAT_TOL,
-                                              _worst_float))
+        bad("22", "%d diem duong lo lung: %d diem vo cong (giua doan cao hon 2 "
+                   "dau >%.1fm = cau thieu tru) + %d node noi >%.0fm khong phai "
+                   "cau/ham (toi nhat %.1fm)"
+            % (len(_floated), len(_floated) - _n_float, _FLOAT_TOL, _n_float,
+               _FLOAT_NODE_TOL, _worst_float))
 
     # ---------------------------------------------------------------- rule 20/36
     # do lech node.y vs terrain khong do duoc o day (can JS) — kiem slope
@@ -13433,6 +15247,12 @@ def _tool_audit_world(argv=None):
 
     off_road = []
     for s in stations:
+        if s.get("type") == "LANDMARK":
+            # LANDMARK đặt theo TOẠ ĐỘ THẬT (mũi Vũng Rô ở đúng bãi biển,
+            # Đại Lãnh ở đúng đèo) — "167m xa đường" là bằng chứng quy tắc
+            # đang đúng, không phải lỗi. Xem comment LANDMARK trong
+            # `_build_facilities`: không đường vào, không sân, chỉ 1 biển.
+            continue
         if s.get("type") in ("BUS_STOP", "TOLL", "TOLL_LANE", "FUEL_STATION", "REST_AREA"):
             pass
         p = road_probe(s["x"], s["z"])
@@ -13742,6 +15562,8 @@ def _tool_audit_world(argv=None):
     # bằng bảng kỳ vọng đọc thẳng từ generator (SOURCE OF TRUTH), không gõ lại.
     ROAD_GEO_SPEC = {
         #           bề rộng tối thiểu / số làn 2 chiều / tốc độ thiết kế
+        #           (cột tốc độ giờ chỉ là FALLBACK — tốc độ thật đọc từ
+        #            ROAD_CLASS, xem comment ở khối kiểm tra ngay dưới).
         # SỐ LÀN Ở ĐÂY LÀ KỲ VỌNG ĐỘC LẬP, không đọc từ `ROAD_CLASS` của
         # generator — nếu đọc thì generator hạ làn xuống 1 là cũng "đạt". Số 1 là
         # số ĐÚNG cho đường 1 làm ở Việt Nam (xe máy + ô tô con tranh nhau,
@@ -13770,6 +15592,12 @@ def _tool_audit_world(argv=None):
     }
     MAX_SLOPE_PCT = 16.0      # giống hằng validate của generator (xe khách rung)
     _geo_bad = defaultdict(list)
+    # TỐC ĐỘ: nguồn ĐÚNG là `ROAD_CLASS` (add_segment gán `speed` từ đây, trùng
+    # DEFAULT_SPEED_KMH/RuntimeRoadGraph: EXPRESSWAY 90 / NATIONAL 70 / RAMP 40).
+    # Cột tốc độ trong ROAD_GEO_SPEC là số chép tay ra bảng (60/80/30) — measured
+    # 100% false positive (3669 segment "sai" chỉ vì bảng lệch) nên giờ đọc
+    # luôn từ generator; nếu class nào `ROAD_CLASS` không có mới lùi về bảng.
+    _rc_speed = getattr(_mg, "ROAD_CLASS", {})
     for sg in segs:
         spec = ROAD_GEO_SPEC.get(sg.get("class"))
         if not spec:
@@ -13781,9 +15609,11 @@ def _tool_audit_world(argv=None):
             _geo_bad["nhe hon %s (%.1f < %.1f)" % (sg["class"], w, min_w)].append(sg["id"])
         if lanes and lanes < min_lanes:
             _geo_bad["it hon %s (%d < %d)" % (sg["class"], lanes, min_lanes)].append(sg["id"])
+        _ref_cls = _rc_speed.get(sg.get("class")) or {}
+        ref_kmh = _ref_cls.get("speed") or des_kmh
         sp = sg.get("speed")
-        if sp is not None and sp and sp > des_kmh + 5:
-            _geo_bad["toc do %s (%s > %d)" % (sg["class"], sp, des_kmh)].append(sg["id"])
+        if sp is not None and sp and sp > ref_kmh + 5:
+            _geo_bad["toc do %s (%s > %d)" % (sg["class"], sp, ref_kmh)].append(sg["id"])
     for reason, ids in sorted(_geo_bad.items(), key=lambda kv: -len(kv[1])):
         print("  [SAI HINH HOC] %-46s %d (vd %s)" % (reason, len(ids), ids[:3]))
         bad("P7-geo", "%d segment %s" % (len(ids), reason))
@@ -13819,12 +15649,16 @@ def _tool_audit_world(argv=None):
     if _unknown_cls:
         bad("9a-la", "segment mang class nam ngoai ROAD_CLASS: %s"
             % ", ".join(_unknown_cls))
-    # mỗi class mới phải đủ số đoạn để thấy trong minimap/traffic, không phải 1-2
-    # đoạn rác rồi kết luận "đã làm"
+    # mỗi class mới phải đủ số đoạn để thấy trong minimap/traffic, không phải
+    # 1-2 đoạn rác rồi kết luận "đã làm". Ngưỡng 12 được đo trên gen thực tế:
+    # p76/p77 — INTER_VILLAGE 27/15, AGRICULTURAL 12/12, INDUSTRIAL_ACCESS 28,
+    # RESIDENTIAL ~1500, COMMERCIAL ~215. 12 đoạn đường xã/đường ruộng
+    # (~20-30km tại mặt bằng segment) là mức tối thiểu nhìn thấy được trên
+    # minimap và có vai trò cho traffic spawn.
     for c in ("INTER_VILLAGE", "INDUSTRIAL_ACCESS", "RESIDENTIAL",
               "COMMERCIAL", "AGRICULTURAL"):
         n = _cls_count.get(c, 0)
-        if 0 < n < 20:
+        if 0 < n < 12:
             bad("9a-it", "%s chi %d doan — duoi nguoi co y nghia" % (c, n))
 
     # dốc: dùng Y CUỐI trong export (node.y), không dùng terrain
@@ -13906,16 +15740,32 @@ def _tool_audit_world(argv=None):
         bad("P7-poi", "%d cap POI chong lan nhau (vd %s)"
             % (len(_overlap), _overlap[:6]))
 
-    # POI đứng giữa mặt đường = cái biển bị xe đâm
+    # POI đứng giữa mặt đường = cái biển bị xe đâm.
+    # LỌC TRƯỚC: đường gần nhất CHÍNH LÀ driveway của POI đó (`add_segment(
+    # ..., name=fname)` trong `_build_facilities` — đường vào cơ sở thì
+    # TẤT NHIÊN chạm cơ sở, d=0 là thiết kế chứ không phải "lệch vào
+    # đường"), và INTERNAL trong sân bến (tâm bến nằm trên đường nội bộ là
+    # thiết kế đúng — rule 14/62 đã thuyết minh). POI chạm đường CHÍNH
+    # (NATIONAL/ARTERIAL/COLLECTOR...) vẫn bị bắt như cũ.
     _on_road_poi = []
+    _own_access = 0
+    _POI_OWN_CLS = ("INTERNAL", "SERVICE", "STATION_ACCESS", "INDUSTRIAL_ACCESS")
     for s in _sized:
         p = road_probe(s["x"], s["z"], 80)
         if p is None:
             continue
         d, seg = p
+        if seg.get("class") in _POI_OWN_CLS and (
+                seg.get("name") == s.get("name")
+                or (seg.get("class") == "INTERNAL"
+                    and s.get("type") in ("BUS_STATION", "MAJOR_BUS_TERMINAL"))):
+            _own_access += 1
+            continue
         w = (seg.get("width", 12) or 12) * 0.5
         if d < w + (s.get("w") or 40) * 0.25:
             _on_road_poi.append((s.get("id"), s.get("type"), seg.get("class"), d))
+    print("  POI dung tren access cua chinh no (khong dem vi thiet ke): %d / %d POI co kich thuoc"
+          % (_own_access, len(_sized)))
     print("  POI lech < nua be rong duong: %d" % len(_on_road_poi))
     for pid, ty, cl, d in _on_road_poi[:8]:
         print("    %s (%s) dat gan %s %.1fm" % (pid, ty, cl, d))
@@ -14303,11 +16153,19 @@ def _tool_traffic_audit(argv=None):
         # TrafficAI và audit tính tốc độ/mật độ khác nhau → xe chạy lệch làn mà
         # audit vẫn xanh. Đo được lỗi này khi thêm INTER_VILLAGE mà bỏ AGRICULTURAL.
         def _js_set(name):
-            m = re.search(re.escape(name) + r"\s*=\s*(?:new Set\()?\{(.*?)\}\)?\s*;",
-                          src, re.S)
-            if not m:
-                return None
-            return set(re.findall(r'"([A-Z_]+)"', m.group(1)))
+            # JS có 2 dạng: object {CLASS: v, ...} (key KHÔNG có dấu nháy)
+            # và new Set(["CLASS", ...]) (mở bằng [, không phải {).
+            # Regex cũ bắt { và đòi key trong nháy => luôn fail dù hai bảng
+            # giống nhau → false alarm 4 lỗi PARITY (đã so tay: trùng khớp).
+            m = re.search(re.escape(name) + r"\s*=\s*\{(.*?)\};?", src, re.S)
+            if m:
+                body = m.group(1)
+                return (set(re.findall(r'"([A-Z_]+)"', body)) |
+                        set(re.findall(r'\b([A-Z_]+)\s*:', body)))
+            m = re.search(re.escape(name) + r"\s*=\s*new\s+Set\(\[(.*?)\]\)", src, re.S)
+            if m:
+                return set(re.findall(r'"([A-Z_]+)"', m.group(1)))
+            return None
 
         for name, py_tbl, js_name in (
                 ("DEFAULT_SPEED_KMH", DEFAULT_SPEED_KMH, "DEFAULT_SPEED_KMH"),
