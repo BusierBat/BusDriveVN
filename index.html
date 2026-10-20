@@ -44,10 +44,42 @@
     </div>
 
     <!-- Overlay backdrop cho các panel -->
-    <div id="panel-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); z-index:99; animation:fadeIn 0.2s ease;"></div>
+    <!-- z-index 940: phải CAO HƠN #main-menu (900) — trước đây backdrop 99 và
+         panel 100 nằm DƯỚI main menu 900 -> mở Cài đặt/UV Skin từ menu chính
+         bị main menu đè lên (không thấy popup). Đây là nguyên nhân gốc
+         "UV Skin không mở được". -->
+    <div id="panel-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); z-index:940; animation:fadeIn 0.2s ease;"></div>
+
+    <!-- ===== HỘP THOẠI XÁC NHẬN (dùng chung) =====
+         z-index 1200: nằm trên MỌI lớp (menu tạm dừng 950, popup 970) ->
+         không bao giờ bị che khuất. Có 3 lựa chọn rõ ràng cho thay đổi
+         chưa lưu: Lưu / Bỏ thay đổi / Tiếp tục chỉnh sửa. -->
+    <div id="confirm-dialog" style="display:none; position:fixed; inset:0; z-index:1200; background:rgba(2,6,23,0.72); backdrop-filter:blur(3px); align-items:center; justify-content:center; padding:20px;">
+        <div style="width:min(400px,92vw); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); border:1px solid rgba(59,130,246,0.25); border-radius:16px; padding:24px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.6);">
+            <h3 style="margin:0 0 10px; font-size:1.1rem; color:#fff; font-weight:700;">⚠️ Thay đổi chưa lưu</h3>
+            <p id="confirm-message" style="margin:0 0 20px; color:#94a3b8; font-size:0.9rem; line-height:1.5;">Bạn đã thay đổi cài đặt nhưng chưa lưu.</p>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+                <button id="confirm-save" style="padding:12px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:10px; cursor:pointer; font-size:0.95rem; font-weight:700;">💾 Lưu thay đổi</button>
+                <button id="confirm-discard" style="padding:12px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.3); border-radius:10px; cursor:pointer; font-size:0.95rem; font-weight:600;">🗑️ Bỏ thay đổi</button>
+                <button id="confirm-cancel" style="padding:12px; background:rgba(148,163,184,0.12); color:#94a3b8; border:1px solid rgba(148,163,184,0.25); border-radius:10px; cursor:pointer; font-size:0.95rem; font-weight:600;">↩️ Tiếp tục chỉnh sửa</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== MENU TẠM DỪNG (ESC) ===== -->
+    <!-- z-index 950: nằm trên main menu + backdrop. Các popup con (Settings/UV
+         Skin) dùng z-index 970 nên mở từ đây vẫn hiện ĐÈ LÊN menu tạm dừng. -->
+    <div id="pause-menu" style="display:none; position:fixed; inset:0; z-index:950; background:rgba(2,6,23,0.72); backdrop-filter:blur(6px); flex-direction:column; align-items:center; justify-content:center; gap:14px; animation:fadeIn 0.18s ease;">
+        <h2 style="margin:0 0 10px; font-size:2rem; font-weight:800; color:#fff; letter-spacing:0.5px; text-shadow:0 2px 12px rgba(0,0,0,0.6);">⏸ TẠM DỪNG</h2>
+        <button id="btn-pause-resume" style="width:min(340px,86vw); padding:14px 24px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(59,130,246,0.4);">▶ TIẾP TỤC</button>
+        <button id="btn-pause-uvskin" style="width:min(340px,86vw); padding:14px 24px; background:rgba(148,163,184,0.15); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease;">🎨 CHỌN UV SKIN</button>
+        <button id="btn-pause-settings" style="width:min(340px,86vw); padding:14px 24px; background:rgba(148,163,184,0.15); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease;">⚙ CÀI ĐẶT</button>
+        <button id="btn-pause-menu" style="width:min(340px,86vw); padding:14px 24px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease;">🏠 VỀ MENU CHÍNH</button>
+        <p style="margin:12px 0 0; color:#64748b; font-size:0.8rem;">ESC: đóng menu / tiếp tục game</p>
+    </div>
 
     <!-- Bảng skin xe - Redesigned -->
-    <div id="uv-skin-panel" style="display:none; position:fixed; top:15%; left:50%; transform:translateX(-50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); padding:0; border-radius:16px; z-index:100; width:90%; max-width:480px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2); border:1px solid rgba(59,130,246,0.15); overflow:hidden; animation:slideDown 0.3s cubic-bezier(0.16,1,0.3,1);">
+    <div id="uv-skin-panel" style="display:none; position:fixed; top:15%; left:50%; transform:translateX(-50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); padding:0; border-radius:16px; z-index:970; width:90%; max-width:480px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2); border:1px solid rgba(59,130,246,0.15); overflow:hidden; animation:slideDown 0.3s cubic-bezier(0.16,1,0.3,1);">
         <div style="background:linear-gradient(90deg, #1e293b 0%, #0f172a 100%); padding:20px 24px; border-bottom:1px solid rgba(59,130,246,0.2); display:flex; align-items:center; justify-content:space-between;">
             <h2 style="margin:0; font-size:1.25rem; font-weight:700; color:#fff; display:flex; align-items:center; gap:10px;">
                 <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;">🎨 UV SKIN</span>
@@ -82,7 +114,7 @@
     </div>
 
     <!-- Bảng cài đặt - Redesigned -->
-    <div id="settings-panel" style="display:none; position:fixed; top:15%; left:50%; transform:translateX(-50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); padding:0; border-radius:16px; z-index:100; width:90%; max-width:420px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2); border:1px solid rgba(59,130,246,0.15); overflow:hidden; animation:slideDown 0.3s cubic-bezier(0.16,1,0.3,1);">
+    <div id="settings-panel" style="display:none; position:fixed; top:8%; left:50%; transform:translateX(-50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); padding:0; border-radius:16px; z-index:970; width:90%; max-width:460px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2); border:1px solid rgba(59,130,246,0.15); overflow:hidden; animation:slideDown 0.3s cubic-bezier(0.16,1,0.3,1);">
         <div style="background:linear-gradient(90deg, #1e293b 0%, #0f172a 100%); padding:20px 24px; border-bottom:1px solid rgba(59,130,246,0.2); display:flex; align-items:center; justify-content:space-between;">
             <h2 style="margin:0; font-size:1.25rem; font-weight:700; color:#fff; display:flex; align-items:center; gap:10px;">
                 <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;">⚙ CÀI ĐẶT</span>
@@ -164,18 +196,51 @@
 
             <hr style="border:none; border-top:1px solid rgba(148,163,184,0.15); margin:20px 0;">
 
+            <!-- Cấu hình nội thất xe khách -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">🛏️ Cấu hình nội thất xe khách</label>
+                <select id="setting-interior" style="width:100%; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.2); border-radius:10px; color:#fff; font-size:1rem; cursor:pointer; appearance:none; background-image:url('data:image/svg+xml;utf8,<svg fill="%2394a3b8" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>'); background-repeat:no-repeat; background-position:right 12px center; padding-right:40px;">
+                    <option value="BED20">🛏️ 20 phòng VIP (2 dãy · 1 lối đi)</option>
+                    <option value="BED34">🛏️ 34 giường VIP (3 dãy · 2 lối đi)</option>
+                </select>
+                <p style="margin:8px 0 0; color:#64748b; font-size:0.75rem;">Đổi cấu hình sẽ dựng lại khoang hành khách (giường + dải LED trần)</p>
+            </div>
+
+            <!-- Độ nhạy bàn phím -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
+                    ⌨️ Độ nhạy bàn phím
+                    <span id="val-key-sens" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">1.0</span>
+                </label>
+                <input type="range" id="setting-key-sens" min="0.5" max="2" step="0.1" value="1" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
+                <p style="margin:8px 0 0; color:#64748b; font-size:0.75rem;">Tốc độ phản hồi lái xe bằng A/D (không ảnh hưởng bộ gõ tiếng Việt)</p>
+            </div>
+
+            <!-- Âm thanh -->
+            <div class="setting-group" style="margin-bottom:24px;">
+                <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
+                    🔊 Âm lượng
+                    <span id="val-audio-volume" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">60%</span>
+                </label>
+                <input type="range" id="setting-audio-volume" min="0" max="100" step="5" value="60" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
+                <label style="display:flex; align-items:center; gap:8px; margin-top:12px; color:#94a3b8; font-size:0.85rem; cursor:pointer;">
+                    <input type="checkbox" id="setting-audio-mute" style="accent-color:#3b82f6; width:16px; height:16px; cursor:pointer;"> Tắt tiếng
+                </label>
+                <p style="margin:8px 0 0; color:#64748b; font-size:0.75rem;">Tiếng máy (xe) + còi xe</p>
+            </div>
+
+            <hr style="border:none; border-top:1px solid rgba(148,163,184,0.15); margin:20px 0;">
+
             <!-- Nút hành động -->
-            <div style="display:flex; gap:12px;">
+            <div style="display:flex; gap:12px; align-items:stretch;">
                 <button id="btn-apply-settings" style="flex:1; padding:14px 24px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(59,130,246,0.4);">
-                    ✅ ÁP DỤNG & LƯU
+                    💾 LƯU
                 </button>
                 <button id="btn-reset-settings" style="flex:1; padding:14px 24px; background:rgba(148,163,184,0.15); color:#94a3b8; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease;">
-                    ↩ KHÔI PHỤC MẶC ĐỊNH
-                </button>
-                <button id="btn-close-settings" style="width:48px; padding:14px; background:rgba(239,68,68,0.15); color:#ef4444; border:1px solid rgba(239,68,68,0.3); border-radius:12px; cursor:pointer; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)">
-                    ✕
+                    ↩ ĐẶT LẠI
                 </button>
             </div>
+            <p style="margin:10px 0 0; color:#64748b; font-size:0.75rem; text-align:center;">Lưu vào localStorage — giữ nguyên sau khi tải lại game</p>
         </div>
     </div>
 

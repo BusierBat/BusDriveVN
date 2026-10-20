@@ -4,8 +4,9 @@ import { MapLoader } from "./map.js";
 import { createUI } from "./ui.js";
 import { createNPC } from "./npc.js";
 import { createBus, loadNpcSkinList, BUS_DIMENSIONS } from "./bus.js";
-import { createBusInterior } from "./interior.js";
-import { CameraSystem } from "./camera.js";
+import { createBusInterior, createBusInterior34 } from "./interior.js";
+import { CameraSystem, PASSENGER_SEATS, PASSENGER_SEATS_34 } from "./camera.js";
+import { createAudioSystem } from "./audio.js";
 import { LightingSystem, LIGHTING_QUALITY_PRESETS } from "./lighting.js";
 import { TravelClock } from "./TravelClock.js";
 import { createPassengerSystem } from "./passenger.js";
@@ -29,7 +30,17 @@ let speedCameraFlashTimer = 0;
 
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent);
 const isLowEnd = (navigator.hardwareConcurrency || 4) <= 4 || (navigator.deviceMemory || 4) <= 4;
-let gameSettings = { graphics: 'low', renderDist: 2, npcDensity: 15, camSens: 30, fov: 70, lightingQuality: 'MEDIUM', godRays: 'high' };
+let gameSettings = {
+    graphics: 'low', renderDist: 2, npcDensity: 15, camSens: 30, fov: 70,
+    lightingQuality: 'MEDIUM', godRays: 'high',
+    // --- Cấu hình mới (mọi giá trị đều có tác dụng THẬT) ---
+    interior: 'BED20',        // 'BED20' = 20 phòng VIP | 'BED34' = 34 giường VIP
+    keySens: 1.0,             // độ nhạy lái xe bằng bàn phím (A/D)
+    audioVolume: 0.6,         // âm lượng (0..1)
+    audioMute: false          // tắt tiếng
+};
+// GIÁ TRỊ MẶC ĐỊNH (nút "Đặt lại") — 1 nguồn duy nhất để không lệch nhau.
+const DEFAULT_SETTINGS = { ...gameSettings };
 // npcDensity = "so xe NPC toi da" (maxVehicles). Zone cap = npcDensity x 0.6..1.5
 // theo mat do duong (TrafficManager._zoneCapFor): QL1A/cao toc (density 0.8-1.0)
 // -> cap ~ x1.34. npcDensity=5 cu -> chi ~7 xe chay (do duoc = 6-7 xe).
@@ -477,7 +488,12 @@ function updateVehiclePhysics(dt) {
     else steerTarget = 0;
     
     // Smoother steering interpolation with speed-dependent response
-    const steerResponseRate = steerTarget === 0 ? (3.5 + speedKmh * 0.02) : (2.5 + speedKmh * 0.01);
+    // ĐỘ NHẠY BÀN PHÍM (setting): nhân tố phản hồi lái. Không đụng logic
+    // resolve phím/UniKey — chỉ tốc độ quay vô-lăng.
+    const keySens = Math.max(0.3, Math.min(3, gameSettings.keySens || 1));
+    const steerResponseRate = (steerTarget === 0)
+        ? (3.5 + speedKmh * 0.02) * keySens
+        : (2.5 + speedKmh * 0.01) * keySens;
     if (steerTarget === 0) steerAngle += (0 - steerAngle) * Math.min(1, dt * steerResponseRate);
     else steerAngle += (steerTarget - steerAngle) * Math.min(1, dt * (steerResponseRate * 0.7));
     
@@ -692,7 +708,8 @@ function initInput() {
             ui.showConsole();
             return;
         }
-        if (code === "Escape") { togglePause(); return; }
+        // ESC xử lý ở handler document (setupMenuEvents) — KHÔNG xử lý ở đây
+        // để tránh 2 listener cùng bắt ESC (sẽ toggle 2 lần = không đổi).
         // F3: bat/tat panel debug giao thong (khong anh huong gameplay)
         if (code === "F3") { e.preventDefault(); if (trafficDebug) trafficDebug.toggle(); return; }
         if (gameState !== "playing" || paused) return;
@@ -804,6 +821,7 @@ function initInput() {
         }
         if (code === "KeyH" && performance.now() - lastHornPressTime > 300) {
             lastHornPressTime = performance.now();
+            audioSystem?.horn(0.45);     // còi xe THẬT (WebAudio)
             ui?.toast("📯 Bim bim!");
         }
         if (code === "KeyC" && performance.now() - lastCameraPressTime > 200 && cameraSystem) {
@@ -937,8 +955,174 @@ function togglePause() {
     // lan 1 pause, lan 2 van pause, lan 3 van pause... game bi khoa pause, chunk
     // khong load (loadedChunks = 0), xe khong di duoc.
     if (gameState !== "playing") return;
-    paused = !paused;
-    if (!paused) clock.getDelta();   // reset delta, khong cho physics nhy lon sau pause
+    togglePauseMenu();
+}
+
+// ===== QUẢN LÝ GIAO DIỆN: MENU TẠM DỪNG (ESC) + POPUP =====
+let pauseMenuOpen = false;
+let settingsDirty = false;     // người chơi đã sửa setting nhưng chưa Lưu
+let audioSystem = null;
+
+function isPanelOpen() {
+    const sp = document.getElementById("settings-panel");
+    const up = document.getElementById("uv-skin-panel");
+    return !!(sp && sp.style.display === 'block') || !!(up && up.style.display === 'block');
+}
+
+function closeAllPanels() {
+    const backdrop = document.getElementById("panel-backdrop");
+    const settingsPanel = document.getElementById("settings-panel");
+    const uvPanel = document.getElementById("uv-skin-panel");
+    if (backdrop) backdrop.style.display = 'none';
+    if (settingsPanel) settingsPanel.style.display = 'none';
+    if (uvPanel) uvPanel.style.display = 'none';
+    document.body.style.overflow = '';
+    canvas?.focus?.();          // trả focus về game (ô nhập không giữ focus)
+}
+
+function togglePauseMenu(force) {
+    if (gameState !== "playing") return;
+    const next = (typeof force === 'boolean') ? force : !pauseMenuOpen;
+    pauseMenuOpen = next;
+    const el = document.getElementById("pause-menu");
+    if (el) el.style.display = next ? 'flex' : 'none';
+    if (next) {
+        paused = true;                     // game DỪNG thật khi menu mở
+        clearPressedKeys();
+    } else {
+        paused = false;
+        clock.getDelta();                  // reset delta, không bù physics nhảy lớn
+    }
+    lastTime = performance.now();
+}
+
+/** ESC tuỳ trạng thái giao diện: console -> popup -> menu tạm dừng. */
+function handleEscape() {
+    // Hộp thoại xác nhận đang mở -> ESC đóng nó (không đụng trạng thái game)
+    const dlg = document.getElementById('confirm-dialog');
+    if (dlg && dlg.style.display === 'flex') { closeConfirmDialog(); return; }
+    if (isConsoleOpen) {
+        isConsoleOpen = false;
+        ui.hideConsole();
+        lastTime = performance.now();
+        return;
+    }
+    if (isPanelOpen()) {
+        // Popup đang mở -> đóng popup, GIỮ NGUYÊN trạng thái pause (nếu mở
+        // từ menu ESC thì game vẫn tạm dừng, không tự chạy lại).
+        closeAllPanels();
+        return;
+    }
+    togglePauseMenu();
+}
+
+// ===== ĐỔI CẤU HÌNH NỘI THẤT (20 phòng <-> 34 giường) =====
+function applyInteriorConfig(configId) {
+    if (!bus?.group) return;
+    const want = (configId === 'BED34') ? 'BED34' : 'BED20';
+    if (interior && interior.configId === want) return;   // đang dùng cấu hình này
+
+    // Gỡ cấu hình cũ (KHÔNG dựng song song 2 cấu hình -> không trùng LED)
+    if (interior) {
+        bus.group.remove(interior);
+        interior.traverse((o) => {
+            if (o.isMesh && o.geometry) o.geometry.dispose();
+        });
+    }
+    interior = (want === 'BED34') ? createBusInterior34() : createBusInterior();
+    bus.group.add(interior);
+    bus.setInteriorReference?.(interior);
+
+    // Camera: bộ ghế hành khách theo cấu hình (tọa độ riêng, không chép
+    // nguyên của cấu hình kia). Nếu đang ở ghế hành khách mà cấu hình mới
+    // không còn ghế đó -> về 'driver' (góc nhìn an toàn, không nằm trong giường).
+    if (cameraSystem) {
+        cameraSystem.setSeatList(want === 'BED34' ? PASSENGER_SEATS_34 : PASSENGER_SEATS);
+    }
+    interior.setInteriorLed?.(true);      // đèn cabin theo cấu hình mới
+    passengerSystem?.setInterior?.(interior);
+}
+
+// ===== ÁP DỤNG + LƯU CÀI ĐẶT =====
+function applySettingsToGame() {
+    if (cameraSystem) {
+        cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
+        cameraSystem.settings.fov = gameSettings.fov;
+        camera.fov = gameSettings.fov;
+        camera.updateProjectionMatrix();
+    }
+    if (map) map.renderRadius = gameSettings.renderDist;
+    if (renderer) {
+        renderer.toneMapping = (gameSettings.graphics === 'low')
+            ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+    }
+    if (lighting) {
+        lighting.setQuality(gameSettings.lightingQuality);
+        lighting.atmosphereSystem?.toggleGodRays(gameSettings.godRays !== 'off');
+    }
+    if (trafficManager) trafficManager.maxVehicles = gameSettings.npcDensity;
+    applyInteriorConfig(gameSettings.interior);
+    if (audioSystem) {
+        audioSystem.setVolume(gameSettings.audioVolume);
+        audioSystem.setMuted(gameSettings.audioMute);
+    }
+}
+
+function saveSettingsToStorage() {
+    try {
+        localStorage.setItem('busdrivevn_settings', JSON.stringify(gameSettings));
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// ===== HỘP THOẠI XÁC NHẬN (dùng chung) =====
+// Trả về Promise<'save'|'discard'|'cancel'>. Hộp thoại nằm ở z-index 1200
+// (trên mọi lớp) nên không bị che; có 3 nút rõ ràng, đóng được bằng Esc.
+let _confirmResolver = null;
+function askConfirm(message) {
+    const dlg = document.getElementById('confirm-dialog');
+    const msg = document.getElementById('confirm-message');
+    if (!dlg) return Promise.resolve('cancel');
+    if (msg) msg.textContent = message || 'Bạn đã thay đổi cài đặt nhưng chưa lưu.';
+    dlg.style.display = 'flex';
+    const finish = (choice) => {
+        dlg.style.display = 'none';
+        const r = _confirmResolver;
+        _confirmResolver = null;
+        if (r) r(choice);
+    };
+    const onYes = () => finish('save');
+    const onNo = () => finish('discard');
+    const onCancel = () => finish('cancel');
+    document.getElementById('confirm-save')?.addEventListener('click', onYes, { once: true });
+    document.getElementById('confirm-discard')?.addEventListener('click', onNo, { once: true });
+    document.getElementById('confirm-cancel')?.addEventListener('click', onCancel, { once: true });
+    return new Promise((res) => { _confirmResolver = res; });
+}
+function closeConfirmDialog() {
+    const dlg = document.getElementById('confirm-dialog');
+    if (dlg) dlg.style.display = 'none';
+    const r = _confirmResolver;
+    _confirmResolver = null;
+    if (r) r('cancel');
+}
+
+/** Đóng panel Settings: nếu có thay đổi chưa lưu -> hỏi rõ ràng. */
+async function requestCloseSettings() {
+    if (!settingsDirty) { closeAllPanels(); return; }
+    const choice = await askConfirm('Bạn đã thay đổi cài đặt nhưng chưa lưu. Lưu thay đổi hay bỏ qua?');
+    if (choice === 'save') {
+        document.getElementById('btn-apply-settings')?.click();
+    } else if (choice === 'discard') {
+        settingsDirty = false;
+        closeAllPanels();
+        // Nạp lại giá trị đã lưu vào UI (người chơi thấy đúng trạng thái đang chạy)
+        applySettingsToGame();
+    } else {
+        // 'cancel' -> giữ panel mở, tiếp tục chỉnh sửa
+    }
 }
 
 let hudTimer = 0;
@@ -1039,8 +1223,26 @@ function setupMenuEvents() {
     const valRenderDist = document.getElementById('val-render-dist');
     
     // Live update value displays
-    rngNpc?.addEventListener('input', () => { if(valNpc) valNpc.textContent = rngNpc.value; });
-    rngCamSens?.addEventListener('input', () => { if(valCamSens) valCamSens.textContent = rngCamSens.value; });
+    rngNpc?.addEventListener('input', () => { if(valNpc) valNpc.textContent = rngNpc.value; settingsDirty = true; });
+    rngCamSens?.addEventListener('input', () => { if(valCamSens) valCamSens.textContent = rngCamSens.value; settingsDirty = true; });
+    rngFov?.addEventListener('input', () => { if(valFov) valFov.textContent = rngFov.value; settingsDirty = true; });
+    rngRenderDist?.addEventListener('input', () => { if(valRenderDist) valRenderDist.textContent = rngRenderDist.value; settingsDirty = true; });
+    // Tùy chọn mới
+    document.getElementById('setting-key-sens')?.addEventListener('input', (e) => {
+        const v = document.getElementById('val-key-sens');
+        if (v) v.textContent = Number(e.target.value).toFixed(1);
+        settingsDirty = true;
+    });
+    document.getElementById('setting-audio-volume')?.addEventListener('input', (e) => {
+        const v = document.getElementById('val-audio-volume');
+        if (v) v.textContent = e.target.value + '%';
+        settingsDirty = true;
+    });
+    document.getElementById('setting-interior')?.addEventListener('change', () => { settingsDirty = true; });
+    document.getElementById('setting-graphics')?.addEventListener('change', () => { settingsDirty = true; });
+    document.getElementById('setting-lighting')?.addEventListener('change', () => { settingsDirty = true; });
+    document.getElementById('setting-godrays')?.addEventListener('change', () => { settingsDirty = true; });
+    document.getElementById('setting-audio-mute')?.addEventListener('change', () => { settingsDirty = true; });
     rngFov?.addEventListener('input', () => { if(valFov) valFov.textContent = rngFov.value; });
     rngRenderDist?.addEventListener('input', () => { if(valRenderDist) valRenderDist.textContent = rngRenderDist.value; });
 
@@ -1050,12 +1252,8 @@ function setupMenuEvents() {
         if (panel) panel.style.display = 'block';
         document.body.style.overflow = 'hidden';
     }
-    function closeAllPanels() {
-        if (backdrop) backdrop.style.display = 'none';
-        if (settingsPanel) settingsPanel.style.display = 'none';
-        if (uvPanel) uvPanel.style.display = 'none';
-        document.body.style.overflow = '';
-    }
+    // closeAllPanels: dùng bản GLOBAL (đã trả focus về game) — không khai
+    // báo lại ở đây để tránh 2 hàm cùng tên (bản local che mất bản global).
 
     // Settings panel
     btnSettings?.addEventListener("click", () => { 
@@ -1084,57 +1282,50 @@ function setupMenuEvents() {
         if(uvPreview) uvPreview.style.display = 'none';
     });
 
-    // Close handlers
-    [btnCloseSettings, btnCloseUvSkin, backdrop].forEach(btn => {
-        btn?.addEventListener('click', closeAllPanels);
-    });
+    // Close handlers — panel Settings hỏi khi có thay đổi chưa lưu; panel UV
+    // Skin đóng thẳng (không có setting nào trong đó).
+    btnCloseSettings?.addEventListener('click', () => { requestCloseSettings(); });
+    btnCloseUvSkin?.addEventListener('click', closeAllPanels);
+    backdrop?.addEventListener('click', () => { requestCloseSettings(); });
     
-    // ESC key to close
+    // ESC key to close — DÙNG CHUNG handler với game (handleEscape) để không
+    // có 2 listener ESC cạnh tranh (listener document cũ đóng panel nhưng
+    // không cập nhật trạng thái pause).
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') closeAllPanels();
+        if (e.key === 'Escape' && !e.repeat) handleEscape();
     });
 
-    // Apply settings
+    // Apply settings — đọc TẤT CẢ giá trị từ UI, áp dụng thật rồi LƯU.
     btnApplySettings?.addEventListener("click", () => {
         const selGraphics = document.getElementById('setting-graphics');
-        if(selGraphics) gameSettings.graphics = selGraphics.value;
-        
+        if (selGraphics) gameSettings.graphics = selGraphics.value;
+
         const selLighting = document.getElementById('setting-lighting');
-        if(selLighting) {
-            gameSettings.lightingQuality = selLighting.value.toUpperCase();
-            if(lighting) lighting.setQuality(gameSettings.lightingQuality);
-        }
-        
+        if (selLighting) gameSettings.lightingQuality = selLighting.value.toUpperCase();
+
         const selGodRays = document.getElementById('setting-godrays');
-        if(selGodRays) {
-            gameSettings.godRays = selGodRays.value;
-            if(lighting && lighting.atmosphereSystem) {
-                const val = selGodRays.value;
-                if (val === 'off') lighting.atmosphereSystem.toggleGodRays(false);
-                else lighting.atmosphereSystem.toggleGodRays(true);
-            }
-        }
-        
-        if(rngNpc) gameSettings.npcDensity = parseInt(rngNpc.value);
-        if(rngCamSens) gameSettings.camSens = parseInt(rngCamSens.value);
-        if(rngFov) {
-            gameSettings.fov = parseInt(rngFov.value);
-            if(camera) { camera.fov = gameSettings.fov; camera.updateProjectionMatrix(); }
-            if(cameraSystem) cameraSystem.settings.fov = gameSettings.fov;
-        }
-        if(rngRenderDist) {
-            gameSettings.renderDist = parseInt(rngRenderDist.value);
-            if(map) map.renderRadius = gameSettings.renderDist;
-        }
-        
-        if(cameraSystem) cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
-        if(renderer) renderer.toneMapping = (gameSettings.graphics === 'low') ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
-        if(trafficManager) trafficManager.maxVehicles = gameSettings.npcDensity;
-        
-        // Save to localStorage
-        try { localStorage.setItem('busdrivevn_settings', JSON.stringify(gameSettings)); } catch(e) {}
-        
-        ui?.toast("✅ Đã áp dụng & lưu cài đặt!");
+        if (selGodRays) gameSettings.godRays = selGodRays.value;
+
+        const selInterior = document.getElementById('setting-interior');
+        if (selInterior) gameSettings.interior = selInterior.value;
+
+        if (rngNpc) gameSettings.npcDensity = parseInt(rngNpc.value);
+        if (rngCamSens) gameSettings.camSens = parseInt(rngCamSens.value);
+        if (rngFov) gameSettings.fov = parseInt(rngFov.value);
+        if (rngRenderDist) gameSettings.renderDist = parseInt(rngRenderDist.value);
+
+        const rngKeySens = document.getElementById('setting-key-sens');
+        if (rngKeySens) gameSettings.keySens = parseFloat(rngKeySens.value);
+
+        const rngAudioVol = document.getElementById('setting-audio-volume');
+        if (rngAudioVol) gameSettings.audioVolume = parseInt(rngAudioVol.value) / 100;
+        const chkAudioMute = document.getElementById('setting-audio-mute');
+        if (chkAudioMute) gameSettings.audioMute = !!chkAudioMute.checked;
+
+        applySettingsToGame();                    // áp dụng thật vào game
+        const saved = saveSettingsToStorage();     // lưu bền vững
+        settingsDirty = false;
+        ui?.toast(saved ? "✅ Đã áp dụng & lưu cài đặt!" : "⚠ Đã áp dụng nhưng không lưu được (localStorage bị chặn)");
         closeAllPanels();
     });
 
@@ -1145,14 +1336,98 @@ function setupMenuEvents() {
         const selGraphics = document.getElementById('setting-graphics');
         const selLighting = document.getElementById('setting-lighting');
         const selGodRays = document.getElementById('setting-godrays');
+        const selInterior = document.getElementById('setting-interior');
+        const rngKeySens = document.getElementById('setting-key-sens');
+        const valKeySens = document.getElementById('val-key-sens');
+        const rngAudioVol = document.getElementById('setting-audio-volume');
+        const valAudioVol = document.getElementById('val-audio-volume');
+        const chkAudioMute = document.getElementById('setting-audio-mute');
         if(selGraphics) selGraphics.value = gameSettings.graphics;
         if(selLighting) selLighting.value = gameSettings.lightingQuality.toLowerCase();
         if(selGodRays) selGodRays.value = gameSettings.godRays;
+        if(selInterior) selInterior.value = gameSettings.interior;
         if(rngNpc) { rngNpc.value = gameSettings.npcDensity; if(valNpc) valNpc.textContent = gameSettings.npcDensity; }
         if(rngCamSens) { rngCamSens.value = gameSettings.camSens; if(valCamSens) valCamSens.textContent = gameSettings.camSens; }
         if(rngFov) { rngFov.value = gameSettings.fov; if(valFov) valFov.textContent = gameSettings.fov; }
         if(rngRenderDist) { rngRenderDist.value = gameSettings.renderDist; if(valRenderDist) valRenderDist.textContent = gameSettings.renderDist; }
-        ui?.toast("↩ Đã khôi phục mặc định!");
+        if(rngKeySens) { rngKeySens.value = gameSettings.keySens; if(valKeySens) valKeySens.textContent = Number(gameSettings.keySens).toFixed(1); }
+        if(rngAudioVol) { rngAudioVol.value = Math.round(gameSettings.audioVolume * 100); if(valAudioVol) valAudioVol.textContent = Math.round(gameSettings.audioVolume * 100) + '%'; }
+        if(chkAudioMute) chkAudioMute.checked = !!gameSettings.audioMute;
+        // Đặt lại = trả về MẶC ĐỊNH đã định nghĩa, áp dụng thật, lưu luôn.
+        gameSettings = { ...DEFAULT_SETTINGS };
+        applySettingsToGame();
+        saveSettingsToStorage();
+        settingsDirty = false;
+        ui?.toast("↩ Đã đặt lại mặc định!");
+    });
+
+    // ===== MENU TẠM DỪNG (ESC) — 4 NÚT BẮT BUỘC =====
+    const btnPauseResume = document.getElementById('btn-pause-resume');
+    const btnPauseUvSkin = document.getElementById('btn-pause-uvskin');
+    const btnPauseSettings = document.getElementById('btn-pause-settings');
+    const btnPauseMenu = document.getElementById('btn-pause-menu');
+
+    // Tiếp tục: đóng menu + game chạy lại (input trở lại bình thường)
+    btnPauseResume?.addEventListener('click', () => {
+        closeAllPanels();
+        togglePauseMenu(false);
+        canvas?.focus?.();
+        ui?.toast("▶ Tiếp tục lái xe");
+    });
+
+    // Chọn UV Skin: mở popup (KHÔNG tạo bản sao popup) — giữ nguyên pause
+    btnPauseUvSkin?.addEventListener('click', () => {
+        openPanel(uvPanel);
+        const uvStatus = document.getElementById('uv-skin-status');
+        const uvDownload = document.getElementById('uv-skin-download');
+        const uvPreview = document.getElementById('uv-skin-preview');
+        if (uvStatus) uvStatus.innerHTML = '';
+        if (uvDownload) uvDownload.style.display = 'none';
+        if (uvPreview) uvPreview.style.display = 'none';
+    });
+
+    // Cài đặt: mở popup, vẫn giữ game tạm dừng
+    btnPauseSettings?.addEventListener('click', () => {
+        openPanel(settingsPanel);
+        // đồng bộ giá trị đang lưu vào UI
+        const sG = document.getElementById('setting-graphics');
+        const sL = document.getElementById('setting-lighting');
+        const sGR = document.getElementById('setting-godrays');
+        const sI = document.getElementById('setting-interior');
+        if (sG) sG.value = gameSettings.graphics;
+        if (sL) sL.value = gameSettings.lightingQuality.toLowerCase();
+        if (sGR) sGR.value = gameSettings.godRays;
+        if (sI) sI.value = gameSettings.interior;
+        if (rngNpc) { rngNpc.value = gameSettings.npcDensity; if (valNpc) valNpc.textContent = gameSettings.npcDensity; }
+        if (rngCamSens) { rngCamSens.value = gameSettings.camSens; if (valCamSens) valCamSens.textContent = gameSettings.camSens; }
+        if (rngFov) { rngFov.value = gameSettings.fov; if (valFov) valFov.textContent = gameSettings.fov; }
+        if (rngRenderDist) { rngRenderDist.value = gameSettings.renderDist; if (valRenderDist) valRenderDist.textContent = gameSettings.renderDist; }
+        const kS = document.getElementById('setting-key-sens');
+        const vK = document.getElementById('val-key-sens');
+        if (kS) { kS.value = gameSettings.keySens; if (vK) vK.textContent = Number(gameSettings.keySens).toFixed(1); }
+        const aV = document.getElementId('setting-audio-volume');
+        const vA = document.getElementById('val-audio-volume');
+        if (aV) { aV.value = Math.round(gameSettings.audioVolume * 100); if (vA) vA.textContent = Math.round(gameSettings.audioVolume * 100) + '%'; }
+        const aM = document.getElementById('setting-audio-mute');
+        if (aM) aM.checked = !!gameSettings.audioMute;
+    });
+
+    // Về Menu chính: xác nhận vì có thể mất tiến trình trong phiên chơi
+    btnPauseMenu?.addEventListener('click', () => {
+        const doIt = () => {
+            closeAllPanels();
+            togglePauseMenu(false);
+            gameState = 'menu';
+            paused = false;
+            document.getElementById('hud').style.display = 'none';
+            ui.showMainMenu();
+        };
+        // Xác nhận (không dùng alert để chặn main thread)
+        if (typeof confirm === 'function') {
+            if (confirm('Về Menu chính? Tiến trình chuyến đi hiện tại sẽ không được lưu.')) doIt();
+        } else {
+            doIt();
+        }
     });
 
     // UV Skin handlers
@@ -1218,13 +1493,27 @@ function setupMenuEvents() {
                     return;
                 }
                 if(uvStatus) { uvStatus.style.color = '#34d399'; uvStatus.innerHTML = '✅ UV Skin hợp lệ'; }
+                const objUrl = URL.createObjectURL(file);
                 if(uvPreview && uvPreviewImg) {
-                    uvPreviewImg.src = URL.createObjectURL(file);
+                    uvPreviewImg.src = objUrl;
                     uvPreview.style.display = 'block';
                 }
                 if(uvDownload) {
-                    uvDownload.href = URL.createObjectURL(file);
+                    uvDownload.href = objUrl;
                     uvDownload.style.display = 'block';
+                }
+                // ===== ÁP DỤNG SKIN LÊN XE NGƯỜI CHƠI THẬT =====
+                // bus.setSkin() tồn tại từ trước nhưng KHÔNG nơi nào gọi ->
+                // popup chỉ tải file về chứ xe không đổi. Gọi ở đây (ảnh đã
+                // kiểm tra đúng kích thước) nên texture đúng chuẩn UV.
+                if (bus?.setSkin) {
+                    try {
+                        bus.setSkin(objUrl);
+                        if(uvStatus) { uvStatus.style.color = '#34d399'; uvStatus.innerHTML = '✅ UV Skin hợp lệ — đã áp dụng lên xe'; }
+                    } catch (e) {
+                        console.warn("[uv-skin] setSkin that bai:", e);
+                        if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '⚠ Không áp dụng được lên xe (xe chưa sẵn sàng)'; }
+                    }
                 }
             };
             img.onerror = () => { if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '❌ Lỗi đọc file'; } };
@@ -1244,6 +1533,12 @@ async function startGameFromMenu() {
     startingGame = true;
     ui.hideMainMenu();
     ui.setLoading("Đang tải...", 0.1);
+    // ÂM THANH: tạo + khởi động NGAY TRONG click (user gesture) — trình duyệt
+    // chặn AudioContext nếu khởi động sau await (chính sách autoplay).
+    if (!audioSystem) audioSystem = createAudioSystem();
+    audioSystem.setVolume(gameSettings.audioVolume);
+    audioSystem.setMuted(gameSettings.audioMute);
+    audioSystem.startEngine();
     await new Promise(r => setTimeout(r, 100));
     try {
         ui.setLoading("Ánh sáng...", 0.2);
@@ -1283,7 +1578,10 @@ async function startGameFromMenu() {
         
         ui.setLoading("Xe khách 3D...", 0.6);
         bus = createBus();
-        interior = createBusInterior();
+        // Cấu hình nội thất theo setting (20 phòng / 34 giường) — dựng 1
+        // cấu hình duy nhất, không dựng song song 2 bản.
+        interior = (gameSettings.interior === 'BED34') ? createBusInterior34() : createBusInterior();
+        interior.configId = (gameSettings.interior === 'BED34') ? 'BED34' : 'BED20';
         if (!interior?.isObject3D) interior = new THREE.Group();
         bus.group.add(interior);
         // Cockpit tài xế (Windows Update/BSOD/speedo, nút phân màu) được gán
@@ -1317,7 +1615,9 @@ async function startGameFromMenu() {
             state: () => ({ gameState, paused, webglLost, renderRadius: map?.renderRadius })
         };
         if (window.collisionSystem) playerColId = window.collisionSystem.register(bus.group.position.x, bus.group.position.z, 4.0, 'player');
-        cameraSystem = new CameraSystem(camera, bus.group);
+        cameraSystem = new CameraSystem(camera, bus.group, {
+            seats: (gameSettings.interior === 'BED34') ? PASSENGER_SEATS_34 : PASSENGER_SEATS
+        });
         cameraSystem.setMode("driver");
         cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
         cameraSystem.settings.fov = gameSettings.fov;
@@ -1362,6 +1662,9 @@ async function startGameFromMenu() {
         ui.setLoading("Hoàn tất...", 1.0);
         await new Promise(r => setTimeout(r, 100));
         ui.hideLoading();
+        // ÁP DỤNG toàn bộ cài đặt đã lưu (nội thất, âm lượng, mật độ NPC,
+        // chất lượng đồ hoạ...) — 1 nơi duy nhất để không lệch với nhau.
+        applySettingsToGame();
         gameState = "playing";
         paused = false;
         document.getElementById("hud").style.display = "block";
@@ -1405,6 +1708,8 @@ function updateWorld(delta) {
     bus.update?.(delta);
     // tốc độ xe thật (kmh có dấu) → đồng hồ tài xế
     bus.setDriverTelemetry?.(vehiclePhysics.currentSpeedKmh);
+    // Tiếng máy bám theo tốc độ thật (audio system — xem js/audio.js)
+    if (audioSystem?.isStarted()) audioSystem.setSpeed(vehiclePhysics.currentSpeedKmh);
     cameraSystem?.update(delta);
     if (bus?.group && map) map.updateChunks(bus.group.position.x, bus.group.position.z, delta, null, camera);
     if (npc) npc.update(delta, 0);

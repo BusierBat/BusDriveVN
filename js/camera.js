@@ -39,10 +39,39 @@ for (let row = 0; row < BED_Z_POSITIONS.length; row++) {
   }
 }
 
+// ===== BỘ GHẾ HÀNH KHÁCH CHO CẤU HÌNH 34 GIƯỜNG VIP =====
+// 3 dãy (trái 5 · giữa 7 · phải 5) x 2 tầng = 34 chỗ ngồi. Tọa độ lấy
+// đúng bố cục interior.js (CFG34): giường bên |x|=0.87 dài 1.70m, giường
+// giữa x=0 dài 1.42m. Dãy giữa có lối đi 2 BÊN nên camera nhìn được cả
+// hai hướng (pivot rộng hơn) — KHÔNG dùng lại tọa độ của cấu hình 20 phòng.
+export const PASSENGER_SEATS_34 = [];
+{
+  let id = 1;
+  const TIERS34 = [0.67, 1.67];
+  const SIDE_Z34 = [3.00, 1.00, -1.00, -3.00, -5.00];
+  const CENTER_Z34 = [3.30, 1.88, 0.46, -0.96, -2.38, -3.80, -5.22];
+  const addSeat = (x, z, side, row) => {
+    for (const bedY of TIERS34) {
+      PASSENGER_SEATS_34.push({
+        id: `Seat34_${id}`,
+        localPos: new THREE.Vector3(x, bedY + 0.4, z + 0.2),
+        side, row, tier: (bedY > 1 ? 2 : 1), bedY, hasWall: true
+      });
+      id++;
+    }
+  };
+  SIDE_Z34.forEach((z, i) => { addSeat(-0.87, z, 'left', i + 1); addSeat(0.87, z, 'right', i + 1); });
+  CENTER_Z34.forEach((z, i) => { addSeat(0.0, z, 'center', i + 1); });
+}
+
 export class CameraSystem {
-  constructor(camera, busGroup) {
+  constructor(camera, busGroup, options = {}) {
     this.camera = camera;
     this.busGroup = busGroup;
+    // Danh sách ghế hành khách theo cấu hình nội thất (20 phòng / 34 giường).
+    // Đổi cấu hình -> setSeatList(), KHÔNG tạo lại CameraSystem (tránh đăng ký
+    // trùng listener mousedown/mousemove trên document).
+    this.seats = options.seats || PASSENGER_SEATS;
     this.settings = {
       cameraSensitivity: 0.0035,
       mouseSensitivity: 0.0035,
@@ -60,7 +89,7 @@ export class CameraSystem {
       'copilot',
       'cabin',
       'outside',
-      ...PASSENGER_SEATS.map((_, i) => `seat_${i}`)
+      ...this.seats.map((_, i) => `seat_${i}`)
     ];
     this.currentIndex = 0;
 
@@ -160,7 +189,7 @@ export class CameraSystem {
     else if (mode === 'outside') { /* nhanh orbit: update() dung orbitYaw/Pitch/Distance, khong dung targetPos */ }
     else if (mode.startsWith('seat_')) {
       const idx = parseInt(mode.split('_')[1]);
-      const seat = PASSENGER_SEATS[idx % PASSENGER_SEATS.length];
+      const seat = this.seats[idx % this.seats.length];
       this.targetPos = seat.localPos.clone();
       this.targetPos.y += 0.15;
       // Lùi 0.35 -> 0.22: camera lìa tường đầu giường 0.30m (bản cũ chỉ cách
@@ -171,10 +200,33 @@ export class CameraSystem {
       // ngồi trong buồng giường có divider đầu giường 0.43m trước mặt và rèm
       // aisle sát phía +z — quay 360° là đâm mesh ("vật cản vô hình") →
       // khoá yaw quanh pivot ±1.0 rad là phạm vi nhìn hữu dụng của buồng.
-      this.seatPivotYaw = seat.side === 'left' ? 0.65 : -0.65;
+      // Dãy giữa (34 giường) có lối đi 2 BÊN -> nhìn được cả hai hướng.
+      this.seatPivotYaw = seat.side === 'center' ? 0 : (seat.side === 'left' ? 0.65 : -0.65);
       this.bedLookYaw = this.seatPivotYaw;
       this.bedLookPitch = -0.08;
     }
+  }
+
+  /**
+   * Đổi bộ ghế hành khách (khi đổi cấu hình nội thất 20 phòng <-> 34 giường).
+   * Mode hiện tại được giữ nếu vẫn hợp lệ, nếu không -> về 'driver' (góc nhìn
+   * an toàn, không nằm trong giường).
+   */
+  setSeatList(seats) {
+    if (!Array.isArray(seats) || !seats.length) return;
+    const prevMode = this.modes[this.currentIndex] || 'driver';
+    this.seats = seats;
+    this.modes = [
+      'driver',
+      'copilot',
+      'cabin',
+      'outside',
+      ...this.seats.map((_, i) => `seat_${i}`)
+    ];
+    const stillThere = this.modes.indexOf(prevMode) !== -1;
+    const nextMode = stillThere ? prevMode : 'driver';
+    this.currentIndex = this.modes.indexOf(nextMode);
+    this.setMode(nextMode);
   }
 
   cycleNext() {

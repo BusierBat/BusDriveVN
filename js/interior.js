@@ -592,3 +592,295 @@ export function createBusInterior() {
 
     return root;
 }
+
+// =====================================================================
+// CẤU HÌNH NỘI THẤT 34 GIƯỜNG VIP (3 DÃY, 2 LỐI ĐI)
+// ---------------------------------------------------------------------
+// BỔ SUNG MỚI (đặt ở CUỐI file, KHÔNG đụng cấu hình 20 phòng ở trên).
+//
+// CƠ SỞ THIẾT KẾ (đo từ catalogue THACO + quy định giường VN):
+//   * THACO MOBIHOME 120 phiên bản 34 giường: "khoang hành khách thiết kế
+//     3 dãy giường tối ưu không gian" + "sàn lót 2 dãy LED nằm trần"
+//     (catalogue-busgiuong-2024-1.pdf) -> đúng 3 dãy / 2 lối / 2 dải LED.
+//   * Quy định giường VN: rộng >= 48cm, dài >= 165cm.
+//   * Khoang trong xe rộng 2.30m (WALL_X = 1.15) -> chia:
+//       giường bên 0.52 | lối đi 0.36 | giường giữa 0.54 | lối đi 0.36 | giường bên 0.52
+//     (tổng đúng 2.30m — KHÔNG vật thể nào xuyên nhau).
+//   * Giường giữa ngắn hơn (1.42m) vì khách nằm chéo, lối đi chạy 2 bên
+//     -> 7 giường vừa đúng chiều dài khoang hành khách (10.4m).
+//   * Bố cục: bên trái 5 + giữa 7 + bên phải 5 = 17 mỗi tầng, 2 tầng = 34.
+//
+// AN TOÀN HÌNH HỌC: mọi giường nằm trong khoang z [-5.95 .. 4.05], cao
+//   y 0.55..1.75 (dưới trần 3.20), rộng x [-1.15 .. 1.15] — không cắt qua
+//   tường sau, trần hay vỏ xe.
+//
+// HIỆU NĂNG: dải LED dùng 5 PointLight (2 lối + 2 đầu + 1 phụ) thay vì 26
+//   như cấu hình 20 phòng — mỗi PointLight thêm vào scene đều làm shader của
+//   MỌI vật liệu phải lặp thêm 1 vòng ánh sáng (rất nặng trên iGPU N5000).
+// =====================================================================
+// Gộp nhiều BoxGeometry thành 1 (tự chứa, KHÔNG thêm import mới — chỉ dùng
+// THREE đã có sẵn trong file). Mọi box đều có cùng bộ thuộc tính
+// (position/normal/uv) nên nối mảng là an toàn.
+function mergeBoxes(geos) {
+    if (!geos || !geos.length) return null;
+    const parts = [];
+    let total = 0;
+    for (const g of geos) {
+        const n = g.index ? g.toNonIndexed() : g;
+        parts.push({ src: g, geo: n });
+        total += n.attributes.position.count;
+    }
+    const pos = new Float32Array(total * 3);
+    const nor = new Float32Array(total * 3);
+    const uv = new Float32Array(total * 2);
+    let off = 0;
+    for (const p of parts) {
+        const n = p.geo;
+        const c = n.attributes.position.count;
+        pos.set(n.attributes.position.array, off * 3);
+        if (n.attributes.normal) nor.set(n.attributes.normal.array, off * 3);
+        if (n.attributes.uv) uv.set(n.attributes.uv.array, off * 2);
+        off += c;
+    }
+    const out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    out.computeBoundingSphere();
+    for (const p of parts) {
+        if (p.geo !== p.src) p.geo.dispose();
+        p.src.dispose();
+    }
+    return out;
+}
+
+const CFG34 = {
+    FLOOR_Y: 0.30,          // sàn khoang hành khách
+    LOWER_Y: 0.67,          // mặt nệm tầng dưới
+    UPPER_Y: 1.67,          // mặt nệm tầng trên
+    SIDE_BED_W: 0.52,       // bề rộng giường 2 dãy bên
+    CENTER_BED_W: 0.54,     // bề rộng giường dãy giữa
+    SIDE_BED_L: 1.70,       // chiều dài giường bên
+    CENTER_BED_L: 1.42,     // chiều dài giường giữa
+    SIDE_X: 0.87,           // |x| tâm giường bên  (khung 0.56 -> 0.59..1.15)
+    CENTER_X: 0.00,         // tâm dãy giữa (đối xứng)
+    AISLE_X: 0.43,          // |x| tâm lối đi       (0.27 .. 0.59)
+    AISLE_W: 0.32,
+    Z_FIRST: 3.00,          // tâm giường bên đầu tiên
+    Z_STEP: 2.00,          // bước giữa 2 giường bên
+    Z_CENTER_FIRST: 3.30,   // tâm giường giữa đầu tiên
+    Z_CENTER_STEP: 1.42,
+    FRONT_Z: 4.05,          // mép trước khoang hành khách
+    REAR_Z: -5.95           // mép sau khoang hành khách
+};
+
+function buildPassengerCabin34(groups) {
+    const { Beds, Floor, Ceiling, Curtains, Windows, Cabins, Aisle, Led, BodyShell, Lights } = groups;
+    const C = CFG34;
+    const half = C.AISLE_W * 0.5;
+    const aisleZ0 = C.FRONT_Z, aisleZ1 = C.REAR_Z;
+    const aisleLen = aisleZ0 - aisleZ1;
+    const aisleCz = (aisleZ0 + aisleZ1) * 0.5;
+
+    // ---------- SÀN KHOANG HÀNG KHÁCH ----------
+    box(W - 0.1, 0.08, L - 0.5, matFloorPax, 0, C.FLOOR_Y - 0.04, 0, Floor);
+
+    // ---------- 2 LỐI ĐI (2 dãy) ----------
+    for (const side of [1, -1]) {
+        const ax = side * C.AISLE_X;
+        box(C.AISLE_W, 0.06, aisleLen, matAisle, ax, C.FLOOR_Y + 0.02, aisleCz, Aisle);
+        // viền LED 2 bên lối đi + vách ngăn
+        for (const e of [1, -1]) {
+            box(0.035, 0.035, aisleLen, matLEDBlue, ax + e * (half - 0.025), C.FLOOR_Y + 0.07, aisleCz, Aisle);
+            box(0.045, 0.05, aisleLen, matDivider, ax + e * half, C.FLOOR_Y + 0.04, aisleCz, Aisle);
+        }
+    }
+
+    // ---------- BẬC LÊN CABIN (đặt ở lối đi phải, trước khoang hành khách) ----------
+    const stepHeight = C.FLOOR_Y;
+    box(C.AISLE_W, stepHeight, 0.40, matShell, C.AISLE_X, stepHeight / 2, C.FRONT_Z + 0.20, Aisle);
+
+    // ---------- TRẦN + 2 DẢI LED NẰM TRẦN (trên 2 lối đi) ----------
+    box(W - 0.06, 0.04, L - 0.5, matCream, 0, CEILING_Y + 0.02, 0, Ceiling);
+    for (const side of [1, -1]) {
+        const ax = side * C.AISLE_X;
+        // dải LED dọc nằm trần TRÊN ĐÚNG LỐI ĐI
+        const strip = box(0.05, 0.02, aisleLen, matLEDNude, ax, CEILING_Y - 0.005, aisleCz, Led);
+        strip.name = side > 0 ? "rightLed34" : "leftLed34";
+        // sọc LED ngang trên mỗi lối đi
+        for (let z = C.FRONT_Z - 0.3; z > C.REAR_Z + 0.2; z -= 0.45) {
+            box(C.AISLE_W - 0.04, 0.015, 0.06, matLEDRib, ax, CEILING_Y - 0.005, z, Led);
+        }
+        // dải LED dọc sát vỏ xe (giữ nguyên ngôn ngữ hình ảnh cấu hình cũ)
+        box(0.02, 0.03, L - 0.8, matLEDBlue, side * (WALL_X - 0.02), CEILING_Y - 0.04, 0.5, Led);
+    }
+
+    // ---------- THÂN XE (2 bên) + sàn tầng trên ----------
+    const shellLen = L - 0.6;
+    for (const side of [1, -1]) {
+        box(0.04, WIN_LO_BOT - C.FLOOR_Y, shellLen, matShell, side * WALL_X, (C.FLOOR_Y + WIN_LO_BOT) / 2, 0, BodyShell);
+        box(0.04, WIN_HI_BOT - WIN_LO_TOP, shellLen, matShell, side * WALL_X, (WIN_LO_TOP + WIN_HI_BOT) / 2, 0, BodyShell);
+        box(0.04, CEILING_Y - WIN_HI_TOP, shellLen, matShell, side * WALL_X, (WIN_HI_TOP + CEILING_Y) / 2, 0, BodyShell);
+        // sàn tầng trên (giữa 2 tầng giường)
+        box(0.02, 0.08, shellLen, matUpperFloor, side * (WALL_X - 0.1), C.UPPER_Y - 0.05, 0, BodyShell);
+    }
+
+    // ---------- DỰNG GIƯỜNG ----------
+    // Một giường = khung + nệm + gối + chăn (cùng vật liệu & tỷ lệ cấu hình
+    // 20 phòng). Geometry gộp theo vật liệu: 34 giường x 4 chi tiết = 136
+    // mesh rời -> 4 mesh (giảm draw call, quan trọng cho iGPU N5000).
+    const bedFrameGeo = [], bedMatGeo = [], bedPillowGeo = [], bedBlanketGeo = [];
+    let bedCount = 0;
+    const pushBox = (arr, w, h, d, x, y, z) => {
+        const g = new THREE.BoxGeometry(w, h, d);
+        g.translate(x, y, z);
+        arr.push(g);
+    };
+    const buildBed = (x, z, y, bedLen, bedW) => {
+        pushBox(bedFrameGeo, bedW + 0.04, 0.08, bedLen + 0.04, x, y - 0.12, z);
+        pushBox(bedMatGeo, bedW, 0.14, bedLen, x, y, z);
+        pushBox(bedPillowGeo, bedW * 0.64, 0.10, 0.28, x, y + 0.10, z + bedLen / 2 - 0.22);
+        pushBox(bedBlanketGeo, bedW * 0.85, 0.04, bedLen * 0.45, x, y + 0.08, z - bedLen * 0.12);
+        bedCount++;
+    };
+
+    // 2 dãy bên: 5 giường mỗi bên, mỗi tầng (tổng 10 + 10)
+    for (const side of [1, -1]) {
+        for (let i = 0; i < 5; i++) {
+            const z = C.Z_FIRST - i * C.Z_STEP;
+            const x = side * C.SIDE_X;
+            for (const y of [C.LOWER_Y, C.UPPER_Y]) {
+                buildBed(x, z, y, C.SIDE_BED_L, C.SIDE_BED_W);
+            }
+            // vách ngăn giữa 2 giường (dọc theo chiều ngang khoang)
+            const dividerH = CEILING_Y - C.FLOOR_Y;
+            const dividerY = (C.FLOOR_Y + CEILING_Y) / 2;
+            for (const dz of [1, -1]) {
+                const wall = new THREE.Mesh(new THREE.BoxGeometry(C.SIDE_BED_W + 0.04, dividerH, 0.02), matDivider);
+                wall.position.set(x, dividerY, z + dz * (C.SIDE_BED_L / 2));                wall.updateMatrix(); wall.matrixAutoUpdate = false;
+                Cabins.add(wall);
+            }
+        }
+    }
+
+    // dãy giữa: 7 giường mỗi tầng (tổng 14)
+    for (let i = 0; i < 7; i++) {
+        const z = C.Z_CENTER_FIRST - i * C.Z_CENTER_STEP;
+        for (const y of [C.LOWER_Y, C.UPPER_Y]) {
+            buildBed(C.CENTER_X, z, y, C.CENTER_BED_L, C.CENTER_BED_W);
+        }
+    }
+    // vách bên dãy giữa (giữa 2 lối đi) — thấp hơn để lối đi thoáng
+    for (const side of [1, -1]) {
+        const edge = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.55, C.Z_CENTER_FIRST - C.Z_CENTER_STEP * 6 + C.CENTER_BED_L, ), matDivider);
+        edge.position.set(side * (C.CENTER_BED_W / 2 + 0.01), C.LOWER_Y + 0.275, (C.Z_CENTER_FIRST + (C.Z_CENTER_FIRST - C.Z_CENTER_STEP * 6)) / 2);
+        edge.updateMatrix(); edge.matrixAutoUpdate = false;
+        Cabins.add(edge);
+    }
+
+    // ---------- CỬA SỔ + RÈM (2 dãy bên, 2 tầng) ----------
+    for (const side of [1, -1]) {
+        const xGlass = side * (WALL_X + 0.01);
+        const xCurtain = side * (WALL_X - 0.02);
+        for (let i = 0; i < 5; i++) {
+            const z = C.Z_FIRST - i * C.Z_STEP;
+            // cửa sổ tầng dưới + tầng trên
+            for (const [yBot, yTop] of [[WIN_LO_BOT, WIN_LO_TOP], [WIN_HI_BOT, WIN_HI_TOP]]) {
+                const win = new THREE.Mesh(new THREE.PlaneGeometry(C.SIDE_BED_L - 0.20, yTop - yBot), matGlass);
+                win.position.set(xGlass, (yBot + yTop) / 2, z);
+                win.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                win.updateMatrix(); win.matrixAutoUpdate = false;
+                Windows.add(win);
+            }
+            // rèm (nằm trong khoang, không xuyên ra ngoài vỏ xe)
+            for (const [yBot, yTop] of [[WIN_LO_BOT, WIN_LO_TOP], [WIN_HI_BOT, WIN_HI_TOP]]) {
+                const curt = new THREE.Mesh(new THREE.BoxGeometry(0.02, yTop - yBot, 0.30), matFabric);
+                curt.position.set(xCurtain, (yBot + yTop) / 2, z - C.SIDE_BED_L / 2 + 0.15);
+                curt.updateMatrix(); curt.matrixAutoUpdate = false;
+                Curtains.add(curt);
+            }
+        }
+    }
+
+    // ---------- ĐÈN (5 PointLight: 2 lối đi + 2 đầu + 1 phụ) ----------
+    // Gộp geometry giường vừa dựng thành 4 mesh (1 draw call / vật liệu).
+    const addMerged = (arr, mat) => {
+        if (!arr.length) return;
+        const merged = mergeBoxes(arr);
+        if (!merged) return;
+        const mesh = new THREE.Mesh(merged, mat);
+        mesh.matrixAutoUpdate = false;
+        mesh.updateMatrix();
+        Beds.add(mesh);
+    };
+    addMerged(bedFrameGeo, matBedFrame);
+    addMerged(bedMatGeo, matBrownLeather);
+    addMerged(bedPillowGeo, matWhite);
+    addMerged(bedBlanketGeo, matBrownLeatherDark);
+    Beds.userData.bedCount = bedCount;
+
+    const mkPoint = (x, y, z, intensity, dist, name) => {
+        const pl = new THREE.PointLight(0x88ccff, intensity, dist, 1.0);
+        pl.position.set(x, y, z);
+        pl.name = name;
+        pl.userData.base = intensity;
+        Lights.add(pl);
+        return pl;
+    };
+    const led34 = [];
+    led34.push(mkPoint(C.AISLE_X, CEILING_Y - 0.12, 2.20, 5.0, 14, "aisleLightR"));
+    led34.push(mkPoint(-C.AISLE_X, CEILING_Y - 0.12, 2.20, 5.0, 14, "aisleLightL"));
+    led34.push(mkPoint(C.AISLE_X, CEILING_Y - 0.12, -2.60, 4.0, 14, "aisleLightR2"));
+    led34.push(mkPoint(-C.AISLE_X, CEILING_Y - 0.12, -2.60, 4.0, 14, "aisleLightL2"));
+    led34.push(mkPoint(0, CEILING_Y - 0.10, C.FRONT_Z - 0.60, 3.0, 10, "frontLed34"));
+    groups.ledStripLights = led34;
+}
+
+/**
+ * Tạo nội thất xe khách 34 giường VIP (3 dãy, 2 lối đi, 2 dải LED trần).
+ * Cấu hình ĐỘC LẬP — không đụng tới cấu hình 20 phòng ở trên file.
+ * Driver cabin dùng lại đúng hàm buildCabin() của cấu hình gốc (cùng thân xe).
+ */
+export function createBusInterior34() {
+    const root = new THREE.Group();
+    root.name = "busInterior34";
+
+    const groups = {};
+    const names = ["Beds", "Floor", "Ceiling", "Curtains", "Windows",
+        "DriverArea", "Dashboard", "Lights", "Cabins", "Aisle", "Led", "BodyShell"];
+    for (const name of names) {
+        groups[name] = new THREE.Group();
+        groups[name].name = name;
+        root.add(groups[name]);
+    }
+
+    buildCabin(groups);              // cabin lái dùng chung (thân xe giống nhau)
+    buildPassengerCabin34(groups);    // khoang hành khách 34 giường (MỚI)
+
+    // setInteriorLed riêng cho cấu hình 34: bật/tắt bằng INTENSITY
+    // (giữ visible = true -> numPointLights cố định, không recompile shader).
+    function setInteriorLed34(on) {
+        matLEDBlue.emissiveIntensity = on ? 5.0 : 0;
+        matLEDNude.emissiveIntensity = on ? 5.5 : 0;
+        matLEDRib.emissiveIntensity = on ? 3.5 : 0;
+        matCluster.emissiveIntensity = on ? 1.0 : 0.1;
+        if (groups.ledStripLights) {
+            for (const pl of groups.ledStripLights) {
+                if (pl) pl.intensity = on ? pl.userData.base : 0;
+            }
+        }
+        const ledStrips = groups.Led;
+        if (ledStrips) {
+            ledStrips.traverse((obj) => {
+                if (obj.isMesh && (obj.material === matLEDBlue || obj.material === matLEDNude || obj.material === matLEDRib)) {
+                    obj.visible = on;
+                }
+            });
+        }
+    }
+
+    root.setInteriorLed = setInteriorLed34;
+    setInteriorLed34(true);
+    root.configId = "BED34";
+    return root;
+}
