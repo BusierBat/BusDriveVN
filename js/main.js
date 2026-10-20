@@ -1034,7 +1034,8 @@ function applyInteriorConfig(configId) {
         cameraSystem.setSeatList(want === 'BED34' ? PASSENGER_SEATS_34 : PASSENGER_SEATS);
     }
     interior.setInteriorLed?.(true);      // đèn cabin theo cấu hình mới
-    passengerSystem?.setInterior?.(interior);
+    // passenger.js KHÔNG có điểm tương tác theo chỗ ngồi (chỉ hành khách
+    // đứng bến) -> không cần cập nhật gì thêm khi đổi cấu hình nội thất.
 }
 
 // ===== ÁP DỤNG + LƯU CÀI ĐẶT =====
