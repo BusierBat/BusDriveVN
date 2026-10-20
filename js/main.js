@@ -963,12 +963,6 @@ let pauseMenuOpen = false;
 let settingsDirty = false;     // người chơi đã sửa setting nhưng chưa Lưu
 let audioSystem = null;
 
-function isPanelOpen() {
-    const sp = document.getElementById("settings-panel");
-    const up = document.getElementById("uv-skin-panel");
-    return !!(sp && sp.style.display === 'block') || !!(up && up.style.display === 'block');
-}
-
 function closeAllPanels() {
     const backdrop = document.getElementById("panel-backdrop");
     const settingsPanel = document.getElementById("settings-panel");
@@ -1007,12 +1001,12 @@ function handleEscape() {
         lastTime = performance.now();
         return;
     }
-    if (isPanelOpen()) {
-        // Popup đang mở -> đóng popup, GIỮ NGUYÊN trạng thái pause (nếu mở
-        // từ menu ESC thì game vẫn tạm dừng, không tự chạy lại).
-        closeAllPanels();
-        return;
-    }
+    // Panel SETTINGS đang mở -> hỏi thay đổi chưa lưu (NHẤT QUÁN với nút ✕)
+    const sp = document.getElementById('settings-panel');
+    if (sp && sp.style.display === 'block') { requestCloseSettings(); return; }
+    // Panel UV Skin đang mở -> đóng thẳng (không có setting nào bên trong)
+    const up = document.getElementById('uv-skin-panel');
+    if (up && up.style.display === 'block') { closeAllPanels(); return; }
     togglePauseMenu();
 }
 
@@ -1081,11 +1075,18 @@ function saveSettingsToStorage() {
 // Trả về Promise<'save'|'discard'|'cancel'>. Hộp thoại nằm ở z-index 1200
 // (trên mọi lớp) nên không bị che; có 3 nút rõ ràng, đóng được bằng Esc.
 let _confirmResolver = null;
-function askConfirm(message) {
+function askConfirm(message, labels) {
     const dlg = document.getElementById('confirm-dialog');
     const msg = document.getElementById('confirm-message');
     if (!dlg) return Promise.resolve('cancel');
     if (msg) msg.textContent = message || 'Bạn đã thay đổi cài đặt nhưng chưa lưu.';
+    // Nhãn nút tuỳ chọn (mặc định: lưu / bỏ / tiếp tục chỉnh sửa)
+    const btnSave = document.getElementById('confirm-save');
+    const btnDiscard = document.getElementById('confirm-discard');
+    const btnCancel = document.getElementById('confirm-cancel');
+    if (btnSave) btnSave.textContent = (labels && labels.yes) || '💾 Lưu thay đổi';
+    if (btnDiscard) btnDiscard.textContent = (labels && labels.no) || '🗑️ Bỏ thay đổi';
+    if (btnCancel) btnCancel.textContent = (labels && labels.cancel) || '↩️ Tiếp tục chỉnh sửa';
     dlg.style.display = 'flex';
     const finish = (choice) => {
         dlg.style.display = 'none';
@@ -1111,6 +1112,8 @@ function closeConfirmDialog() {
 
 /** Đóng panel Settings: nếu có thay đổi chưa lưu -> hỏi rõ ràng. */
 async function requestCloseSettings() {
+    const dlg = document.getElementById('confirm-dialog');
+    if (dlg && dlg.style.display === 'flex') return;   // đang hỏi rồi, không hỏi lại
     if (!settingsDirty) { closeAllPanels(); return; }
     const choice = await askConfirm('Bạn đã thay đổi cài đặt nhưng chưa lưu. Lưu thay đổi hay bỏ qua?');
     if (choice === 'save') {
@@ -1413,21 +1416,18 @@ function setupMenuEvents() {
     });
 
     // Về Menu chính: xác nhận vì có thể mất tiến trình trong phiên chơi
-    btnPauseMenu?.addEventListener('click', () => {
-        const doIt = () => {
-            closeAllPanels();
-            togglePauseMenu(false);
-            gameState = 'menu';
-            paused = false;
-            document.getElementById('hud').style.display = 'none';
-            ui.showMainMenu();
-        };
-        // Xác nhận (không dùng alert để chặn main thread)
-        if (typeof confirm === 'function') {
-            if (confirm('Về Menu chính? Tiến trình chuyến đi hiện tại sẽ không được lưu.')) doIt();
-        } else {
-            doIt();
-        }
+    btnPauseMenu?.addEventListener('click', async () => {
+        const choice = await askConfirm(
+            'Về Menu chính? Tiến trình chuyến đi hiện tại sẽ không được lưu.',
+            { yes: '🏠 Về Menu chính', no: '❌ Ở lại', cancel: '↩️ Quay lại menu' }
+        );
+        if (choice !== 'save') return;   // chỉ "Về Menu chính" mới thoát
+        closeAllPanels();
+        togglePauseMenu(false);
+        gameState = 'menu';
+        paused = false;
+        document.getElementById('hud').style.display = 'none';
+        ui.showMainMenu();
     });
 
     // UV Skin handlers
