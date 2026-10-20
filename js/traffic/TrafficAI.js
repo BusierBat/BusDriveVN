@@ -28,10 +28,10 @@ import { hypot2 } from "../utils.js";
 import { BUS_DIMENSIONS } from "../bus.js";
 
 const TWO_PI = Math.PI * 2;
-const BUS_LEN = (BUS_DIMENSIONS && BUS_DIMENSIONS.length) || 12.8;
-const BUS_W = (BUS_DIMENSIONS && BUS_DIMENSIONS.width) || 2.5;
-const HALF_LEN = BUS_LEN * 0.5;
-const HALF_W = BUS_W * 0.5;
+const DEF_BUS_LEN = (BUS_DIMENSIONS && BUS_DIMENSIONS.length) || 12.8;
+const DEF_BUS_W = (BUS_DIMENSIONS && BUS_DIMENSIONS.width) || 2.5;
+const DEF_HALF_LEN = DEF_BUS_LEN * 0.5;
+const DEF_HALF_W = DEF_BUS_W * 0.5;
 
 const LOOKAHEAD = 90;        // m: quét xe quanh xe (trước + sau)
 const EMERGENCY_TTC = 0.8;   // s: TTC dưới mức này -> phanh khẩn cấp
@@ -96,6 +96,14 @@ export const AI_STATE = {
 export class TrafficAI {
     constructor({ vehicle, roadGraph, personality = 'NORMAL', seed = null, isStatic = false, isParked = false, parkTimer = 0 }) {
         this.vehicle = vehicle;
+        // KICH THUOC XE THEO LOAI (bus / o to con / van / tai / dau keo container).
+        // bus.js xuat BUS_DIMENSIONS; npc_vehicles.js xuat dimensions rieng.
+        // Mac dinh = kich thuoc xe khach neu vehicle khong co dimensions.
+        const _vd = (vehicle && vehicle.dimensions) || null;
+        this.vehLen = _vd && _vd.length ? _vd.length : DEF_BUS_LEN;
+        this.vehWid = _vd && _vd.width ? _vd.width : DEF_BUS_W;
+        this.vehHalfLen = this.vehLen * 0.5;
+        this.vehHalfWid = this.vehWid * 0.5;
         this.roadGraph = roadGraph;
         this.seed = seed || Math.random() * 999999;
         this.random = createSeededRandom(this.seed);
@@ -154,9 +162,9 @@ export class TrafficAI {
         this.reactTimer = 0;        // phản xạ trễ khi phanh (dùng trong _decide/_updateAccel)
 
         // Collider radius: half width + small buffer for safety margin
-        // HALF_W = 1.25 (half of 2.5m bus width), +0.3 = 1.55m radius
-        // This is tighter than before (was HALF_W + 0.6 = 1.85) to prevent "phantom" collisions
-        this.collider = { x: 0, y: 0.5, z: 0, r: HALF_W + 0.3 };
+        // this.vehHalfWid = 1.25 (half of 2.5m bus width), +0.3 = 1.55m radius
+        // This is tighter than before (was this.vehHalfWid + 0.6 = 1.85) to prevent "phantom" collisions
+        this.collider = { x: 0, y: 0.5, z: 0, r: this.vehHalfWid + 0.3 };
         this.active = true;
         this.colId = -1;
         this.aiLevel = 'NEAR';
@@ -233,7 +241,7 @@ export class TrafficAI {
     _minOffset() { return 0.15; }
     _maxOffset() {
         if (!this.meta) return 6;
-        return Math.max(this._minOffset(), this.meta.half - HALF_W * 0.9);
+        return Math.max(this._minOffset(), this.meta.half - this.vehHalfWid * 0.9);
     }
 
     _laneCenter(lane) {
@@ -367,7 +375,7 @@ export class TrafficAI {
         const sameLat = laneW * 0.55;                       // cùng làn - tighter
         // Cửa cứng = tổng bề rộng xe + 0.2m: xe LÁT qua làn mình, xe cản
         // ở làn kế (cách 3.5m) KHÔNG bị coi là xe dẫn -> vượt mới làm được.
-        const hardLat = BUS_W + 0.2;
+        const hardLat = this.vehWid + 0.2;
         const candLat = laneW * 0.55;
         const mine = this.laneOffset;
         const candCenter = (this._scanLane >= 0 && meta) ? meta.laneCenter(this._scanLane) : null;
@@ -428,7 +436,7 @@ export class TrafficAI {
             }
 
             if (t > 0) {
-                const gap = t - BUS_LEN;              // khoảng cách bumper->bumper
+                const gap = t - this.vehLen;              // khoảng cách bumper->bumper
                 if (gap < s.nearestFrontGap) s.nearestFrontGap = gap;
                 const inLane = latDiff < sameLat && sameDir;
                 const hard = latDiff < hardLat && gap < 20;     // lấn làn / ngược chiều / player
@@ -440,7 +448,7 @@ export class TrafficAI {
                 const inTargetLane = sameDir &&
                     Math.abs(oCenter - this.targetLaneOffset) < sameLat;
                 if ((inLane || inTargetLane || hard) && gap < s.leaderGap) {
-                    s.leader = o; s.leaderGap = Math.max(gap, -BUS_LEN);
+                    s.leader = o; s.leaderGap = Math.max(gap, -this.vehLen);
                     // Xe ngược chiều tiệm cận với vận tốc RELATIVE = v_mình +
                     // |v_nó|. IDM tính dv = v - leaderSpeed -> phải để SỐ ÂM
                     // (đang lái vào mặt nhau), nếu không sẽ trừ ngược ra
@@ -451,7 +459,7 @@ export class TrafficAI {
                     s.candFrontGap = gap; s.candFrontSpeed = oSpeed;
                 }
             } else {
-                const gapBack = -t - BUS_LEN;
+                const gapBack = -t - this.vehLen;
                 if (latDiff < sameLat && sameDir && gapBack < s.rearGap) {
                     s.rear = o; s.rearGap = gapBack; s.rearSpeed = oSpeed;
                 }
@@ -470,9 +478,9 @@ export class TrafficAI {
             this._yieldTimer = 0;
         }
         if (junctionBlock) {
-            const gap = distToEnd - HALF_LEN - JUNCTION_STOP_M;   // bumper -> vạch
+            const gap = distToEnd - this.vehHalfLen - JUNCTION_STOP_M;   // bumper -> vạch
             if (gap < s.leaderGap) {
-                s.leaderGap = Math.max(gap, -BUS_LEN);
+                s.leaderGap = Math.max(gap, -this.vehLen);
                 s.leaderSpeed = 0;
                 s.junctionBlocked = true;
             }
@@ -812,7 +820,7 @@ export class TrafficAI {
         const t = dx * f.ux + dz * f.uz;               // >0: trước mặt
         if (t > 0) return false;                       // vẫn còn phía trước
         // thêm khe an toàn khi cắt về
-        return (-t - BUS_LEN) > 8 && (this.scan.leaderGap === Infinity || this.scan.leaderGap > 40);
+        return (-t - this.vehLen) > 8 && (this.scan.leaderGap === Infinity || this.scan.leaderGap > 40);
     }
 
     _abortLaneChange() {
@@ -861,7 +869,7 @@ export class TrafficAI {
             : this.profile.roadsideStopChance * dt;
         if (this.random() > chance) return;
 
-        const parkOffset = Math.max(this._laneCenter(0) + 0.4, meta.half - Math.max(0.9, HALF_W));
+        const parkOffset = Math.max(this._laneCenter(0) + 0.4, meta.half - Math.max(0.9, this.vehHalfWid));
         this.stop.phase = 'PULL_OVER';
         this.stop.offset = clamp(parkOffset, this._laneCenter(0), this._maxOffset());
         this.stop.timer = 0;
@@ -939,7 +947,7 @@ export class TrafficAI {
         if (st.phase === 'MERGE_IN') {
             this.state = AI_STATE.MERGING;
             this.targetLaneOffset = this._laneCenter(0);
-            if (this.scan.leaderGap < 8 && this.scan.leaderGap > -BUS_LEN && this.speed < 4) {
+            if (this.scan.leaderGap < 8 && this.scan.leaderGap > -this.vehLen && this.speed < 4) {
                 // xe trước chắn ngay đầu làn -> đứng chờ lại
                 this.targetSpeed = 0;
                 return;
@@ -1174,7 +1182,7 @@ export class TrafficAI {
         return true;
     }
 
-    // Xe khác đang đứng trong vùng cửa ra (0 -> BUS_LEN+14m) của segment đích,
+    // Xe khác đang đứng trong vùng cửa ra (0 -> this.vehLen+14m) của segment đích,
     // cùng chiều -> chặn. O(N) với N = số xe active, chỉ chạy khi tới ngã.
     _entryOccupied(nextSeg, curId) {
         const vehs = this._lastVehicles;
@@ -1186,7 +1194,7 @@ export class TrafficAI {
         const dx = b.x - a.x, dz = b.z - a.z;
         const len = hypot2(dx, dz) || 1;
         const ux = dx / len, uz = dz / len;
-        const win = BUS_LEN + 14;
+        const win = this.vehLen + 14;
         for (let i = 0; i < vehs.length; i++) {
             const o = vehs[i];
             if (!o || o === this || !o.collider || o.isStatic) continue;
@@ -1194,10 +1202,10 @@ export class TrafficAI {
             if (typeof o.direction === 'number' && o.direction !== dir) continue;
             const t = (o.collider.x - a.x) * ux + (o.collider.z - a.z) * uz;
             // t âm = vừa rẽ vào, tâm xe chưa vượt điểm đầu segment (progr-
-            // ess decompose ra số âm khi cua). Mở tới -BUS_LEN để bắt cả
+            // ess decompose ra số âm khi cua). Mở tới -this.vehLen để bắt cả
             // xe đứng sờ sờ ngay cửa với prog -0.03 (trước đó window -2m
             // để lọt -> xe thứ 2 ùa vào đè lên).
-            if (t >= -BUS_LEN && t < win) return true;
+            if (t >= -this.vehLen && t < win) return true;
         }
         return false;
     }

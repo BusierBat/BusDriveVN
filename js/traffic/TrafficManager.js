@@ -19,9 +19,37 @@ import { TrafficAI, AI_STATE } from "./TrafficAI.js";
 import { getGraphicsSettings } from "./GraphicsSettings.js";
 import { hypot2 } from "../utils.js";
 import { createSeededRandom, clamp } from "../utils.js";
+import {
+    NPC_VEHICLE_KIND, NPC_VEHICLE_SPECS, createNpcVehicle, pickVehicleColor
+} from "../npc_vehicles.js";
 
 const BUS_LEN_APPROX = 12.8;   // xe NPC dùng chung mesh bus (bus.js BUS_DIMENSIONS)
 const BUS_W_APPROX = 2.53;
+
+// ===== PHÂN BỔ LOẠI XE NPC =====
+// Giao thông đường VN thực tế: xe khách liên tỉnh + ô tô con chạy xe buýt,
+// van 16 chỗ đưa rước, xe tải thùng kín và đầu kéo container chạy QL/cao
+// tốc. Tỉ lệ dưới đây CHỈ quyết định hình dáng + kích thước (xe nào hay
+// chạy trên loại đường nào) — không can thiệp vào luật giao thông của AI.
+const VEHICLE_TYPE_TABLE = [
+    { kind: NPC_VEHICLE_KIND.BUS, w: 0.36 },
+    { kind: NPC_VEHICLE_KIND.CAR, w: 0.24 },
+    { kind: NPC_VEHICLE_KIND.VAN16, w: 0.14 },
+    { kind: NPC_VEHICLE_KIND.TRUCK, w: 0.15 },
+    { kind: NPC_VEHICLE_KIND.SEMI, w: 0.11 }
+];
+const VEHICLE_TYPE_TOTAL = VEHICLE_TYPE_TABLE.reduce((a, b) => a + b.w, 0);
+
+// Nhân cách lái xe theo loại xe: xe tải/đầu kéo nặng -> chậm hơn, ô tô con
+// nhanh + bám sát. speedFactor nhân thêm cho xe tải (đường VN: xe tải chạy
+// 60-70 km/h trên QL, container 50-60).
+const VEHICLE_DRIVER = {
+    [NPC_VEHICLE_KIND.BUS]: { personality: null, speedScale: 1.0 },
+    [NPC_VEHICLE_KIND.CAR]: { personality: 'FAST', speedScale: 1.06 },
+    [NPC_VEHICLE_KIND.VAN16]: { personality: 'NORMAL', speedScale: 0.94 },
+    [NPC_VEHICLE_KIND.TRUCK]: { personality: 'CAUTIOUS', speedScale: 0.82 },
+    [NPC_VEHICLE_KIND.SEMI]: { personality: 'CAUTIOUS', speedScale: 0.70 }
+};
 
 // ===== Bug 8 hệ lụy: static colliders (nhà/cây/cột/guardrail/xe bãi) =====
 // Broad-phase của collisionSystem là HÌNH TRÒN — r xe NPC 3 + r static tới 7 —
@@ -42,20 +70,22 @@ const _SAT_AXES_NPC = new Float64Array(8);
 function _narrowOverlap(ai, hit, playerRot) {
     const d = hit.data;
     let bhl, bhw, bRot;
+    // Thân xe NPC: dùng KÍCH THƯỚC THẬT của xe đó (bus 12.8x2.53, ô tô con
+    // 4.5x1.74, đầu kéo 16.5x2.5) — không dùng hằng số xe khách cho mọi loại.
+    const ahl = ai.vehHalfLen, ahw = ai.vehHalfWid;
     if (d && d.ai) {
-        bhl = BUS_LEN_APPROX / 2;
-        bhw = BUS_W_APPROX / 2;
+        bhl = (d.ai.vehLen || BUS_LEN_APPROX) * 0.5;
+        bhw = (d.ai.vehWid || BUS_W_APPROX) * 0.5;
         bRot = typeof d.ai.heading === 'number' ? d.ai.heading : 0;
     } else if (!d && hit.type === 'player' && typeof playerRot === 'number') {
-        bhl = BUS_LEN_APPROX / 2;
-        bhw = BUS_W_APPROX / 2;
+        bhl = BUS_LEN_APPROX * 0.5;
+        bhw = BUS_W_APPROX * 0.5;
         bRot = playerRot;
     } else {
         bhl = d && typeof d.hl === 'number' ? d.hl : hit.r;
         bhw = d && typeof d.hw === 'number' ? d.hw : bhl;
         bRot = d && typeof d.rot === 'number' ? d.rot : 0;
     }
-    const ahl = BUS_LEN_APPROX / 2, ahw = BUS_W_APPROX / 2;
     const aFx = Math.sin(ai.heading), aFz = Math.cos(ai.heading);
     const bFx = Math.sin(bRot), bFz = Math.cos(bRot);
     const dx = hit.x - ai.collider.x, dz = hit.z - ai.collider.z;
@@ -300,21 +330,37 @@ export class TrafficManager {
         }
         if (!candidate) return null;
 
-        let vehicle = this.pool.pop();
+        // Chọn loại xe (hình dáng + kích thước) rồi lấy mesh từ pool.
+        const kind = this._pickVehicleType(candidate.seg);
+        const colorIndex = kind === NPC_VEHICLE_KIND.BUS
+            ? -1                                   // xe khách dùng skin texture riêng
+            : pickVehicleColor(kind, this.random);
+        let vehicle = this._takePooledVehicle(kind, colorIndex);
         if (!vehicle) {
-            vehicle = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
+            if (kind === NPC_VEHICLE_KIND.BUS) {
+                vehicle = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
+            } else {
+                vehicle = createNpcVehicle(kind, colorIndex);
+            }
             this.scene.add(vehicle.group);
         }
 
+        // Nhân cách lái xe theo loại xe (xe tải chậm hơn, ô tô con nhanh hơn).
+        const drv = VEHICLE_DRIVER[kind] || VEHICLE_DRIVER[NPC_VEHICLE_KIND.BUS];
+        const personality = drv.personality || this._pickPersonality();
+
         const ai = new TrafficAI({
             vehicle, roadGraph: this.roadGraph,
-            personality: this._pickPersonality(),
+            personality,
             seed: this.seed + this._nextAiId
         });
         ai.id = this._nextAiId++;
+        ai.vehicleKind = kind;
+        ai.vehicleColorIndex = colorIndex;
+        if (drv.speedScale !== 1.0) ai.profile.speedFactor *= drv.speedScale;
         ai.speak = (t) => this._emitDialogue(t);   // NPC GDCD mở mồm qua HUD
         if (!ai.placeOnSegment(candidate.seg.id, candidate.dir, candidate.progress, null)) {
-            this.pool.push(vehicle);          // không đặt được lên đường -> trả pool
+            this._retireToPool(vehicle, kind, colorIndex);   // không đặt được -> trả pool
             return null;
         }
         ai.setActive(true);
@@ -326,6 +372,40 @@ export class TrafficManager {
         this.aiVehicles.push(ai);
         this.activeCount++;
         return ai;
+    }
+
+    // Chọn loại xe NPC theo loại đường: xe tải/đầu kéo container chạy đường
+    // lớn (QL/cao tốc) nhiều hơn, đường nhỏ/đô thị nhiều ô tô con.
+    _pickVehicleType(seg) {
+        const cls = seg && seg.class;
+        const bigRoad = (cls === "NATIONAL" || cls === "EXPRESSWAY" || cls === "ARTERIAL" ||
+            cls === "PROVINCIAL_ROAD" || cls === "COLLECTOR");
+        let r = this.random() * VEHICLE_TYPE_TOTAL;
+        for (const row of VEHICLE_TYPE_TABLE) {
+            // Xe nặng (tải/đầu kéo) chỉ xuất hiện trên đường lớn.
+            const heavy = (row.kind === NPC_VEHICLE_KIND.TRUCK || row.kind === NPC_VEHICLE_KIND.SEMI);
+            if (heavy && !bigRoad) continue;
+            r -= row.w;
+            if (r <= 0) return row.kind;
+        }
+        return NPC_VEHICLE_KIND.BUS;
+    }
+
+    // Lấy mesh đã dùng trong pool (khớp loại + màu) -> không tạo mới liên tục.
+    _takePooledVehicle(kind, colorIndex) {
+        const pool = this.pool;
+        for (let i = 0; i < pool.length; i++) {
+            const e = pool[i];
+            if (e.kind === kind && e.colorIndex === colorIndex) {
+                pool.splice(i, 1);
+                return e.vehicle;
+            }
+        }
+        return null;
+    }
+
+    _retireToPool(vehicle, kind, colorIndex) {
+        this.pool.push({ vehicle, kind, colorIndex });
     }
 
     // Kiểm tra khoảng trống tại điểm spawn: cùng đoạn theo TRỤC ĐƯỜNG
@@ -396,7 +476,8 @@ export class TrafficManager {
         if (!this.isBayFree(tx, tz, 7)) return;
         this.markBayBusy(tx, tz);
 
-        let vehicle = this.pool.pop();
+        // Xe đỗ bến LUÔN là xe khách (BUS_DRIVER) — lấy từ pool nếu có sẵn.
+        let vehicle = this._takePooledVehicle(NPC_VEHICLE_KIND.BUS, -1);
         if (!vehicle) {
             vehicle = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
             this.scene.add(vehicle.group);
@@ -407,6 +488,8 @@ export class TrafficManager {
             seed: this.seed + this._nextAiId, isStatic: true
         });
         ai.id = this._nextAiId++;
+        ai.vehicleKind = NPC_VEHICLE_KIND.BUS;
+        ai.vehicleColorIndex = -1;
         ai.collider.x = tx;
         ai.collider.z = tz;
         ai.collider.y = req.transform.y || 0;
@@ -572,7 +655,8 @@ export class TrafficManager {
 
     _retireVehicle(index, ai) {
         ai.setActive(false);
-        this.pool.push(ai.vehicle);
+        this._retireToPool(ai.vehicle, ai.vehicleKind || NPC_VEHICLE_KIND.BUS,
+            ai.vehicleColorIndex != null ? ai.vehicleColorIndex : -1);
         if (window.collisionSystem && ai.colId) {
             window.collisionSystem.remove(ai.colId);
             ai.colId = -1;
@@ -605,7 +689,16 @@ export class TrafficManager {
             if (f) { ux = f.ux; uz = f.uz; rx = f.rx; rz = f.rz; }
             const along = Math.abs(hx * ux + hz * uz);
             const side = Math.abs(hx * rx + hz * rz);
-            if (along > BUS_LEN_APPROX * 0.95 || side > BUS_W_APPROX * 1.05) return;   // không thực sự chồng
+            // Ngưỡng chồng phải theo KÍCH THƯỚC CẢ HAI XE (xe con 4.5m vs
+            // xe khách 12.8m vs đầu kéo 16.5m). Dùng hằng số của xe khách
+            // cho mọi loại -> xe con cach 8m phía sau cũng bị coi là "chồng"
+            // -> phanh ảo hàng loạt.
+            const other = hit.data.ai;
+            const oLen = (other.vehLen || BUS_LEN_APPROX);
+            const oWid = (other.vehWid || BUS_W_APPROX);
+            const maxAlong = (ai.vehLen + oLen) * 0.5 * 0.95;
+            const maxSide = (ai.vehWid + oWid) * 0.5 * 1.05;
+            if (along > maxAlong || side > maxSide) return;   // không thực sự chồng
             if (ai._stuckT > 4) return;   // đang tự giải cứu: applyAvoidance sẽ giằng lại
             ai.applyAvoidance(hx, hz, 1);
             this._gdcdTryHitRun(ai);      // va chạm THẬT -> "học sinh cá biệt" có thể chạy trốn
