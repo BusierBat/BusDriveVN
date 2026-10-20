@@ -4,7 +4,7 @@ import { MapLoader } from "./map.js";
 import { createUI } from "./ui.js";
 import { createNPC } from "./npc.js";
 import { createBus, loadNpcSkinList, BUS_DIMENSIONS } from "./bus.js";
-import { createBusInterior, createBusInterior34 } from "./interior.js";
+import { createBusInterior, createBusInterior34, optimizeInteriorLights, migrateInteriorCockpit } from "./interior.js";
 import { CameraSystem, PASSENGER_SEATS, PASSENGER_SEATS_34 } from "./camera.js";
 import { createAudioSystem } from "./audio.js";
 import { LightingSystem, LIGHTING_QUALITY_PRESETS } from "./lighting.js";
@@ -1010,32 +1010,62 @@ function handleEscape() {
     togglePauseMenu();
 }
 
+// ===== ĐỒNG BỘ UI SETTINGS =====
+/** Đưa giá trị đang LƯU vào các control của panel Settings (1 nguồn duy nhất
+ *  cho cả 2 nơi mở: Main Menu và Menu ESC). */
+function syncSettingsUI() {
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+    const txt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    set('setting-graphics', gameSettings.graphics);
+    set('setting-lighting', gameSettings.lightingQuality.toLowerCase());
+    set('setting-godrays', gameSettings.godRays);
+    set('setting-interior', gameSettings.interior);
+    set('setting-npc-density', gameSettings.npcDensity); txt('val-npc-density', gameSettings.npcDensity);
+    set('setting-cam-sens', gameSettings.camSens); txt('val-cam-sens', gameSettings.camSens);
+    set('setting-fov', gameSettings.fov); txt('val-fov', gameSettings.fov);
+    set('setting-render-dist', gameSettings.renderDist); txt('val-render-dist', gameSettings.renderDist);
+    set('setting-key-sens', gameSettings.keySens); txt('val-key-sens', Number(gameSettings.keySens).toFixed(1));
+    set('setting-audio-volume', Math.round(gameSettings.audioVolume * 100));
+    txt('val-audio-volume', Math.round(gameSettings.audioVolume * 100) + '%');
+    const mute = document.getElementById('setting-audio-mute');
+    if (mute) mute.checked = !!gameSettings.audioMute;
+}
+
 // ===== ĐỔI CẤU HÌNH NỘI THẤT (20 phòng <-> 34 giường) =====
 function applyInteriorConfig(configId) {
     if (!bus?.group) return;
     const want = (configId === 'BED34') ? 'BED34' : 'BED20';
     if (interior && interior.configId === want) return;   // đang dùng cấu hình này
 
-    // Gỡ cấu hình cũ (KHÔNG dựng song song 2 cấu hình -> không trùng LED)
-    if (interior) {
-        bus.group.remove(interior);
-        interior.traverse((o) => {
+    const oldInterior = interior;
+    // 1) Tạo cấu hình MỚI trước (chỉ 1 cấu hình tồn tại ở mỗi thời điểm)
+    const newInt = (want === 'BED34') ? createBusInterior34() : createBusInterior();
+    newInt.configId = want;
+    // 2) Chuyển COCKPIT (màn/đồng hồ/nút) từ interior cũ sang mới TRƯỚC khi
+    //    giải phóng geometry cũ — nếu không, màn hình tài xế biến mất sau khi
+    //    đổi cấu hình (bus.js gắn cockpit vào GỐC của interior).
+    const moved = migrateInteriorCockpit(oldInterior, newInt);
+    // 3) Gỡ + giải phóng cấu hình cũ
+    if (oldInterior) {
+        bus.group.remove(oldInterior);
+        oldInterior.traverse((o) => {
             if (o.isMesh && o.geometry) o.geometry.dispose();
         });
     }
-    interior = (want === 'BED34') ? createBusInterior34() : createBusInterior();
+    // 4) Gắn cấu hình mới
+    interior = newInt;
     bus.group.add(interior);
     bus.setInteriorReference?.(interior);
-
-    // Camera: bộ ghế hành khách theo cấu hình (tọa độ riêng, không chép
-    // nguyên của cấu hình kia). Nếu đang ở ghế hành khách mà cấu hình mới
-    // không còn ghế đó -> về 'driver' (góc nhìn an toàn, không nằm trong giường).
+    // 5) Camera: bộ ghế hành khách theo cấu hình (tọa độ riêng, không chép
+    //    nguyên của cấu hình kia). Nếu đang ở ghế hành khách mà cấu hình mới
+    //    không còn ghế đó -> về 'driver' (góc nhìn an toàn, không nằm trong giường).
     if (cameraSystem) {
         cameraSystem.setSeatList(want === 'BED34' ? PASSENGER_SEATS_34 : PASSENGER_SEATS);
     }
+    // 6) Gộp đèn: 38 -> 16 PointLight trong scene (shader nhẹ hơn ~58% trên N5000)
+    optimizeInteriorLights(interior);
     interior.setInteriorLed?.(true);      // đèn cabin theo cấu hình mới
-    // passenger.js KHÔNG có điểm tương tác theo chỗ ngồi (chỉ hành khách
-    // đứng bến) -> không cần cập nhật gì thêm khi đổi cấu hình nội thất.
+    if (moved > 0) console.log(`[interior] chuyen ${want}: giu ${moved} mesh cockpit`);
 }
 
 // ===== ÁP DỤNG + LƯU CÀI ĐẶT =====
@@ -1260,19 +1290,9 @@ function setupMenuEvents() {
     // báo lại ở đây để tránh 2 hàm cùng tên (bản local che mất bản global).
 
     // Settings panel
-    btnSettings?.addEventListener("click", () => { 
+    btnSettings?.addEventListener("click", () => {
         openPanel(settingsPanel);
-        // Sync dropdown values with current settings
-        const selGraphics = document.getElementById('setting-graphics');
-        const selLighting = document.getElementById('setting-lighting');
-        const selGodRays = document.getElementById('setting-godrays');
-        if(selGraphics) selGraphics.value = gameSettings.graphics;
-        if(selLighting) selLighting.value = gameSettings.lightingQuality.toLowerCase();
-        if(selGodRays) selGodRays.value = gameSettings.godRays;
-        if(rngFov) rngFov.value = gameSettings.fov;
-        if(valFov) valFov.textContent = gameSettings.fov;
-        if(rngRenderDist) rngRenderDist.value = gameSettings.renderDist;
-        if(valRenderDist) valRenderDist.textContent = gameSettings.renderDist;
+        syncSettingsUI();      // dong bo TAT CA gia tri dang luu (ke ca noi that 20/34)
     });
     
     // UV Skin panel
@@ -1329,7 +1349,15 @@ function setupMenuEvents() {
         applySettingsToGame();                    // áp dụng thật vào game
         const saved = saveSettingsToStorage();     // lưu bền vững
         settingsDirty = false;
-        ui?.toast(saved ? "✅ Đã áp dụng & lưu cài đặt!" : "⚠ Đã áp dụng nhưng không lưu được (localStorage bị chặn)");
+        if (!bus?.group && gameSettings.interior) {
+            // Đang ở Main Menu: chưa có xe để đổi ngay — cấu hình sẽ áp dụng
+            // lúc vào game. Nói rõ để người chơi không tưởng setting bị bỏ qua.
+            ui?.toast(saved
+                ? `💾 Đã lưu — nội thất ${gameSettings.interior === 'BED34' ? '34 giường VIP' : '20 phòng VIP'} sẽ áp dụng khi vào game`
+                : "⚠ Đã áp dụng nhưng không lưu được (localStorage bị chặn)");
+        } else {
+            ui?.toast(saved ? "✅ Đã áp dụng & lưu cài đặt!" : "⚠ Đã áp dụng nhưng không lưu được (localStorage bị chặn)");
+        }
         closeAllPanels();
     });
 
@@ -1393,27 +1421,7 @@ function setupMenuEvents() {
     // Cài đặt: mở popup, vẫn giữ game tạm dừng
     btnPauseSettings?.addEventListener('click', () => {
         openPanel(settingsPanel);
-        // đồng bộ giá trị đang lưu vào UI
-        const sG = document.getElementById('setting-graphics');
-        const sL = document.getElementById('setting-lighting');
-        const sGR = document.getElementById('setting-godrays');
-        const sI = document.getElementById('setting-interior');
-        if (sG) sG.value = gameSettings.graphics;
-        if (sL) sL.value = gameSettings.lightingQuality.toLowerCase();
-        if (sGR) sGR.value = gameSettings.godRays;
-        if (sI) sI.value = gameSettings.interior;
-        if (rngNpc) { rngNpc.value = gameSettings.npcDensity; if (valNpc) valNpc.textContent = gameSettings.npcDensity; }
-        if (rngCamSens) { rngCamSens.value = gameSettings.camSens; if (valCamSens) valCamSens.textContent = gameSettings.camSens; }
-        if (rngFov) { rngFov.value = gameSettings.fov; if (valFov) valFov.textContent = gameSettings.fov; }
-        if (rngRenderDist) { rngRenderDist.value = gameSettings.renderDist; if (valRenderDist) valRenderDist.textContent = gameSettings.renderDist; }
-        const kS = document.getElementById('setting-key-sens');
-        const vK = document.getElementById('val-key-sens');
-        if (kS) { kS.value = gameSettings.keySens; if (vK) vK.textContent = Number(gameSettings.keySens).toFixed(1); }
-        const aV = document.getElementId('setting-audio-volume');
-        const vA = document.getElementById('val-audio-volume');
-        if (aV) { aV.value = Math.round(gameSettings.audioVolume * 100); if (vA) vA.textContent = Math.round(gameSettings.audioVolume * 100) + '%'; }
-        const aM = document.getElementById('setting-audio-mute');
-        if (aM) aM.checked = !!gameSettings.audioMute;
+        syncSettingsUI();          // dong bo gia tri dang luu vao UI
     });
 
     // Về Menu chính: xác nhận vì có thể mất tiến trình trong phiên chơi
@@ -1585,6 +1593,11 @@ async function startGameFromMenu() {
         interior.configId = (gameSettings.interior === 'BED34') ? 'BED34' : 'BED20';
         if (!interior?.isObject3D) interior = new THREE.Group();
         bus.group.add(interior);
+        // GỘP ĐÈN cabin: 31 PointLight (20 phòng) -> 9 (giữ nguyên mesh dải
+        // LED). Mỗi PointLight là 1 vòng lặp trong shader của MỌI vật liệu;
+        // 38 đèn trong scene = frame ~1.1s trên iGPU N5000 (đo được) ->
+        // "không load vào game". Gọi 1 lần lúc khởi động (trước frame đầu).
+        optimizeInteriorLights(interior);
         // Cockpit tài xế (Windows Update/BSOD/speedo, nút phân màu) được gán
         // RUNTIME lên mesh dashboard có sẵn — bus.setInteriorReference là hook hiện có.
         bus.setInteriorReference?.(interior);

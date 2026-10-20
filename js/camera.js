@@ -175,16 +175,13 @@ export class CameraSystem {
     // MẮT NGƯỜI THẬT theo interior.js: ghế tài xế x=-0.35 z=4.5 (cushion
     // y=0.44); vô lăng x=-0.35 (đã dời runtime) z=5.1 r0.22 (viền trên y1.32);
     // dashboard z5.3-5.6, cluster center y~1.05.
-    // driver: mắt ≈ (−0.35, 1.28, 4.95) — CAO HƠN bản 1.22: viền vô lăng
-    // trên y1.32 chỉ nhỉnh mắt 0.04 → thấy đúng dáng arc vô lăng, và đường
-    // nhìn về cluster (y1.05) xuyên đúng lỗ vô lăng, không dính nan hoa (y1.1).
-    // Bản cũ từ đầu prompt (0.65, 1.32, 5.2) là ghế PHỤ XE (hoán vị) + đè dash.
-    // HOÁN VỊ theo yêu cầu test thực tế: camera "Tài xế" đặt tại 0.65 (chỗ
-    // ghế người chơi coi là chỗ tài xế), camera "Ghế phụ" về −0.35.
-    // z=4.75 giữ nguyên (ngay chỗ ghế, vô lăng 0.35m trước mắt).
-    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 1.28, 4.75);
-    // copilot: mắt (−0.35, 1.28, 4.75) — ghế bên kia dash.
-    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 1.28, 4.75);
+    // CAO HƠN (y 1.28 -> 1.42): mắt tài xế ngồi trên ghế xe khách cao cổ
+    // thực tế ở ~1.40-1.45m; ở 1.28 nhìn xuống vô-lăng quá nhiều (báo cáo
+    // "góc nhìn hơi thấp"). z 4.75 -> 4.88 để giữ nguyên góc nhìn về
+    // đường/kính trước khi nâng cao.
+    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 1.42, 4.88);
+    // copilot: mắt (−0.35, 1.42, 4.88) — ghế bên kia dash.
+    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 1.42, 4.88);
     else if (mode === 'cabin') this.targetPos = new THREE.Vector3(0, 1.5, 3.2);
     else if (mode === 'outside') { /* nhanh orbit: update() dung orbitYaw/Pitch/Distance, khong dung targetPos */ }
     else if (mode.startsWith('seat_')) {
@@ -242,7 +239,9 @@ export class CameraSystem {
     if (mode === 'outside') return "Ngoài xe";
     if (mode.startsWith('seat_')) {
       const idx = parseInt(mode.split('_')[1]);
-      const seat = PASSENGER_SEATS[idx % PASSENGER_SEATS.length];
+      // Dùng this.seats (bộ ghế THEO CẤU HÌNH hiện tại) — dùng PASSENGER_SEATS
+      // cứng sẽ hiện sai tên ghế khi đã đổi sang cấu hình 34 giường.
+      const seat = this.seats[idx % this.seats.length];
       return `Ghế ${seat.id} (T${seat.tier}, H${seat.row})`;
     }
     return mode;

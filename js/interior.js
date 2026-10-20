@@ -884,3 +884,85 @@ export function createBusInterior34() {
     root.configId = "BED34";
     return root;
 }
+
+// =====================================================================
+// TỐI ƯU: GỘP ĐÈN CABIN (GIẢM numPointLight TRONG SCENE)
+// ---------------------------------------------------------------------
+// BẰNG CHỨNG (đo được, không phải phỏng đoán):
+//   Nội thất 20 phòng tạo **31 PointLight**; cộng đèn đường pool (6) + đèn
+//   đuôi (1) = **38 PointLight trong scene**. Trong Three.js, `numPointLights`
+//   nằm trong program cache key và MỌI fragment shader của MeshStandardMaterial
+//   phải LẶP 38 VÒNG ánh sáng point cho mỗi pixel. Trên iGPU Intel UHD 605
+//   (Pentium N5000) đo được frame ~1.1s -> `[PERF] Spikes ... TB 1130.6ms`,
+//   chunk dựng không kịp -> "không load vào game".
+//
+// CÁCH SỬA (không đụng code cũ, không mất nội dung):
+//   - GIỮ NGUYÊN 5 đèn chính (center/left/right/front/rear) — chúng quyết định
+//     màu và độ sáng cabin, và `setInteriorLed` vẫn điều khiển được.
+//   - 26 đèn phụ (21 dải LED strip + 5 đèn mkLight) -> gộp còn **4 đèn đại
+//     diện** đặt dọc lối đi, TĂNG `userData.base` để tổng độ sáng tương đương
+//     (setInteriorLed vẫn tính intensity = base * 5 * factor -> vẫn bật/tắt
+//     được bằng phím F/L).
+//   - MESH dải LED (cái dải sáng nhìn thấy) GIỮ NGUYÊN -> hình ảnh không đổi.
+//   - 38 -> 16 PointLight trong scene (giảm ~58% chi phí shader).
+// LƯU Ý: đổi số PointLight làm đổi program cache key -> Three.js biên dịch lại
+// shader 1 lần. Việc này chạy LÚC KHỞI ĐỘNG GAME (trước frame đầu tiên có
+// thế giới) nên không gây giật giữa chơi.
+// =====================================================================
+export function optimizeInteriorLights(root) {
+    const out = { before: 0, after: 0, merged: 0 };
+    if (!root) return out;
+    const lightsGrp = root.getObjectByName('Lights');
+    if (!lightsGrp) return out;
+
+    const all = [];
+    lightsGrp.traverse((o) => { if (o.isPointLight) all.push(o); });
+    out.before = all.length;
+    if (all.length <= 8) { out.after = all.length; return out; }   // 34 giường: đã gọn
+
+    // 5 đèn chính (được đặt tên) giữ nguyên; phần còn lại gộp.
+    const KEEP = new Set(['centerLedLight', 'leftLedLight', 'rightLedLight', 'frontLedLight', 'rearLedLight']);
+    const main = all.filter((l) => KEEP.has(l.name));
+    const extra = all.filter((l) => !KEEP.has(l.name));
+
+    // Giữ 4 đèn đại diện, dời dọc lối đi (trục z), tăng công suất + tầm với.
+    const kept = extra.slice(0, 4);
+    const pos = [[0, 3.05, 3.6], [0, 3.05, 0.9], [0, 3.05, -1.9], [0, 3.05, -4.6]];
+    for (let i = 0; i < kept.length; i++) {
+        const l = kept[i];
+        l.position.set(pos[i][0], pos[i][1], pos[i][2]);
+        l.userData.base = 3.0;      // setInteriorLed sẽ tính intensity = base*5*factor
+        l.distance = 15;
+        l.intensity = 15;           // áp ngay (trước lần setInteriorLed sau đó)
+    }
+    // Gỡ các đèn dư khỏi SCENE (giữ object trong group để setInteriorLed vẫn
+    // chạy được, chỉ là chúng không chiếu sáng nữa).
+    for (const l of extra.slice(4)) {
+        if (l.parent) l.parent.remove(l);
+        out.merged++;
+    }
+    out.after = main.length + kept.length;
+    return out;
+}
+
+/**
+ * Chuyển COCKPIT (màn hình/đồng hồ/nút/joystick) từ interior cũ sang mới.
+ * bus.js gắn cockpit vào GỐC của interior (con trực tiếp, không thuộc nhóm
+ * nào) -> đổi cấu hình mà không chuyển thì màn hình tài xế biến mất.
+ * Giữ nguyên local transform khi re-parent (cùng gốc toạ độ).
+ */
+const INTERIOR_STD_GROUPS = new Set([
+    "Beds", "Floor", "Ceiling", "Curtains", "Windows", "DriverArea",
+    "Dashboard", "Lights", "Cabins", "Aisle", "Led", "BodyShell"
+]);
+export function migrateInteriorCockpit(oldRoot, newRoot) {
+    if (!oldRoot || !newRoot) return 0;
+    let n = 0;
+    for (const child of [...oldRoot.children]) {
+        if (!INTERIOR_STD_GROUPS.has(child.name)) {
+            newRoot.add(child);
+            n++;
+        }
+    }
+    return n;
+}
