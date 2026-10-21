@@ -42,8 +42,9 @@ for (let row = 0; row < BED_Z_POSITIONS.length; row++) {
 // ===== BỘ GHẾ HÀNH KHÁCH CHO CẤU HÌNH 34 GIƯỜNG VIP =====
 // 3 dãy (trái 5 · giữa 7 · phải 5) x 2 tầng = 34 chỗ ngồi. Tọa độ lấy
 // đúng bố cục interior.js (CFG34): giường bên |x|=0.87 dài 1.70m, giường
-// giữa x=0 dài 1.42m. Dãy giữa có lối đi 2 BÊN nên camera nhìn được cả
-// hai hướng (pivot rộng hơn) — KHÔNG dùng lại tọa độ của cấu hình 20 phòng.
+// giữa x=0 dài 1.40m (bước 1.42 — khe 0.02 đặt vách ngăn khoang). Dãy giữa
+// có lối đi 2 BÊN nên camera nhìn được cả hai hướng (pivot rộng hơn, xen
+// kẽ trái/phải theo row) — KHÔNG dùng lại tọa độ của cấu hình 20 phòng.
 export const PASSENGER_SEATS_34 = [];
 {
   let id = 1;
@@ -194,11 +195,17 @@ export class CameraSystem {
       // tầm nhìn ra aisle. Điều chỉnh CHỈ camera, không dựng thêm mesh.
       this.targetPos.z += 0.22;
       // Pivot = hướng lối đi (aisle): trái nhìn +x, phải nhìn −x. Camera
-      // ngồi trong buồng giường có divider đầu giường 0.43m trước mặt và rèm
+      // ngồi trong buồng giường có divider đầu giường trước mặt và rèm
       // aisle sát phía +z — quay 360° là đâm mesh ("vật cản vô hình") →
       // khoá yaw quanh pivot ±1.0 rad là phạm vi nhìn hữu dụng của buồng.
-      // Dãy giữa (34 giường) có lối đi 2 BÊN -> nhìn được cả hai hướng.
-      this.seatPivotYaw = seat.side === 'center' ? 0 : (seat.side === 'left' ? 0.65 : -0.65);
+      // DÃY GIỮA (34 giường) giờ CÓ vách ngăn đầu/cuối khoang (full-height,
+      // cách mắt đúng 0.28m = 0.70 − 0.42) nên pivot 0 (nhìn thẳng +z) là
+      // nhìn ĐẦY màn hình vào vách -> đổi sang hướng lối đi và nới 0.65 →
+      // 1.13 rad (≈65°): vách dãy giữa gần mắt hơn vách dãy bên (0.28 vs
+      // 0.43m), ở 65° mép vách chỉ chiếm ~1/4 khung nhìn bên thay vì ~3/5.
+      // Xen kẽ ±theo row: mỗi giường nhìn ra lối đi bên mình (2 lối đi).
+      if (seat.side === 'center') this.seatPivotYaw = seat.row % 2 === 1 ? 1.13 : -1.13;
+      else this.seatPivotYaw = seat.side === 'left' ? 0.65 : -0.65;
       this.bedLookYaw = this.seatPivotYaw;
       this.bedLookPitch = -0.08;
     }

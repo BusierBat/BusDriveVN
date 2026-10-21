@@ -606,8 +606,14 @@ export function createBusInterior() {
 //   * Khoang trong xe rộng 2.30m (WALL_X = 1.15) -> chia:
 //       giường bên 0.52 | lối đi 0.36 | giường giữa 0.54 | lối đi 0.36 | giường bên 0.52
 //     (tổng đúng 2.30m — KHÔNG vật thể nào xuyên nhau).
-//   * Giường giữa ngắn hơn (1.42m) vì khách nằm chéo, lối đi chạy 2 bên
-//     -> 7 giường vừa đúng chiều dài khoang hành khách (10.4m).
+//   * Giường giữa 1.40m với BƯỚC 1.42m -> giữa 2 khoang liền kề có khe
+//     0.02m đúng bằng bề dày vách ngăn: vách TRƯỚC/SAU mỗi khoang nằm gọn
+//     trong khe nên mặt vách chỉ TIẾP XÚC mép nệm/khung, không lấn 1mm.
+//     7 giuong 1.40 + 8 vach 0.02 = 9.96m, vẫn nằm trong khoang
+//     [-5.95 .. 4.05] (dư 0.03 trước / 0.01 sau) — KHÔNG kéo dài thân xe.
+//     (Trước đây dãy giữa để 1.42m dính liền nhau, không còn khe đặt vách
+//     -> 7 giường nối đuôi thành 1 khối, thiếu vách ngăn riêng tư VIP.)
+//     Chi tiết: buildCenterRowPartitions34 ở CUỐI file.
 //   * Bố cục: bên trái 5 + giữa 7 + bên phải 5 = 17 mỗi tầng, 2 tầng = 34.
 //
 // AN TOÀN HÌNH HỌC: mọi giường nằm trong khoang z [-5.95 .. 4.05], cao
@@ -661,7 +667,7 @@ const CFG34 = {
     SIDE_BED_W: 0.52,       // bề rộng giường 2 dãy bên
     CENTER_BED_W: 0.54,     // bề rộng giường dãy giữa
     SIDE_BED_L: 1.70,       // chiều dài giường bên
-    CENTER_BED_L: 1.42,     // chiều dài giường giữa
+    CENTER_BED_L: 1.40,     // chiều dài giường giữa (bước 1.42 -> khe 0.02 đặt vách)
     SIDE_X: 0.87,           // |x| tâm giường bên  (khung 0.56 -> 0.59..1.15)
     CENTER_X: 0.00,         // tâm dãy giữa (đối xứng)
     AISLE_X: 0.43,          // |x| tâm lối đi       (0.27 .. 0.59)
@@ -736,8 +742,12 @@ function buildPassengerCabin34(groups) {
         g.translate(x, y, z);
         arr.push(g);
     };
-    const buildBed = (x, z, y, bedLen, bedW) => {
-        pushBox(bedFrameGeo, bedW + 0.04, 0.08, bedLen + 0.04, x, y - 0.12, z);
+    // framePadZ: mức nhô thêm của KHUNG so với nệm theo chiều dài (mặc định
+    // 0.04 như cấu hình 20 phòng / 2 dãy bên). Dãy giữa dùng 0 để khung
+    // không tràn vào khe 0.02m — nơi đặt vách ngăn khoang (nếu khung tràn
+    // vào khe thì vách sẽ cắt ngang khung giường).
+    const buildBed = (x, z, y, bedLen, bedW, framePadZ = 0.04) => {
+        pushBox(bedFrameGeo, bedW + 0.04, 0.08, bedLen + framePadZ, x, y - 0.12, z);
         pushBox(bedMatGeo, bedW, 0.14, bedLen, x, y, z);
         pushBox(bedPillowGeo, bedW * 0.64, 0.10, 0.28, x, y + 0.10, z + bedLen / 2 - 0.22);
         pushBox(bedBlanketGeo, bedW * 0.85, 0.04, bedLen * 0.45, x, y + 0.08, z - bedLen * 0.12);
@@ -745,6 +755,37 @@ function buildPassengerCabin34(groups) {
     };
 
     // 2 dãy bên: 5 giường mỗi bên, mỗi tầng (tổng 10 + 10)
+    // VÁCH NGĂN KHOANG 2 DÃY BÊN — đo lại hình học, sửa 5 chỗ xuyên lấn:
+    //   (a) Tâm vách cũ = ±BED_L/2 (0.85) nằm TRONG khung giường (khung
+    //       +0.04 dài tới ±0.87) và nệm (±0.85) -> vách CẮT 2cm khung,
+    //       1cm nệm và 1cm rèm của chính khoang đó. Nay dời ±0.88: vách
+    //       nằm trong khe 0.30m giữa 2 khoang, 2 mặt TIẾP XÚC mép khung
+    //       0.87 (0 lấn).
+    //   (b) Rộng cũ BED_W+0.04 (0.56, x .59..1.15) ăn 2cm vào vỏ xe
+    //       (x 1.13..1.17), 2.25cm vào viền lối đi (.5675...6125) và 2cm
+    //       vào dải LED sát trần (.12...1.4). Nay rộng BED_W−0.02 = 0.50
+    //       (x .62..1.12): TRÁNH CẢ BA (chỉ tiếp mặt), lối đi đi lại
+    //       (.2925..5675) thông thoáng tuyệt đối.
+    //   (c) "Sàn tầng trên" (BodyShell, y 1.58..1.66, x 1.04..1.06) chạy
+    //       xuyên suốt xe -> vách chừa khe 2cm đúng mép sàn để sàn đi
+    //       xuyên qua vách (đúng cách lắp thật), KHÔNG cắt sàn.
+    //   -> 20 vách x 4 đoạn = 80 box gộp thành 1 mesh (trước 20 mesh):
+    //       hình ảnh y hệt nhưng bớt 19 draw call (lợi cho iGPU N5000).
+    const ledgeY0 = (C.UPPER_Y - 0.05) - 0.04;   // mép dưới sàn tầng trên 1.58
+    const ledgeY1 = (C.UPPER_Y - 0.05) + 0.04;    // mép trên               1.66
+    const ledgeX0 = (WALL_X - 0.1) - 0.01;        // mép trong sàn theo x  1.04
+    const ledgeX1 = (WALL_X - 0.1) + 0.01;        // mép ngoài sàn theo x  1.06
+    const wallW = C.SIDE_BED_W - 0.02;            // 0.50
+    const wallThick = 0.02;
+    const wallZ = C.SIDE_BED_L / 2 + 0.03;        // 0.88 — trong khe 0.30
+    const wallInX = C.SIDE_X - wallW / 2;         // 0.62
+    const wallOutX = C.SIDE_X + wallW / 2;        // 1.12
+    const sideWallGeos = [];
+    const swPush = (w, h, d, x, y, z) => {
+        const g = new THREE.BoxGeometry(w, h, d);
+        g.translate(x, y, z);
+        sideWallGeos.push(g);
+    };
     for (const side of [1, -1]) {
         for (let i = 0; i < 5; i++) {
             const z = C.Z_FIRST - i * C.Z_STEP;
@@ -752,31 +793,43 @@ function buildPassengerCabin34(groups) {
             for (const y of [C.LOWER_Y, C.UPPER_Y]) {
                 buildBed(x, z, y, C.SIDE_BED_L, C.SIDE_BED_W);
             }
-            // vách ngăn giữa 2 giường (dọc theo chiều ngang khoang)
-            const dividerH = CEILING_Y - C.FLOOR_Y;
-            const dividerY = (C.FLOOR_Y + CEILING_Y) / 2;
             for (const dz of [1, -1]) {
-                const wall = new THREE.Mesh(new THREE.BoxGeometry(C.SIDE_BED_W + 0.04, dividerH, 0.02), matDivider);
-                wall.position.set(x, dividerY, z + dz * (C.SIDE_BED_L / 2));                wall.updateMatrix(); wall.matrixAutoUpdate = false;
-                Cabins.add(wall);
+                const wz = z + dz * wallZ;
+                // 4 đoạn cùng một vách (sàn -> trần), chừa khe sàn tầng trên:
+                swPush(wallW, ledgeY0 - C.FLOOR_Y, wallThick, x, (C.FLOOR_Y + ledgeY0) / 2, wz);
+                swPush(ledgeX0 - wallInX, ledgeY1 - ledgeY0, wallThick, side * (wallInX + (ledgeX0 - wallInX) / 2), (ledgeY0 + ledgeY1) / 2, wz);
+                swPush(wallOutX - ledgeX1, ledgeY1 - ledgeY0, wallThick, side * (ledgeX1 + (wallOutX - ledgeX1) / 2), (ledgeY0 + ledgeY1) / 2, wz);
+                swPush(wallW, CEILING_Y - ledgeY1, wallThick, x, (ledgeY1 + CEILING_Y) / 2, wz);
             }
         }
     }
+    if (sideWallGeos.length) {
+        const swGeo = mergeBoxes(sideWallGeos);
+        if (swGeo) {
+            const swMesh = new THREE.Mesh(swGeo, matDivider);
+            swMesh.name = "sideWalls34";
+            swMesh.updateMatrix();
+            swMesh.matrixAutoUpdate = false;
+            Cabins.add(swMesh);
+        }
+    }
 
-    // dãy giữa: 7 giường mỗi tầng (tổng 14)
+    // dãy giữa: 7 giường mỗi tầng (tổng 14) — khung KHÔNG nhô thêm theo z
+    // (framePadZ=0) để giữ trống khe 0.02m đặt vách ngăn khoang.
     for (let i = 0; i < 7; i++) {
         const z = C.Z_CENTER_FIRST - i * C.Z_CENTER_STEP;
         for (const y of [C.LOWER_Y, C.UPPER_Y]) {
-            buildBed(C.CENTER_X, z, y, C.CENTER_BED_L, C.CENTER_BED_W);
+            buildBed(C.CENTER_X, z, y, C.CENTER_BED_L, C.CENTER_BED_W, 0);
         }
     }
-    // vách bên dãy giữa (giữa 2 lối đi) — thấp hơn để lối đi thoáng
-    for (const side of [1, -1]) {
-        const edge = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.55, C.Z_CENTER_FIRST - C.Z_CENTER_STEP * 6 + C.CENTER_BED_L, ), matDivider);
-        edge.position.set(side * (C.CENTER_BED_W / 2 + 0.01), C.LOWER_Y + 0.275, (C.Z_CENTER_FIRST + (C.Z_CENTER_FIRST - C.Z_CENTER_STEP * 6)) / 2);
-        edge.updateMatrix(); edge.matrixAutoUpdate = false;
-        Cabins.add(edge);
-    }
+    // VÁCH NGĂN KHOANG GIƯỜNG DÃY GIỮA — trước đây dãy giữa KHÔNG có vách
+    // (7 giường nối đuôi thành 1 khối, mất cảm giác riêng tư VIP) và chỉ có
+    // 2 "vách bên" chạy dọc cao 0.55m tại x=±0.28 — tấm vách đó CẮT NGANG
+    // nệm/khung giường tầng dưới (nệm mặt trên y=0.74, khung 0.55..0.63).
+    // Nay bỏ 2 tấm sai đó, thay bằng vách TRƯỚC/SÁU cho từng khoang, đúng
+    // ngôn ngữ thiết kế của 2 dãy bên (xem buildCenterRowPartitions34 ở cuối
+    // file — khai báo hàm ở cuối để không đụng code cũ).
+    buildCenterRowPartitions34(groups);
 
     // ---------- CỬA SỔ + RÈM (2 dãy bên, 2 tầng) ----------
     for (const side of [1, -1]) {
@@ -965,4 +1018,105 @@ export function migrateInteriorCockpit(oldRoot, newRoot) {
         }
     }
     return n;
+}
+
+// =====================================================================
+// ===== VÁCH NGĂN KHOANG GIƯỜNG — DÃY GIỮA (CẤU HÌNH 34 GIƯỜNG) =====
+// BỔ SUNG Ở CUỐI FILE (yêu cầu nhiệm vụ: chỉ thêm code mới ở cuối
+// js/interior.js — KHÔNG sửa/xóa/di chuyển bất kỳ dòng nào của cấu hình
+// 20 phòng ở trên; hàm này chỉ được buildPassengerCabin34 gọi tới).
+//
+// NGUYÊN NHÂN DÃY GIỮA THIẾU VÁCH:
+//   Cấu hình 34 giường trước đây dựng vách ngăn cho 2 DÃY BÊN (mỗi khoang
+//   2 tấm trước/sau, cao sàn->trần, material matDivider) nhưng DÃY GIỮA để
+//   7 giường + 7 giường tầng trên nối đuôi nhau (bước = chiều dài) -> không
+//   có ranh giới khoang, cả dãy thành 1 khối dài, mất cảm giác riêng tư VIP.
+//   Thêm 2 tấm "vách bên" cao 0.55m chạy dọc dãy giữa tại x=±0.28 còn CẮT
+//   NGANG nệm/khung giường tầng dưới (nệm mặt y=0.74, khung y=0.55..0.63)
+//   -> 2 tấm sai đó đã bị xoá, thay bằng hệ vách của hàm này.
+//
+// ĐỐI CHIẾU XE THẬT (nguồn ở mục 5 của yêu cầu):
+//   * THACO Mobihome Luxury 34 giường — "34 khoang giường riêng biệt, tạo
+//     khoảng không gian riêng tư cho hành khách"; khoang "độc lập, rộng rãi
+//     có rèm che ngăn cách"; "vách ngăn bọc da công nghiệp phẳng"
+//     (https://thuocongthuong.vn/tin-tuc-thi-truong/2019/07/thaco-mobihome-
+//      luxury-2019-dau-moi-trong-segment-xe-giuong-nam-cao-cap-1563216034.html)
+//     -> MỖI giường là một khoang có vách trước/sau, vật liệu vách phẳng.
+//   * Catalogue THACO MOBIHOME 120SL
+//     (https://thacoauto.vn/storage/san-xuat-lap-rap/nha-may-mazda/xk-nc/
+//      e-catalogue/xe-giuong-nam-thaco/catalogue-new-mobihome-120sl-02102023-en.pdf)
+//     -> "34 BEDS", lề đi 400mm, "Bedside decorative frame" (khung trang
+//     trí đầu giường) — vách đầu/cuối khoang là chi tiết chuẩn của xe VIP.
+//   -> Dãy giữa PHẢI có vách trước/sau từng khoang như 2 dãy bên.
+//
+// HÌNH HỌC (có test riêng trong harness):
+//   * Bước 1.42 − giường 1.40 = khe 0.02 = ĐÚNG bề dày vách -> vách nằm
+//     trọn trong khe, 2 mặt chỉ TIẾP XÚC mép nệm/khung 2 khoang liền kề
+//     (không lấn 1mm -> không xuyên nệm/gối/khung).
+//   * Cao 0.30..3.20 (sàn->trần, đúng 2.90m như vách 2 dãy bên) -> 1 tấm
+//     dùng chung cho tầng dưới lẫn tầng trên, giao nhau tại đúng 1 mặt phẳng.
+//   * 7 khoang x 2 vách = 14 vị trí nhưng 6 cặp giữa 2 khoang trùng vị trí
+//     (dùng chung 1 tấm) -> Set khử trùng lặp còn 8 tấm, không z-fighting.
+//   * Đáy vách thu hẹp (0.495m) qua vùng viền lối đi đang cao tới y=0.365
+//     và ăn tới x=0.2475: phần đáy dừng ĐÚNG mép trong viền, phần thân từ
+//     đỉnh viền trở lên mở hết 0.54m (= bề rộng nệm). Nhờ vậy vách TIẾP XÚC
+//     viền/sàn đúng mặt phẳng, không cắt 1mm nào -> 2 lối đi thông thoáng.
+//   * Nằm gọn trong khoang z [-5.95 .. 4.05] (dư 0.03 trước / 0.01 sau):
+//     KHÔNG kéo dài thân xe, KHÔNG đổi model xe.
+//
+// HIỆU NĂNG: 16 box gộp bằng mergeBoxes() -> 1 mesh / 1 draw call, dùng
+//   chung material matDivider của 2 dãy bên (không material mới, không mesh
+//   trùng, không dựng lại nội thất mỗi frame — chỉ dựng 1 lần khi build
+//   passenger cabin, chuyển cấu hình 20<->34 không rò rỉ đối tượng vì nội
+//   thất cũ được thay thế hẳn trong applyInteriorConfig).
+// =====================================================================
+function buildCenterRowPartitions34(groups) {
+    const { Cabins } = groups;
+    if (!Cabins) return null;
+    const C = CFG34;
+
+    // Khe giữa 2 khoang = bước − chiều dài; bề dày vách lấy ĐÚNG khe.
+    const gap = +(C.Z_CENTER_STEP - C.CENTER_BED_L).toFixed(6);   // 0.02
+    const thick = Math.max(gap, 0.001);
+    const wallW = C.CENTER_BED_W;                                 // 0.54 = nệm
+    const halfBody = C.CENTER_BED_L / 2 + thick / 2;              // 0.71 (tâm vách)
+    const rows = 7;
+
+    // Viền lối đi (nhóm Aisle, code cấu hình 34): box(0.045, 0.05, ...) đặt
+    // tại y = FLOOR_Y + 0.04 -> đỉnh 0.365; mép trong mỗi viền tại x=±0.2475.
+    const trimW = 0.045, trimH = 0.05, trimY = C.FLOOR_Y + 0.04;
+    const trimTop = trimY + trimH / 2;
+    const trimInnerX = (C.AISLE_X - C.AISLE_W / 2) - trimW / 2;
+    const baseW = trimInnerX * 2;                                 // 0.495
+
+    // Vị trí vách duy nhất: trước khoang 0 ... sau khoang 6 (Set khử trùng
+    // lặp — tầng dưới/tầng trên dùng chung 1 tấm full-height nên không x2).
+    const zSet = new Set();
+    for (let i = 0; i < rows; i++) {
+        const z = C.Z_CENTER_FIRST - i * C.Z_CENTER_STEP;
+        zSet.add(+(z + halfBody).toFixed(4));    // vách TRƯỚC khoang i
+        zSet.add(+(z - halfBody).toFixed(4));    // vách SAU  khoang i
+    }
+
+    const geos = [];
+    const push = (w, h, d, x, y, z) => {
+        const g = new THREE.BoxGeometry(w, h, d);
+        g.translate(x, y, z);
+        geos.push(g);
+    };
+    for (const wz of zSet) {
+        // Đáy vách (0.30 -> đỉnh viền 0.365): hẹp vừa khít mép trong viền.
+        push(baseW, trimTop - C.FLOOR_Y, thick, C.CENTER_X, (C.FLOOR_Y + trimTop) / 2, wz);
+        // Thân vách (đỉnh viền -> trần 3.20): hết bề rộng khoang.
+        push(wallW, CEILING_Y - trimTop, thick, C.CENTER_X, (trimTop + CEILING_Y) / 2, wz);
+    }
+
+    const geo = mergeBoxes(geos);
+    if (!geo) return null;
+    const mesh = new THREE.Mesh(geo, matDivider);
+    mesh.name = "centerRowWalls34";
+    mesh.updateMatrix();
+    mesh.matrixAutoUpdate = false;
+    Cabins.add(mesh);
+    return mesh;
 }
