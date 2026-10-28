@@ -142,6 +142,52 @@ function getShared() {
     }
     uv.needsUpdate = true;
   }
+  // ===== CẮT LỖ CỬA THẬT TRÊN THÂN XE (Mục J) =====
+  // Thân xe là MỘT BoxGeometry kín; cửa trước đây chỉ là ô sơn dán ngoài nên
+  // mở cửa vẫn thấy vách, không bao giờ nhìn được nội thất. Ở đây:
+  //   1) bỏ mặt -x của box (group 1: index 6..11)
+  //   2) dựng lại mặt đó bằng 4 tấm quây QUANH ĐÚNG khoảng cửa
+  //      (dùng lại faceUV nên texture khớp 100%, không lệch một pixel)
+  // Cửa trượt ra sau → lộ khoang thật phía trong; đóng lại → che kín lỗ.
+  const doorZ0 = Math.min(sideZr(PX.sideR.doorFront), sideZr(PX.sideR.doorRear));
+  const doorZ1 = Math.max(sideZr(PX.sideR.doorFront), sideZr(PX.sideR.doorRear));
+  const doorY0 = Math.max(BODY_BOTTOM, sideY(PX.sideR.bodyBottom));
+  const doorY1 = Math.min(H, sideY(PX.sideR.doorTop));
+  {
+    const idx = body.index.array;
+    const kept = [];
+    for (let i = 0; i < idx.length; i += 6) {
+      if (i === 6) continue;            // group 1 = mặt -x (BoxGeometry: px,nx,py,ny,pz,nz)
+      for (let k = 0; k < 6; k++) kept.push(idx[i + k]);
+    }
+    body.setIndex(kept);
+    body.clearGroups();                  // 1 material duy nhất → group vô nghĩa
+
+    const dP = [], dN = [], dU = [], dI = [];
+    let dvi = 0;
+    const wallQuad = (y0, y1, z0, z1) => {
+      if (y1 - y0 < 1e-4 || z1 - z0 < 1e-4) return;
+      const x = -W / 2;
+      const cs = [[x, y0, z0], [x, y0, z1], [x, y1, z1], [x, y1, z0]];
+      for (const c of cs) {
+        const [uu, vv] = faceUV(c[0], c[1], c[2], -1, 0, 0);
+        dP.push(c[0], c[1], c[2]); dN.push(-1, 0, 0); dU.push(uu, vv);
+      }
+      dI.push(dvi, dvi + 1, dvi + 2, dvi, dvi + 2, dvi + 3);
+      dvi += 4;
+    };
+    wallQuad(BODY_BOTTOM, H, -L / 2, doorZ0);      // phía sau cửa (trước khi trượt)
+    wallQuad(BODY_BOTTOM, H, doorZ1, L / 2);       // phía trước cửa
+    wallQuad(BODY_BOTTOM, doorY0, doorZ0, doorZ1); // dưới khoang cửa
+    wallQuad(doorY1, H, doorZ0, doorZ1);           // trên khoang cửa
+    const doorWall = new THREE.BufferGeometry();
+    doorWall.setAttribute("position", new THREE.Float32BufferAttribute(dP, 3));
+    doorWall.setAttribute("normal", new THREE.Float32BufferAttribute(dN, 3));
+    doorWall.setAttribute("uv", new THREE.Float32BufferAttribute(dU, 2));
+    doorWall.setIndex(dI);
+    g.bodyDoorWall = doorWall;
+  }
+
   g.body = body;
 
   const roof = new THREE.BoxGeometry(W - 0.06, 0.12, L - 0.1);
@@ -245,6 +291,8 @@ function assembleBus(mats, withDoorPivot) {
     return m;
   };
   add(G.body, mats.body);
+  // mặt -x dựng lại quanh khoảng cửa (xem getShared) — cùng material/thân xe
+  if (G.bodyDoorWall) add(G.bodyDoorWall, mats.body);
   add(G.roof, mats.body);
   const gr = add(G.glassSide, mats.glass);
   gr.renderOrder = 0;
@@ -417,7 +465,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     const blink = (t % 1) < 0.5;
     mats.indL.emissiveIntensity = ((signalLeft || hazard) && blink) ? 1.8 : 0.05;
     mats.indR.emissiveIntensity = ((signalRight || hazard) && blink) ? 1.8 : 0.05;
-    // cockpit tài xế: màn update/BSOD redraw theo CHU KỲ 1s (không mỗi frame)
+    // cockpit tài xế: màn hình TV redraw theo CHU KỲ 1s (không mỗi frame)
     if (cockpitTickScreen) {
       cockpitScreenTimer += dt;
       if (cockpitScreenTimer >= 1) {
@@ -482,6 +530,13 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     if (cockpitDrawSpeed) cockpitDrawSpeed(speedKmhSigned);
   }
   let cockpitTickScreen = null;
+  // Vô-lăng 3D trong cabin (bus.js dựng runtime) — quay theo góc lái thật.
+  let cockpitWheelGroup = null;
+  function setCockpitSteering(steer) {
+    if (!cockpitWheelGroup || !Number.isFinite(steer)) return;
+    // ±2.4 rad ≈ ±137° — vô-lăng thật đánh lái hết cỡ ~1.5 vòng.
+    cockpitWheelGroup.rotation.z = -steer * 2.4;
+  }
   function createDriverCockpit(interiorRoot) {
     if (cockpitTickScreen || !interiorRoot?.isObject3D) return;
     const findMesh = (pred) => {
@@ -516,110 +571,168 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       Math.abs(gp.width - 0.04) < 0.02 && Math.abs(gp.height - 0.04) < 0.02 &&
       Math.abs(gp.depth - 0.04) < 0.02 && o.position.z > 5.3 &&
       o.position.y > 0.7 && o.position.y < 1.0);
-    if (!screenMesh) {
-      console.warn("[cockpit] Khong tim thay man hinh dashboard trong interior — khong gan bua");
-      return;
-    }
 
-    // ---- man hinh trung tam: Windows Update + BSOD (TRUST_ME_BRO) + QR gia ----
-    const SW = 320, SH = 192, DOT_N = 5, DOT_R = 13;
-    const screenCv = document.createElement('canvas');
-    screenCv.width = SW; screenCv.height = SH;
-    const sctx = screenCv.getContext('2d');
-    // 37% khoi dau; +1% moi 300 giay gio THUC (Date.now, khong theo FPS)
-    const UPDATE_STEP_MS = 300000;
-    const updateStartMs = Date.now();
-    let screenMode = 0, lastScreenDraw = 0, lastBsodStart = 0, bsodEndMs = 0, bsodProgress = 0;
+    // ---- MÀN HÌNH TRUNG TÂM (TV nhỏ trong cabin): 3 trạng thái ----
+    //  0 = Windows Update (mặc định, "Working on updates 37%" CỐ ĐỊNH)
+    //  1 = BSOD Windows + STOP code TRUST_ME_BRO (thỉnh thoảng, cooldown 90s)
+    //  2 = VS Code + đoạn code ngắn (thỉnh thoảng)
+    // Mỗi lần "bật" kéo dài 12-24s (tự nhiên, tồn tại lâu) rồi trở về trạng
+    // thái mặc định. CHỈ đổi TRẠNG THÁI khi hết thời lượng — không đổi liên tục.
+    // 1 canvas 320x192 + CanvasTexture, redraw 1 lần/giây (xem update()) — nhẹ
+    // cho máy yếu, không tạo hệ texture thứ hai. Không ảnh hưởng cụm đồng hồ.
+    if (screenMesh) {
+      const SW = 320, SH = 192, DOT_N = 5, DOT_R = 13;
+      const screenCv = document.createElement('canvas');
+      screenCv.width = SW; screenCv.height = SH;
+      const sctx = screenCv.getContext('2d');
+      const UPDATE_PCT = 37;   // CỐ ĐỊNH theo yêu cầu — không tự tăng, không mô phỏng update thật
+      let tvMode = 0, tvUntil = 0, lastBsodEnd = 0;
 
-    const drawQRPseudo = (x, y, size) => {
-      // QR Chi LA HINH (de bai) — luoi module gia, co 3 finder square cho giong,
-      // KHONG ma hoa noi dung gi ca.
-      const cells = 21, cell = size / (cells + 4);
-      sctx.fillStyle = '#f2f2f2';
-      sctx.fillRect(x, y, (cells + 4) * cell, (cells + 4) * cell);
-      sctx.fillStyle = '#1a1a1a';
-      for (let r = 0; r < cells; r++) {
-        for (let c = 0; c < cells; c++) {
-          const inFinder = (r < 8 && c < 8) || (r < 8 && c >= cells - 8) || (r >= cells - 8 && c < 8);
-          if (inFinder) continue;
-          if (((r * 31 + c * 17 + (r * c) % 23) % 7) < 3) {
-            sctx.fillRect(x + (c + 2) * cell, y + (r + 2) * cell, cell, cell);
+      const drawQRPseudo = (x, y, size) => {
+        // QR chỉ là HÌNH — lưới module giả + 3 finder square, không mã hóa gì.
+        const cells = 21, cell = size / (cells + 4);
+        sctx.fillStyle = '#f2f2f2';
+        sctx.fillRect(x, y, (cells + 4) * cell, (cells + 4) * cell);
+        sctx.fillStyle = '#1a1a1a';
+        for (let r = 0; r < cells; r++) {
+          for (let c = 0; c < cells; c++) {
+            const inFinder = (r < 8 && c < 8) || (r < 8 && c >= cells - 8) || (r >= cells - 8 && c < 8);
+            if (inFinder) continue;
+            if (((r * 31 + c * 17 + (r * c) % 23) % 7) < 3) {
+              sctx.fillRect(x + (c + 2) * cell, y + (r + 2) * cell, cell, cell);
+            }
           }
         }
-      }
-      const finder = (fx, fy) => {
-        const f = 7 * cell;
-        sctx.fillRect(x + (fx + 2) * cell, y + (fy + 2) * cell, f, f);
-        sctx.fillStyle = '#f2f2f2';
-        sctx.fillRect(x + (fx + 3) * cell, y + (fy + 3) * cell, f - 2 * cell, f - 2 * cell);
-        sctx.fillStyle = '#1a1a1a';
-        sctx.fillRect(x + (fx + 4) * cell, y + (fy + 4) * cell, f - 4 * cell, f - 4 * cell);
+        const finder = (fx, fy) => {
+          const f = 7 * cell;
+          sctx.fillRect(x + (fx + 2) * cell, y + (fy + 2) * cell, f, f);
+          sctx.fillStyle = '#f2f2f2';
+          sctx.fillRect(x + (fx + 3) * cell, y + (fy + 3) * cell, f - 2 * cell, f - 2 * cell);
+          sctx.fillStyle = '#1a1a1a';
+          sctx.fillRect(x + (fx + 4) * cell, y + (fy + 4) * cell, f - 4 * cell, f - 4 * cell);
+        };
+        finder(0, 0); finder(cells - 7, 0); finder(0, cells - 7);
       };
-      finder(0, 0); finder(cells - 7, 0); finder(0, cells - 7);
-    };
-    const drawUpdateScreen = (nowMs) => {
-      const pct = 37 + Math.floor((nowMs - updateStartMs) / UPDATE_STEP_MS);
-      sctx.fillStyle = '#0468c8';
-      sctx.fillRect(0, 0, SW, SH);
-      // vong xoay cham: chu ky RIENG 1.6s, doc lap voi percent
-      const spin = ((nowMs % 1600) / 1600) * Math.PI * 2;
-      sctx.fillStyle = '#ffffff';
-      for (let i = 0; i < DOT_N; i++) {
-        const ang = spin - i * ((Math.PI * 2) / DOT_N);
-        sctx.globalAlpha = 1.0 - i * 0.17;
-        sctx.beginPath();
-        sctx.arc(38 + Math.cos(ang) * DOT_R, 44 + Math.sin(ang) * DOT_R, 4.2, 0, Math.PI * 2);
-        sctx.fill();
-      }
-      sctx.globalAlpha = 1;
-      sctx.textAlign = 'left';
-      sctx.font = 'bold 23px Arial';
-      sctx.fillText(`Working on update ${pct}%`, 24, 110);
-      sctx.font = '15px Arial';
-      sctx.fillText(`${pct}% complete`, 24, 137);
-      sctx.font = '13px Arial';
-      sctx.fillText("Don't turn off your computer", 24, 168);
-    };
-    const drawBsodScreen = () => {
-      bsodProgress = Math.min(99, bsodProgress + 17);
-      sctx.fillStyle = '#0078d7';
-      sctx.fillRect(0, 0, SW, SH);
-      sctx.fillStyle = '#ffffff';
-      sctx.textAlign = 'left';
-      sctx.font = 'bold 42px Arial';
-      sctx.fillText(':(', 26, 60);
-      sctx.font = '14px Arial';
-      sctx.fillText('Your PC ran into a problem and needs to', 26, 88);
-      sctx.fillText(`We're just collecting some error info,`, 26, 106);
-      sctx.fillText(`and then we'll restart for you. ${bsodProgress}%`, 26, 124);
-      sctx.font = '11px Arial';
-      sctx.fillText('For more information about this issue and possible', 26, 150);
-      sctx.fillText('fixes, visit busdrivevn.local/trustmebro', 26, 164);
-      sctx.font = 'bold 12px Arial';
-      sctx.fillText('STOP code: TRUST_ME_BRO', 26, 184);
-      drawQRPseudo(SW - 66, SH - 78, 46);
-    };
-    const screenTex = new THREE.CanvasTexture(screenCv);
-    screenTex.colorSpace = THREE.SRGBColorSpace;
-    const refreshScreen = (nowMs) => {
-      if (screenMode === 0) {
-        drawUpdateScreen(nowMs);
-        // xac suat nho + cooldown 90s moi xuat hien BSOD (ngau nhien vua phai)
-        if (nowMs - lastBsodStart > 90000 && Math.random() < 0.006) {
-          screenMode = 1;
-          lastBsodStart = nowMs;
-          bsodEndMs = nowMs + 12000 + Math.random() * 12000;
-          bsodProgress = 0;
+
+      const drawUpdateScreen = (nowMs) => {
+        sctx.fillStyle = '#0468c8';
+        sctx.fillRect(0, 0, SW, SH);
+        // vòng xoay chậm — chỉ trang trí, độc lập với phần trăm cố định
+        const spin = ((nowMs % 3000) / 3000) * Math.PI * 2;
+        sctx.fillStyle = '#ffffff';
+        for (let i = 0; i < DOT_N; i++) {
+          const ang = spin - i * ((Math.PI * 2) / DOT_N);
+          sctx.globalAlpha = 1.0 - i * 0.17;
+          sctx.beginPath();
+          sctx.arc(38 + Math.cos(ang) * DOT_R, 44 + Math.sin(ang) * DOT_R, 4.2, 0, Math.PI * 2);
+          sctx.fill();
         }
-      } else {
-        drawBsodScreen();
-        if (nowMs > bsodEndMs) screenMode = 0;  // "restart" xong ve lai update
-      }
-      screenTex.needsUpdate = true;
-    };
-    refreshScreen(performance.now());
-    cockpitTickScreen = refreshScreen;
-    screenMesh.material = new THREE.MeshBasicMaterial({ map: screenTex });
+        sctx.globalAlpha = 1;
+        sctx.textAlign = 'left';
+        sctx.font = 'bold 23px Arial';
+        sctx.fillText(`Working on updates ${UPDATE_PCT}%`, 24, 110);
+        sctx.font = '15px Arial';
+        sctx.fillText(`${UPDATE_PCT}% complete`, 24, 137);
+        sctx.font = '13px Arial';
+        sctx.fillText("Don't turn off your computer", 24, 168);
+      };
+
+      const drawBsodScreen = () => {
+        sctx.fillStyle = '#0078d7';
+        sctx.fillRect(0, 0, SW, SH);
+        sctx.fillStyle = '#ffffff';
+        sctx.textAlign = 'left';
+        sctx.font = 'bold 42px Arial';
+        sctx.fillText(':(', 26, 60);
+        sctx.font = '14px Arial';
+        sctx.fillText('Your PC ran into a problem and needs to restart.', 26, 88);
+        sctx.fillText("We're just collecting some error info, and then", 26, 106);
+        sctx.fillText("we'll restart for you.", 26, 124);
+        sctx.font = '11px Arial';
+        sctx.fillText('For more information, visit busdrivevn.local/trustmebro', 26, 150);
+        sctx.font = 'bold 12px Arial';
+        sctx.fillText('STOP code: TRUST_ME_BRO', 26, 168);
+        drawQRPseudo(SW - 66, SH - 78, 46);
+      };
+
+      // ---- VS Code: chrome tối giản + tô màu cú pháp tay (không thêm thư viện) ----
+      const CODE_COLORS = {
+        kw: '#c586c0', fn: '#dcdcaa', str: '#ce9178', num: '#b5cea8', id: '#9cdcfe', plain: '#d4d4d4'
+      };
+      // mỗi dòng = mảng [đoạn text, loại màu] — vẽ tuần tự theo bề rộng đo được
+      const VS_CODE_LINES = [
+        [['import ', 'kw'], ['time', 'id']],
+        [],
+        [['def ', 'kw'], ['khach_len_xe', 'fn'], ['(so_khach):', 'plain']],
+        [['    ', 'plain'], ['do_tre = ', 'plain'], ['int', 'fn'], ['(so_khach) * 0.5', 'num']],
+        [['    time', 'id'], ['.', 'plain'], ['sleep', 'fn'], ['(do_tre)', 'plain']],
+        [['    ', 'plain'], ['return ', 'kw'], ['"Đủ chỗ, chạy thôi!"', 'str']]
+      ];
+      const drawVsCodeScreen = () => {
+        sctx.fillStyle = '#1e1e1e';
+        sctx.fillRect(0, 0, SW, SH);
+        // thanh tiêu đề window + tab file đang mở
+        sctx.fillStyle = '#323233';
+        sctx.fillRect(0, 0, SW, 18);
+        sctx.fillStyle = '#007acc';
+        sctx.fillRect(0, 0, 118, 18);
+        sctx.fillStyle = '#ffffff';
+        sctx.font = '11px Consolas, monospace';
+        sctx.textAlign = 'left';
+        sctx.fillText('khach_len_xe.py', 8, 13);
+        // thanh hoạt động (trái) + vệt sáng tab
+        sctx.fillStyle = '#333333';
+        sctx.fillRect(0, 18, 30, SH - 18);
+        sctx.fillStyle = '#858585';
+        for (let i = 0; i < 5; i++) sctx.fillRect(11, 32 + i * 20, 8, 8);
+        sctx.fillStyle = '#007acc';
+        sctx.fillRect(0, 18, 2, SH - 18);
+        // dòng code + số dòng
+        sctx.font = '10px Consolas, monospace';
+        for (let i = 0; i < VS_CODE_LINES.length; i++) {
+          const y = 42 + i * 15;
+          sctx.fillStyle = '#5a5a5a';
+          sctx.textAlign = 'right';
+          sctx.fillText(String(i + 1), 40, y);
+          sctx.textAlign = 'left';
+          let x = 52;
+          for (const [text, kind] of VS_CODE_LINES[i]) {
+            sctx.fillStyle = CODE_COLORS[kind] || CODE_COLORS.plain;
+            sctx.fillText(text, x, y);
+            x += sctx.measureText(text).width;
+          }
+        }
+      };
+
+      const screenTex = new THREE.CanvasTexture(screenCv);
+      screenTex.colorSpace = THREE.SRGBColorSpace;
+      const refreshScreen = (nowMs) => {
+        if (tvMode === 0) {
+          // thoát "update" sang trạng thái khác: BSOD cooldown 90s, VS Code
+          // hiếm hơn; chọn 1 trong 2 — không đổi liên tục gây khó chịu.
+          if (nowMs > tvUntil) {
+            if (nowMs - lastBsodEnd > 90000 && Math.random() < 0.02) {
+              tvMode = 1;
+              tvUntil = nowMs + 12000 + Math.random() * 12000;
+            } else if (Math.random() < 0.015) {
+              tvMode = 2;
+              tvUntil = nowMs + 15000 + Math.random() * 15000;
+            }
+          }
+          drawUpdateScreen(nowMs);
+        } else if (tvMode === 1) {
+          drawBsodScreen();
+          if (nowMs > tvUntil) { tvMode = 0; lastBsodEnd = nowMs; tvUntil = nowMs + 30000; }
+        } else {
+          drawVsCodeScreen();
+          if (nowMs > tvUntil) { tvMode = 0; tvUntil = nowMs + 30000; }
+        }
+        screenTex.needsUpdate = true;
+      };
+      refreshScreen(performance.now());
+      cockpitTickScreen = refreshScreen;
+      screenMesh.material = new THREE.MeshBasicMaterial({ map: screenTex });
+    }
 
     // ---- dong ho toc do (cluster trai): SO KMH LAY TU XE THAT ----
     let spdCtex = null, lastSpdInt = -1, lastSpdRev = null, lastSpdDrawMs = 0;
@@ -738,9 +851,14 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       Math.abs(o.position.z) < 0.001);
     if (steerRing?.parent) steerRing.parent.visible = false;
     const wheelGroup = new THREE.Group();
-    // HOÁN VỊ theo test thực tế: vô lăng về x=+0.35 (chỗ ghế người chơi coi
-    // là "tài xế"); nhóm gốc interior đã ẨN nên chỉ có 1 vô lăng duy nhất.
-    wheelGroup.position.set(0.35, 1.1, 5.1);
+    // TAY LÁI LHD: ghế tài xế interior.js ở x=-0.35 ⇒ vô-lăng PHẢI cùng x.
+    // (Bản trước đặt +0.35 trong khi camera tài xế ở +0.65 → vô-lăng nằm lệch
+    // 0.3m sang trái và chỉ cách mắt 0.22m nên gần như không thấy.)
+    // y 1.21 / z 5.02: vô-lăng NHÔ LÊN khỏi mặt táp-lô (dash top 1.175) thay
+    // vì ngập trong khối dash (bản cũ y1.1 → chỉ hở mép trên, nhìn như cái
+    // bàn). Mép trên vô-lăng nằm NGAY DƯỚI đường chân trời đúng tầm mắt tài xế.
+    wheelGroup.position.set(-0.35, 1.21, 5.02);
+    cockpitWheelGroup = wheelGroup;
     const wRing = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 8, 16), dashDark);
     wRing.rotation.x = Math.PI / 2 - 0.2;
     wheelGroup.add(wRing);
@@ -815,6 +933,8 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   const busObj = {
     group: a.root, texture, dimensions: BUS_DIMENSIONS, wheelRadius: WHEEL_RADIUS,
     setSteering: c.setSteering, setWheelRotation: c.setWheelRotation, setDoor: c.setDoor,
+    // Vô-lăng cabin quay theo góc lái (Mục G) — main.js gọi mỗi frame.
+    setCockpitSteering,
     setHeadlights, setTaillights, setIndicators, setSignalLeft, setSignalRight, setHazard,
     setInteriorLed, setEmergencyBrake, update, dispose, setDriverTelemetry,
     areLightsOn: false, doorOpen: false, interiorLedOn: false,

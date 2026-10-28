@@ -6,10 +6,10 @@
 //   new MapLoader(scene)            -> loadInitialData()
 //   getTerrainHeight(x, z)          -> number   (main.js mỗi frame)
 //   getHeight(x, z)                 -> alias của getTerrainHeight
-//   getSpawnPoint()                 -> {x,y,z,heading}
+//   getSpawnPoint(direction?)       -> {x,y,z,heading}
 //   getRoadGraph()                  -> RuntimeRoadGraph (nodes/segments/pois)
 //   getMinimapData()                -> {segments, route, pois}
-//   getParkingSlots()               -> [{position:{x,y,z}, rotation}]
+//   getParkingSlots(excludePosition?) -> [{position:{x,y,z}, rotation}]
 //   getRouteWaypoints() / getPOIs()
 //   getAdminUnit(x, z)               -> đơn vị hành chính sau sáp nhập 12/6/2025
 //   getDriveableSurface(x, z, yHint) -> height query: mặt đường ĐANG LÁI + box
@@ -65,6 +65,14 @@ const ACC_CELL = 4096;         // cell của spatial index (mirror Python)
 
 // ---- lớp Y (mirror Python) ----
 const ROAD_LIFT = 0.12;
+// P87 — kernel `u` theo khoảng cách tới các điểm corridor (thay bảng bin-median
+// theo z: bảng KHÔNG biểu diễn được corridor đi 2 lần qua cùng z ⇒ terrain cliff
+// 13–19m). Wendland compact-support: w = (1-(d/R)^2)^2, w=0 ngoài R ⇒ u liên
+// tục khi điểm tra đổi đoạn gần nhất. R = 3.5km an toàn với ring r=1 (±4096m).
+// TRỘN với bảng z theo khoảng cách: sát corridor dùng kernel (đúng nhánh), xa
+// hơn dùng bảng z (dữ liệu export ⇒ py/js luôn khớp ⇒ parity an toàn).
+const U_KERNEL_R = 3500;
+const U_KERNEL_R2 = U_KERNEL_R * U_KERNEL_R;
 const YARD_LIFT = 0.02;   // 2 cm — vừa đủ tránh z-fighting, khớp slot/terrain (trước 0.10 = 10 cm => sân lơ lửng, cỏ lọt)
 const BUS_AXLE = 0.5;
 // BỀ DÀY THÂN ĐƯỜNG. Đường là KHỐI, không phải texture: mặt trên +
@@ -199,6 +207,10 @@ class World {
             const rot = s.rot || 0;
             out.push({
                 cx: s.x, cz: s.z, y: s.y,
+                // P89: cao độ terrain TỰ NHIÊN tại tâm sân — tính 1 LẦN lúc nạp
+                // (không phải mỗi truy vấn). Dùng để chốt "sân sai cao độ" đúng
+                // bản chất thay vì so với hằng số theo mực nước (xem `_yardBlend`).
+                naturalY: this._rawElevationInfo(s.x, s.z).h,
                 ca: Math.cos(rot), sa: Math.sin(rot),
                 hx: hx, hz: hz, blend: blend,
                 r: hypot2(hx, hz) + blend
@@ -226,9 +238,14 @@ class World {
             if (out >= g.blend) continue;
             const t = out <= 0 ? 1 : 1 - smoothstep(0, g.blend, out);
             // Safety: limit yard blend if station y differs too much from natural terrain
-            // Natural terrain at this point (rough estimate without yard)
-            const naturalY = this.seaLevel + 2.2; // rough baseline
-            if (Math.abs(g.y - naturalY) > 15) {
+            // P89: baseline phải là terrain THẬT tại tâm sân (`g.naturalY`, tính 1
+            // lần lúc nạp) — KHÔNG phải hằng số `seaLevel + 2.2`. Hằng số đó ⇒
+            // MỌI bến ở vùng cao hơn ~17m (Vĩnh Hảo 31.5, Xuân Lộc 31.1, Phan Rí
+            // 30.6, Phan Rang 22.7, Cam Ranh 21.7, Dầu Giây 20.2, Nha Trang 19.5)
+            // bị coi là "sân sai cao độ" ⇒ sân chỉ dằng 30% ⇒ CỎ MỌC XUYÊN BÊ
+            // TÔNG. Đo p89: |st.y − terrain thật| chỉ 0.00–0.77m ⇒ sân KHÔNG sai.
+            const naturalY = (typeof g.naturalY === "number") ? g.naturalY : this.seaLevel + 2.2;
+            if (Math.abs(g.y - naturalY) > 8) {
                 // Station y is likely wrong - limit blend strength
                 return { t: t * 0.3, y: g.y };
             }
@@ -412,14 +429,14 @@ class World {
         return n ? sum / n : 0;
     }
 
-    // P85: u theo DIEM corridor gan nhat (lien tuc) — bang z chi la fallback khi
-    // khong co x. Bin mau thuan (corridor 2 nhanh cung z) khong the bieu dien
-    // bang median: do p85, bin -920 co 2 diem u=23.904/28.964 -> median 28.964
-    // => noi suy cho u=26.41 giua 2 diem cach 3m => terrain cliff 13m.
+    // u = nội suy theo bảng bin-median; bin mâu thuận -> nearest-point
     _uAtZ(z, x) {
-        if (x !== undefined) return this._uNearest(x, z);
         const uz = this._uz;
         if (!uz || uz.length === 0) return 0;
+        const kb = Math.floor(z / 250);   // KHỚP Python int(math.floor(z/250))
+        if (x !== undefined && this._uzAmbig && this._uzAmbig.has(kb)) {
+            return this._uNearest(x, z);
+        }
         if (uz.length < 2) return uz[0][1];
         let lo, hi;
         // NGOÀI BIÊN BẢNG: Python trả chỉ số biên (uz[0] nếu z <= uz[0][0],
@@ -533,11 +550,18 @@ class World {
     }
 
     // -> [u (blend chỉ số anchor), d (khoảng cách tới trục QL1)]
-    // u từ bảng monotonic theo z (liên tục), d từ nearest-point — mirror Python
+    // P87: u = KERNEL KHÔNG GIAN trên các điểm corridor (Wendland compact-support
+    // theo KHOẢNG CÁCH, không theo chỉ số) — mirror Python corridor_u_dist.
+    // Bảng u(z) bin-median không biểu diễn được corridor đi 2 lần qua cùng z ⇒
+    // terrain cliff 13–19m (đo p85: 30 biên, sâu nhất 19.4m). Kernel theo khoảng
+    // cách thì khi điểm tra đổi "đoạn gần nhất" ở trục trung điểm, trọng số
+    // chuyển mượt ⇒ u liên tục (bản "u theo đoạn gần nhất" đã thử và bị revert
+    // vì nhảy bậc 0.03 ở mỗi ~370m dọc trục).
     corridorUDist(x, z) {
         const poly = this.corridor;
         if (poly.length < 2) return [0, 1e6];
         let best = Infinity, bestIdx = poly.length;   // tie-break mirror Python
+        let num = 0, den = 0;
         const idx = this._accNear(this._accCorridor, x, z, poly.length);
         for (let k = 0; k < idx.length; k++) {
             const i = idx[k];
@@ -557,17 +581,18 @@ class World {
             if (d2 < best) {
                 best = d2; bestIdx = i;
             }
+            if (d2 < U_KERNEL_R2) {
+                const w = (1 - d2 / U_KERNEL_R2) ** 2;
+                num += w * poly[i][2];
+                den += w;
+            }
         }
-        // P85: u lay TU CHINH doan gan nhat (cung 1 luot _accNear voi d) — mirror
-        // Python corridor_u_dist. Bang z bin-median khong bieu dien duoc corridor
-        // di 2 lan qua cung z (QL.1 vong o Phan Thiet/Dau Giay): o bin mau thuan
-        // median la cua nhanh KHAC => noi suy cho u=26.41 giua 2 diem cach 3m
-        // => terrain cliff 13m. Gan nhat diem la lien tuc.
-        let su = 0, nu = 0;
-        for (let j = bestIdx - 1; j <= bestIdx + 1; j++) {
-            if (j >= 0 && j < poly.length) { su += poly[j][2]; nu++; }
-        }
-        return [nu ? su / nu : 0, Math.sqrt(best)];
+        if (bestIdx >= poly.length) return [this._uAtZ(z, x), Math.sqrt(best)];
+        const uTab = this._uAtZ(z, x);
+        if (den <= 1e-9) return [uTab, Math.sqrt(best)];
+        const uK = num / den;
+        const wMix = smoothstep(U_KERNEL_R, U_KERNEL_R / 3, Math.sqrt(best));
+        return [uTab + (uK - uTab) * wMix, Math.sqrt(best)];
     }
 
     // blend liên tục dọc corridor -> REGION KHÔNG PHẢI Ô VUÔNG (rule 19/20)
@@ -612,10 +637,23 @@ class World {
     getElevationInfo(x, z) {
         // dằn sân bến phải tính TRƯỚC mọi nhánh return sớm bên dưới
         const yf = this._yardBlend(x, z);
+        const r = this._rawElevationInfo(x, z);
+        const h = yf ? lerp(r.h, yf.y, yf.t) : r.h;
+        // Clamp CHỈ ở nhánh không phải biển — nhánh biển (`d <= 0`) giữ nguyên
+        // như bản cũ (Python `get_elevation` trả thẳng SEA_FLOOR + fbm, KHÔNG
+        // clamp): clamp cả nhánh biển ⇒ JS -11 vs Python -18.4 ⇒ parity lệch
+        // 7.38m (đo p90: 365/6432 điểm lệch).
+        return { h: (r.d > 0) ? clamp(h, this.seaFloor, 600) : h, d: r.d, p: r.p };
+    }
+
+    // Terrain THÔ — CHƯA dằn sân bến. Tách riêng (P89) để `_yardBlend` lấy được
+    // cao độ tự nhiên tại tâm sân mà KHÔNG đệ quy (gọi lại getElevationInfo sẽ
+    // quay lại _yardBlend).
+    _rawElevationInfo(x, z) {
         const dCoast = this.distToCoast(x, z);
         if (dCoast <= 0) {
             const hb = this.seaFloor + 4.0 * fbm(x, z) * 0.5 + Math.max(-4.0, dCoast * 0.05);
-            return { h: yf ? lerp(hb, yf.y, yf.t) : hb, d: dCoast, p: null };
+            return { h: hb, d: dCoast, p: null };
         }
         const p = this.regionParamsWithCoast(x, z, dCoast);
 
@@ -646,20 +684,9 @@ class World {
         const wf = this.waterFactor(x, z);
         if (wf > 0) {
             const bed = this.seaLevel - 0.2 - 1.6 * wf;
-            const hw = lerp(h, bed, clamp(wf * 1.35, 0, 1));
-            // dằn bến ĐÈ LÊN cả lòng sông/hồ: bến thật đắp đất lên chứ không
-            // bị sông đào lại. Không có dòng này `song_cau` vẫn chìm 13m.
-            let finalH = yf ? lerp(hw, yf.y, yf.t) : hw;
-            // Clamp to reasonable range to prevent floating/sinking objects
-            // Cap 200 cũ SKÁT terrain thật (núi 239-254m bị ép 200 => verify-parity
-            // lệch 39m vs Python không cap). Nâng đủ dư cho dải đèo/m nun región.
-            finalH = clamp(finalH, this.seaFloor, 600);
-            return { h: finalH, d: dCoast, p };
+            return { h: lerp(h, bed, clamp(wf * 1.35, 0, 1)), d: dCoast, p };
         }
-        let finalH = yf ? lerp(h, yf.y, yf.t) : h;
-        // Clamp to reasonable range to prevent floating/sinking objects (xem trên)
-        finalH = clamp(finalH, this.seaFloor, 600);
-        return { h: finalH, d: dCoast, p };
+        return { h, d: dCoast, p };
     }
 }
 
@@ -1062,6 +1089,92 @@ function clipRect(poly, minX, maxX, minZ, maxZ) {
 }
 
 // =============================================================================
+// BIỂN QUẢNG CÁO — texture + material DÙNG CHUNG (load ĐÚNG 1 LẦN)
+// Ảnh: assets/other/bien-busdrivevn.png (PNG 1196x896, RGBA, tỷ lệ 4:3)
+// Tên file KHÔNG chứa từ khoá quảng cáo (adblock chặn "quangcao"/"ad-*" -> texture 404).
+// Vì sao dùng chung: 1 texture 2MB × N biển = ngốn VRAM; 1 material =
+// 1 shader program, ít draw call. Fallback Canvas nếu ảnh lỗi.
+// =============================================================================
+const AD_TEXTURE_PATH = "assets/other/quangcao.png";
+const AD_ASPECT = 1196 / 896;         // tỷ lệ ảnh thật (đo từ file)
+let _adMat = null;                   // material dùng chung
+let _adTex = null;                   // texture dùng chung
+let _adFallbackTex = null;
+
+function makeAdFallbackTexture() {
+    // Chỉ dùng khi ảnh thật hỏng. Cùng tỷ lệ 4:3 với ảnh thật.
+    const cv = document.createElement("canvas");
+    cv.width = 800; cv.height = 600;
+    const c = cv.getContext("2d");
+    const grad = c.createLinearGradient(0, 0, 0, 600);
+    grad.addColorStop(0, "#0f172a");
+    grad.addColorStop(1, "#1e3a5f");
+    c.fillStyle = grad; c.fillRect(0, 0, 800, 600);
+    c.strokeStyle = "#f7c948"; c.lineWidth = 8;
+    c.strokeRect(14, 14, 772, 572);
+    c.textAlign = "center"; c.textBaseline = "middle";
+    c.fillStyle = "#3b82f6";
+    c.font = "bold 74px Arial, sans-serif";
+    c.fillText("BUSDRIVEVN", 400, 230);
+    c.font = "28px Arial, sans-serif";
+    c.fillStyle = "#94a3b8";
+    c.fillText("Mô phỏng lái xe khách Việt Nam", 400, 320);
+    c.fillText("Phú Yên ↔ Sài Gòn  ·  538 km", 400, 362);
+    c.fillStyle = "#f7c948";
+    c.font = "bold 22px Arial, sans-serif";
+    c.fillText("PentiumStudio - Code. Create. Play.", 400, 430);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+}
+
+/**
+ * Lấy (và tạo 1 lần duy nhất) material cho mặt biển quảng cáo.
+ * @param {(ok:boolean)=>void} [onReady] callback báo ảnh thật load xong
+ */
+function getBillboardAdMaterial(onReady) {
+    if (_adMat) { if (onReady) onReady(true); return _adMat; }
+
+    // Material tạo TRƯỚC, gán texture sau (TextureLoader là async).
+    _adMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff, roughness: 0.42, metalness: 0.0,
+    });
+    _adMat.name = "billboard_ad";
+
+    const loader = new THREE.TextureLoader();
+    loader.load(AD_TEXTURE_PATH,
+        (tex) => {
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.wrapS = THREE.ClampToEdgeWrapping;
+            tex.wrapT = THREE.ClampToEdgeWrapping;
+            tex.anisotropy = 2;      // góc nhìn thấp: ảnh không bị vỡ pixel
+            tex.needsUpdate = true;
+            _adTex = tex;
+            _adMat.map = tex;
+            _adMat.needsUpdate = true;
+            console.log(`[Billboard] Đã nạp texture quảng cáo: ${AD_TEXTURE_PATH}`);
+            if (onReady) onReady(true);
+        },
+        undefined,
+        () => {
+            console.warn(`[Billboard] KHÔNG nạp được ${AD_TEXTURE_PATH} — dùng texture dự phòng.`);
+            if (!_adFallbackTex) _adFallbackTex = makeAdFallbackTexture();
+            _adMat.map = _adFallbackTex;
+            _adMat.needsUpdate = true;
+            if (onReady) onReady(false);
+        }
+    );
+    return _adMat;
+}
+
+/** Giải phóng texture/material biển QC (gọi khi map dispose) */
+function disposeBillboardAdMaterial() {
+    if (_adTex) { _adTex.dispose(); _adTex = null; }
+    if (_adFallbackTex) { _adFallbackTex.dispose(); _adFallbackTex = null; }
+    if (_adMat) { _adMat.dispose(); _adMat = null; }
+}
+
+// =============================================================================
 // MAPLOADER — contract class cho main.js
 // =============================================================================
 export class MapLoader {
@@ -1079,6 +1192,7 @@ export class MapLoader {
         this.world = null;
         this.roadGraph = null;
         this.stationsData = [];
+        this.csgtCheckpoints = [];   // chốt CSGT thật trong thế giới (xem _addCsgtCheckpoint)
         this.worldData = null;
         this.spawn = null;
 
@@ -1161,6 +1275,8 @@ export class MapLoader {
             this.world = new World(worldRes);
             this.roadGraph = new RuntimeRoadGraph({ roads: roadsRes, routes: routesRes, stations: stationsRes });
             this.stationsData = Array.isArray(stationsRes) ? stationsRes : [];
+            // Tự động sinh biển quảng cáo dọc tuyến đường chính (nếu chưa có trong data)
+            this._generateBillboards();
             // DẰN SÂN BẾN phải có TRƯỚC khi dựng bến (dòng dưới) và trước mọi
             // lần hỏi cao độ của terrain — nếu thiếu, sân phẳng nằm trên đất
             // dốc nên cỏ mọc xuyên bê tông.
@@ -2400,6 +2516,8 @@ export class MapLoader {
                         // thiếu guard sẽ double-draw + z-fighting ở biên chunk.
                         if (px < minX || px > maxX || pz < minZ || pz > maxZ) continue;
                         const py = y1 + (y2 - y1) * tk;
+                        // P91: trụ đứng trên mặt đường khác = chắn làn xe.
+                        if (this._pierHitsRoad(px, pz, py - 0.75, seg.id)) continue;
                         const gnd = this.world.getElevation(px, pz);
                         const top = py - 0.75;          // đáy dầm cầu
                         const bot = Math.min(gnd - 0.3, top - 1.0);
@@ -3829,7 +3947,257 @@ export class MapLoader {
         this.stationGroup.add(g);
     }
 
+    // ========================================================================
+    // BIỂN QUẢNG CÁO BUSDRIVEVN (BILLBOARD)
+    // Mặt bảng + khung thép + 2 trụ đỡ + móng bê tông + đèn chiếu.
+    // Texture: assets/other/bien-busdrivevn.png — LOAD ĐÚNG 1 LẦN, dùng chung cho
+    // mọi biển (xem getBillboardAdMaterial()). Ảnh thật 1196x896 (4:3) →
+    // mặt bảng 4.0m x 3.0m GIỮ NGUYÊN TỶ LỆ (không kéo méo).
+    // ========================================================================
+    _addBillboard(s) {
+        const M = this._mats, G = this._geos;
+        const g = new THREE.Group();
+        g.name = `billboard_${s.id}`;
+        g.position.set(s.x, s.y, s.z);
+        g.rotation.y = s.rot || 0;
+
+        // --- Thông số mặt bảng: GIỮ TỶ LỆ ẢNH (1196/896 = 1.3348) ---
+        const billW = 4.0;                       // rộng 4m (chuẩn biển QC ven QL VN)
+        const billH = billW / (1196 / 896);       // = 2.997m -> khớp tỷ lệ ảnh
+        const billThick = 0.12;
+        const frameThick = 0.18;
+        const poleTop = 7.2;      // đỉnh trụ (mặt bảng treo bên dưới)
+        const boardBottom = 4.0;  // đáy mặt bảng
+        const poleR = 0.16;       // bán kính trụ thép
+        const baseW = 1.1, baseD = 1.1, baseH = 0.45;
+
+        // --- Vật liệu mặt quảng cáo (DÙNG CHUNG cho mọi biển) ---
+        const adMat = getBillboardAdMaterial();
+
+        // --- Mặt bảng (box mỏng: mặt trước + mặt sau đều hiện ảnh, không lật ngược) ---
+        const board = new THREE.Mesh(G.unitBox, adMat);
+        board.scale.set(billW, billH, billThick);
+        board.position.set(0, boardBottom + billH / 2, 0);
+        board.castShadow = true;
+        board.receiveShadow = true;
+        g.add(board);
+
+        // --- Khung thép bao quanh mặt bảng ---
+        const frameMat = M.metal;
+        for (const fy of [boardBottom - frameThick / 2, boardBottom + billH + frameThick / 2]) {
+            const f = new THREE.Mesh(G.unitBox, frameMat);
+            f.scale.set(billW + frameThick * 2, frameThick, billThick + frameThick * 2);
+            f.position.set(0, fy, 0);
+            f.castShadow = true;
+            g.add(f);
+        }
+        for (const fx of [-billW / 2 - frameThick / 2, billW / 2 + frameThick / 2]) {
+            const f = new THREE.Mesh(G.unitBox, frameMat);
+            f.scale.set(frameThick, billH + frameThick * 2, billThick + frameThick * 2);
+            f.position.set(fx, boardBottom + billH / 2, 0);
+            f.castShadow = true;
+            g.add(f);
+        }
+        // Thanh giằng ngang phía sau mặt bảng (2 thanh, đúng kiểu khung thép VN)
+        for (const fy of [boardBottom + billH * 0.28, boardBottom + billH * 0.72]) {
+            const b = new THREE.Mesh(G.unitBox, frameMat);
+            b.scale.set(billW, 0.08, 0.08);
+            b.position.set(0, fy, -billThick * 0.9);
+            g.add(b);
+        }
+
+        // --- 2 trụ đỡ thép + thanh chéo (chân H) ---
+        const poleX = billW * 0.36;
+        for (const px of [-poleX, poleX]) {
+            const pole = new THREE.Mesh(G.pole, frameMat);
+            pole.scale.set(poleR * 2, poleTop, poleR * 2);
+            pole.position.set(px, poleTop / 2, 0);
+            pole.castShadow = true;
+            g.add(pole);
+
+            // thanh chéo giữa chân trụ và đáy mặt bảng
+            const dxz = poleX - billW / 2 + 0.2;
+            const dy = poleTop - boardBottom;
+            const braceLen = Math.sqrt(dxz * dxz + dy * dy);
+            const brace = new THREE.Mesh(G.pole, frameMat);
+            brace.scale.set(poleR * 1.2, braceLen, poleR * 1.2);
+            brace.position.set(px + (px > 0 ? -dxz / 2 : dxz / 2), boardBottom + dy / 2, 0);
+            brace.rotation.z = (px > 0 ? 1 : -1) * Math.atan2(dxz, dy);
+            brace.castShadow = true;
+            g.add(brace);
+
+            // móng bê tông
+            const base = new THREE.Mesh(G.unitBox, M.concrete);
+            base.scale.set(baseW, baseH, baseD);
+            base.position.set(px, baseH / 2, 0);
+            base.receiveShadow = true;
+            g.add(base);
+        }
+
+        // --- 2 đèn chiếu mặt bảng (trụ đèn + đầu đèn phía trước) ---
+        for (const px of [-poleX, poleX]) {
+            const arm = new THREE.Mesh(G.pole, M.pole);
+            arm.scale.set(0.1, 0.1, 1.1);
+            arm.position.set(px, poleTop + 0.5, 0.55);
+            g.add(arm);
+            const lampHead = new THREE.Mesh(G.unitBox, M.lamp);
+            lampHead.scale.set(0.55, 0.16, 0.4);
+            lampHead.position.set(px, poleTop + 0.42, 1.05);
+            g.add(lampHead);
+        }
+
+        // --- Collider tĩnh cho 2 chân trụ (xe không đâm xuyên biển) ---
+        if (window.collisionSystem) {
+            const _cs = window.collisionSystem;
+            if (!this._billboardColIds) this._billboardColIds = [];
+            for (const px of [-poleX, poleX]) {
+                const wx = s.x + Math.sin(s.rot || 0) * px;
+                const wz = s.z + Math.cos(s.rot || 0) * px;
+                this._billboardColIds.push(_cs.register(
+                    wx, wz, baseW * 0.7, 'static',
+                    { hl: baseD * 0.5, hw: baseW * 0.5, rot: (s.rot || 0) },
+                    s.y + baseH * 0.5, baseH
+                ));
+            }
+        }
+
+        // Thêm vào stationGroup -> được _cullPOIs() quản lý (ẩn khi xa)
+        this.stationGroup.add(g);
+    }
+
     // TRẠM THU PHÍ: đường + 3 làn + gạt xe + nhà thu phí + mái che
+    // ========================================================================
+    // CHỐT CSGT (Cảnh sát giao thông) — THỰC THỂ THẬT trong thế giới
+    // ------------------------------------------------------------------------
+    // Trước đây HUD cảnh báo CSGT không có thực thể nào trong map: cảnh báo
+    // hoặc không bao giờ hiện, hoặc hiện ở nơi KHÔNG có CSGT. Nay mỗi chốt là
+    // một cụm 3D nhìn thấy được (bảng CSGT, cột, mái che, gậy dừng xe, cọc
+    // nón) đặt NGAY TRONG trạm thu phí có thật trong stations.json — không bịa
+    // tọa độ, không đặt giữa làn xe. js/csgt.js chỉ cảnh báo quanh các chốt
+    // này (xem addCheckpoints của js/csgt.js).
+    // ========================================================================
+    _csgtMaterials() {
+        if (this._csgtMats) return this._csgtMats;
+        // Biển "CSGT" dùng CHUNG 1 texture cho mọi chốt (không nạp lặp lại)
+        const cv = document.createElement('canvas');
+        cv.width = 256; cv.height = 128;
+        const cx = cv.getContext('2d');
+        cx.fillStyle = '#12327a'; cx.fillRect(0, 0, 256, 128);
+        cx.strokeStyle = '#f8fafc'; cx.lineWidth = 8; cx.strokeRect(6, 6, 244, 116);
+        cx.fillStyle = '#f8fafc';
+        cx.font = 'bold 62px Arial, sans-serif';
+        cx.textAlign = 'center'; cx.textBaseline = 'middle';
+        cx.fillText('CSGT', 128, 66);
+        const tex = new THREE.CanvasTexture(cv);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        this._csgtMats = {
+            sign: new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: 0.75 }),
+            blue: new THREE.MeshStandardMaterial({ color: 0x1b4fa8, roughness: 0.7 }),
+            red: new THREE.MeshStandardMaterial({ color: 0xc0392b, roughness: 0.6 }),
+            white: new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.8 }),
+            orange: new THREE.MeshStandardMaterial({ color: 0xe8720c, roughness: 0.7 })
+        };
+        return this._csgtMats;
+    }
+
+    _buildCsgtCheckpoints() {
+        this.csgtCheckpoints = [];
+        const tolls = this.stationsData.filter(t => t.type === 'TOLL'
+            && Number.isFinite(t.x) && Number.isFinite(t.z));
+        if (!tolls.length) return;
+        // Thưa thớt + rải đều: cách nhau ≥ 60km, tối đa 6 chốt trên toàn tuyến.
+        // Chỉ lấy trạm thu phí NẰM TRÊN tuyến đang chạy (≤ 4km so với polyline)
+        // → chốt nào cũng gặp được khi lái đúng tuyến Phú Yên – Sài Gòn.
+        const route = (this.roadGraph?.getRouteWaypoints?.()) || [];
+        const distToRoute = (x, z) => {
+            if (route.length < 2) return 0;
+            let best = Infinity;
+            for (let i = 1; i < route.length; i++) {
+                const a = route[i - 1], b = route[i];
+                const dx = b.x - a.x, dz = b.z - a.z;
+                const l2 = dx * dx + dz * dz || 1;
+                let t = ((x - a.x) * dx + (z - a.z) * dz) / l2;
+                t = t < 0 ? 0 : t > 1 ? 1 : t;
+                const ex = x - (a.x + dx * t), ez = z - (a.z + dz * t);
+                const d = Math.sqrt(ex * ex + ez * ez);
+                if (d < best) best = d;
+            }
+            return best;
+        };
+        const MIN_SPACING = 60000, MAX_CHECKPOINTS = 6;
+        const chosen = [];
+        for (const t of tolls) {
+            if (chosen.length >= MAX_CHECKPOINTS) break;
+            if (distToRoute(t.x, t.z) > 4000) continue;
+            if (chosen.some(c => Math.hypot(c.x - t.x, c.z - t.z) < MIN_SPACING)) continue;
+            chosen.push(t);
+        }
+        for (const t of chosen) this._addCsgtCheckpoint(t);
+        console.log(`[CSGT] Đã đặt ${this.csgtCheckpoints.length} chốt CSGT tại trạm thu phí trên tuyến`);
+    }
+
+    _addCsgtCheckpoint(t) {
+        const M = this._mats, G = this._geos, CM = this._csgtMaterials();
+        const g = new THREE.Group();
+        g.name = `csgt_${t.id}`;
+        g.position.set(t.x, t.y, t.z);
+        g.rotation.y = t.rot || 0;
+
+        // Vị trí trong hệ cục bộ của trạm thu phí: sát mép sân (x=+11.6),
+        // lùi về phía trước mái (z=-3) — NGOÀI 3 làn xe (làn ở x=-8/0/+8).
+        const OX = 11.6, OZ = -3;
+        const pad = new THREE.Mesh(G.unitBox, M.concrete);
+        pad.scale.set(3.4, 0.14, 3.2);
+        pad.position.set(OX, 0.23, OZ);
+        g.add(pad);
+        // Cột + mái che nhỏ cho chốt
+        for (const dz of [-1.1, 1.1]) {
+            const col = new THREE.Mesh(G.pole, M.metal);
+            col.scale.set(1, 2.4, 1);
+            col.position.set(OX + dz * 0, 1.5, OZ + dz);
+            g.add(col);
+        }
+        const roof = new THREE.Mesh(G.unitBox, CM.blue);
+        roof.scale.set(3.6, 0.14, 3.0);
+        roof.position.set(OX, 2.76, OZ);
+        g.add(roof);
+        // Bảng "CSGT" quay về phía làn xe (local +z)
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.95), CM.sign);
+        sign.position.set(OX, 1.7, OZ + 1.62);
+        g.add(sign);
+        // Gậy dừng xe (đỏ/trắng) dựng cạnh bảng
+        const paddle = new THREE.Mesh(G.unitBox, CM.red);
+        paddle.scale.set(0.5, 0.7, 0.06);
+        paddle.position.set(OX - 1.5, 1.15, OZ + 1.6);
+        g.add(paddle);
+        const paddleBand = new THREE.Mesh(G.unitBox, CM.white);
+        paddleBand.scale.set(0.52, 0.16, 0.07);
+        paddleBand.position.set(OX - 1.5, 1.15, OZ + 1.61);
+        g.add(paddleBand);
+        // 3 cọc nón cam dẫn hướng, đặt NGOÀI làn ngoài cùng (x=+8)
+        for (let i = 0; i < 3; i++) {
+            const cone = new THREE.Mesh(G.pine, CM.orange);
+            cone.scale.set(0.26, 0.62, 0.26);
+            cone.position.set(9.9, 0.5, OZ + 2.1 + i * 1.7);
+            g.add(cone);
+        }
+        this.stationGroup.add(g);
+        this._poiGroups.push({ g, x: t.x, z: t.z, r: 1300 });
+
+        // Tọa độ world của chốt (để js/csgt.js đo khoảng cách tới xe)
+        const off = new THREE.Vector3(OX, 0, OZ).applyAxisAngle(THREE.Object3D.DEFAULT_UP, t.rot || 0);
+        this.csgtCheckpoints.push({
+            id: `csgt_${t.id}`,
+            name: `Chốt CSGT — ${t.name || 'Trạm thu phí'}`,
+            type: 'CSGT',
+            x: t.x + off.x,
+            y: t.y,
+            z: t.z + off.z,
+            radius: 120,        // tầm phát hiện của chốt (m)
+            stopSignal: true    // chốt có hiệu lệnh dừng phương tiện
+        });
+    }
+
     _addTollPlaza(s) {
         const M = this._mats, G = this._geos;
         const g = new THREE.Group();
@@ -3884,13 +4252,207 @@ export class MapLoader {
         this.stationGroup.add(g);
     }
 
+    // ========================================================================
+    // TỰ ĐỘNG SINH BIỂN QUẢNG CÁO DỌC CÁC TUYẾN ĐƯỜNG CHÍNH
+    // Gọi sau khi load stationsData, TRƯỚC _buildStations().
+    //
+    // QUY TẮC BỐ TRÍ (đều có lý do, không đặt mù):
+    //  - CHỈ trên QL1A (NATIONAL) + đường tỉnh (PROVINCIAL_ROAD) + đường
+    //    đô thị lớn (ARTERIAL). KHÔNG đặt trên CAO TỐC (EXPRESSWAY): cao tốc
+    //    VN bị rào chắn, không có quảng cáo ven đường — đúng thực tế.
+    //  - Biển đặt BÊN PHẢI hướng xe chạy (VN đi bên phải), lệch khỏi
+    //    tim đường > nửa chiều rộng + 3m ⇒ không chắn làn, không chắn lề.
+    //  - BỎ QUA khu đông cư (settlement): nhà sát đường 2.8m, không còn
+    //    chỗ đặt biển mà không xuyên vào nhà. Ở ngoài đồng (rural) nhà lùi
+    //    7-23m ⇒ chỗ đặt rộng rãi.
+    //  - BỎ QUA gần bến xe / trạm / trạm xăng / trạm thu phí (>=150m) để
+    //    không chồng lên công trình, cổng bến hay biển báo giao thông.
+    //  - BỎ QUA nơi đất dốc (lệch cao độ > 1.5m so với mép đường) — biển
+    //    phải đứng trên nền phẳng, không "treo" lơ lửng.
+    //  - Giãn cách tối thiểu giữa 2 biển (MIN_DIST) ⇒ thưa thớt, không
+    //    dày đặc.
+    // ========================================================================
+    _generateBillboards() {
+        if (!this.roadGraph || !this.roadGraph.segments) return;
+        const segments = this.roadGraph.segments;
+        const nodes = this.roadGraph.nodes || [];
+        const nodeMap = new Map();
+        for (const n of nodes) nodeMap.set(n.id, n);
+
+        // Lớp đường được phép đặt biển (KHÔNG EXPRESSWAY — xem ghi chú trên)
+        const allowedClasses = new Set(["NATIONAL", "PROVINCIAL_ROAD", "ARTERIAL"]);
+        const MIN_DIST = 2600;        // giãn cách tối thiểu giữa 2 biển (m)
+        const MAX_BILLBOARDS = 24;    // trần số biển trên toàn tuyến
+        const CLEAR_FROM_ROAD_EDGE = 3.0;  // lệch tối thiểu ngoài mép đường
+        const CLEAR_FROM_POI = 150;        // lệch tối thiểu tới công trình (m)
+        const MAX_SLOPE_DIFF = 1.5;        // lệch cao độ tối đa (m)
+
+        // --- Khu đông cư: lấy từ world.json["settlements"] (anchor + radius) ---
+        const settlements = (this.worldData && Array.isArray(this.worldData.settlements))
+            ? this.worldData.settlements : [];
+        const inSettlement = (x, z) => {
+            for (let i = 0; i < settlements.length; i++) {
+                const st = settlements[i];
+                if (typeof st.x !== "number" || typeof st.z !== "number") continue;
+                const r = (st.radius || 300) + 70;   // +70m lề an toàn
+                const dx = x - st.x, dz = z - st.z;
+                if (dx * dx + dz * dz < r * r) return true;
+            }
+            return false;
+        };
+
+        // --- POI hiện có (bến/trạm/thu phí): loại trừ ---
+        const poiList = this.stationsData.filter(s => s.type !== "BILLBOARD");
+        const tooCloseToPoi = (x, z) => {
+            for (let i = 0; i < poiList.length; i++) {
+                const p = poiList[i];
+                const dx = x - p.x, dz = z - p.z;
+                if (dx * dx + dz * dz < CLEAR_FROM_POI * CLEAR_FROM_POI) return true;
+            }
+            return false;
+        };
+
+        // --- Tuyến chính (Nam Tuy Hòa -> Miền Đông Mới) dạng polyline ---
+        const routeWaypoints = this.roadGraph.getRouteWaypoints ? this.roadGraph.getRouteWaypoints() : [];
+        if (routeWaypoints.length < 2) {
+            console.log("[Billboard] Chưa có tuyến chính — bỏ qua sinh biển quảng cáo.");
+            this._billboardCount = 0;
+            return;
+        }
+        // Lũy kế chiều dài tuyến: xếp biển theo đúng thứ tự chạy xe.
+        const routeCum = new Float64Array(routeWaypoints.length);
+        for (let i = 1; i < routeWaypoints.length; i++) {
+            routeCum[i] = routeCum[i - 1] + Math.hypot(
+                routeWaypoints[i].x - routeWaypoints[i - 1].x,
+                routeWaypoints[i].z - routeWaypoints[i - 1].z);
+        }
+        // Chiếu 1 điểm lên polyline tuyến -> { dist: m tới tuyến, pos: m dọc tuyến }
+        const projectOnRoute = (x, z) => {
+            let bestD = Infinity, bestPos = 0;
+            for (let i = 1; i < routeWaypoints.length; i++) {
+                const a = routeWaypoints[i - 1], b = routeWaypoints[i];
+                const dx = b.x - a.x, dz = b.z - a.z;
+                const l2 = dx * dx + dz * dz || 1;
+                let t = ((x - a.x) * dx + (z - a.z) * dz) / l2;
+                t = t < 0 ? 0 : t > 1 ? 1 : t;
+                const ex = x - (a.x + dx * t), ez = z - (a.z + dz * t);
+                const d = Math.sqrt(ex * ex + ez * ez);
+                if (d < bestD) {
+                    bestD = d;
+                    bestPos = routeCum[i - 1] + t * (routeCum[i] - routeCum[i - 1]);
+                }
+            }
+            return { dist: bestD, pos: bestPos };
+        };
+        // Bán kính tối đa tới tuyến: quá xa thì không phải "dọc tuyến đường".
+        const MAX_OFFSET_FROM_ROUTE = 80;
+
+        const candidateSegs = [];
+        for (const s of segments) {
+            if (!allowedClasses.has(s.class)) continue;
+            if (s.type === "tunnel") continue;               // không đặt trong hầm
+            if (s.bridge) continue;                          // không đặt trên cầu
+            const f = nodeMap.get(s.from), t = nodeMap.get(s.to);
+            if (!f || !t) continue;
+            const len = Math.hypot(t.x - f.x, t.z - f.z);
+            if (len < 150) continue;                        // đoạn quá ngắn
+            const midX0 = (f.x + t.x) / 2, midZ0 = (f.z + t.z) / 2;
+            // Dữ liệu chia đoạn rất nhỏ nên KHÔNG thể đòi node trùng waypoint
+            // (điều kiện cũ chỉ còn 5 ứng viên -> sinh ra 0 biển). Đo khoảng
+            // cách từ trung điểm đoạn tới polyline tuyến chính thay thế.
+            const proj = projectOnRoute(midX0, midZ0);
+            if (proj.dist > MAX_OFFSET_FROM_ROUTE) continue;
+            candidateSegs.push({
+                seg: s, from: f, to: t, len,
+                routeOrder: proj.pos,
+                midX: midX0, midZ: midZ0,
+            });
+        }
+        candidateSegs.sort((a, b) => a.routeOrder - b.routeOrder);
+
+        const placed = [];
+        let billboardCount = 0;
+        const getElev = (x, z) => {
+            if (this.world && typeof this.world.getElevation === "function") {
+                return this.world.getElevation(x, z);
+            }
+            return 0;
+        };
+
+        for (const c of candidateSegs) {
+            if (billboardCount >= MAX_BILLBOARDS) break;
+            const { seg, from, to, len, midX, midZ } = c;
+
+            // Hướng đi của đoạn đường (from -> to)
+            const dx = to.x - from.x, dz = to.z - from.z;
+            const ux = dx / len, uz = dz / len;
+            // Vector PHẢI theo hướng đi (VN chạy bên phải): right = (uz, -ux)
+            // Hệ trục: +X = Đông, +Z = Bắc. right = 90° clockwise từ forward.
+            const rx = uz, rz = -ux;
+
+            const roadHalfWidth = (seg.width || 12) / 2;
+            const offset = roadHalfWidth + CLEAR_FROM_ROAD_EDGE + 1.5;
+            const billX = midX + rx * offset;
+            const billZ = midZ + rz * offset;
+
+            // 1) Không đặt trong khu đông cư (tránh xuyên vào nhà sát đường)
+            if (inSettlement(billX, billZ)) continue;
+
+            // 2) Không đặt gần công trình / biển báo giao thông
+            if (tooCloseToPoi(billX, billZ)) continue;
+
+            // 3) Giãn cách với biển đã đặt
+            let tooClose = false;
+            for (let i = 0; i < placed.length; i++) {
+                const d = Math.hypot(billX - placed[i].x, billZ - placed[i].z);
+                if (d < MIN_DIST) { tooClose = true; break; }
+            }
+            if (tooClose) continue;
+
+            // 4) Nền đất phải phẳng: chênh cao giữa vị trí biển và mép đường
+            const roadY = (typeof from.y === "number" && typeof to.y === "number")
+                ? (from.y + to.y) / 2 : getElev(midX, midZ);
+            const billY = getElev(billX, billZ);
+            if (Math.abs(billY - roadY) > MAX_SLOPE_DIFF) continue;
+
+            // 5) Rotation: pháp tuyến mặt bảng hướng về phía đường.
+            //    Biển ở bên PHẢI đường -> vector từ biển đến đường = -right = (-uz, ux)
+            //    local +Z của group -> world (sin θ, cos θ) = (-uz, ux)
+            //    ⇒ θ = atan2(-uz, ux)
+            const billRot = Math.atan2(-uz, ux);
+
+            const billId = `billboard_${billboardCount}`;
+            this.stationsData.push({
+                id: billId,
+                name: `Biển quảng cáo BusDriveVN ${billboardCount + 1}`,
+                type: "BILLBOARD",
+                x: billX,
+                y: billY,
+                z: billZ,
+                rot: billRot,
+                w: 4.0,   // rộng mặt bảng (khớp tỷ lệ ảnh 4:3)
+                d: 3.0,   // cao mặt bảng
+            });
+            placed.push({ x: billX, z: billZ });
+            billboardCount++;
+        }
+
+        console.log(`[Billboard] Đã sinh ${billboardCount} biển quảng cáo dọc tuyến đường`);
+        this._billboardCount = billboardCount;
+    }
+
     // -------------------------------------------------------------- station
     _buildStations() {
         const M = this._mats, G = this._geos;
+        // Nạp texture biển quảng cáo NGAY 1 LẦN (dùng chung cho mọi biển).
+        // Async: material được tạo trước, texture gán vào sau khi tải xong.
+        getBillboardAdMaterial();
         // nhóm POI để cull theo khoảng cách (bến nhìn xa, điểm dừng gần)
         this._poiGroups = [];
         const track = (g, s, radius) => this._poiGroups.push(
             { g, x: s.x, z: s.z, r: radius });
+        // Chốt CSGT: dựng SAU khi đã có _poiGroups (hàm tự track culling)
+        this._buildCsgtCheckpoints();
         for (const s of this.stationsData) {
             if (s.type === "FUEL_STATION" || s.type === "REST_AREA") {
                 this._addFacility(s, this.stationGroup);
@@ -3921,6 +4483,12 @@ export class MapLoader {
             if (s.type === "LANDMARK") {
                 this._addLandmark(s, this.stationGroup);
                 track(this.stationGroup.children[this.stationGroup.children.length - 1], s, 1400);
+                continue;
+            }
+            // BIỂN QUẢNG CÁO (BILLBOARD) — biển quảng cáo game BusDriveVN dọc tuyến đường
+            if (s.type === "BILLBOARD") {
+                this._addBillboard(s, this.stationGroup);
+                track(this.stationGroup.children[this.stationGroup.children.length - 1], s, 1500);
                 continue;
             }
             const g = new THREE.Group();
@@ -4687,7 +5255,48 @@ export class MapLoader {
         };
     }
 
-    getSpawnPoint() {
+    getSpawnPoint(direction = "north") {
+        if (direction === "south" && this.roadGraph) {
+            const waypoints = this.getRouteWaypoints();
+            const endpoint = waypoints[waypoints.length - 1];
+            const terminals = this.stationsData.filter(s =>
+                (s.type === "BUS_STATION" || s.type === "MAJOR_BUS_TERMINAL") &&
+                Array.isArray(s.baySlots) && s.baySlots.length > 0
+            );
+            let station = endpoint
+                ? terminals.find(s => s.anchor_node === endpoint.id)
+                : null;
+            if (!station && endpoint) {
+                let nearestDistance = Infinity;
+                for (const candidate of terminals) {
+                    const distance = hypot2(candidate.x - endpoint.x, candidate.z - endpoint.z);
+                    if (distance < nearestDistance) {
+                        nearestDistance = distance;
+                        station = candidate;
+                    }
+                }
+                if (nearestDistance > 1200) station = null;
+            }
+            const slots = station
+                ? station.baySlots.filter(slot => Number.isFinite(slot.x) && Number.isFinite(slot.z))
+                : [];
+            if (!endpoint || !station || slots.length === 0) {
+                throw new Error("Không tìm thấy bến cuối tuyến có vị trí đỗ để khởi hành chiều Nam.");
+            }
+
+            const slot = slots.reduce((best, candidate) =>
+                hypot2(candidate.x - endpoint.x, candidate.z - endpoint.z) <
+                    hypot2(best.x - endpoint.x, best.z - endpoint.z)
+                    ? candidate
+                    : best
+            );
+            return {
+                x: slot.x,
+                z: slot.z,
+                y: typeof slot.y === "number" ? slot.y : (station.y || 0) + BUS_AXLE,
+                heading: typeof slot.heading === "number" ? slot.heading : (station.rot || 0)
+            };
+        }
         if (this.spawn && typeof this.spawn.x === "number") {
             const x = this.spawn.x, z = this.spawn.z;
             return {
@@ -4704,6 +5313,64 @@ export class MapLoader {
     }
 
     getRoadGraph() { return this.roadGraph; }
+
+    // P91 — TRỤ CẦU KHÔNG ĐƯỢC ĐỨNG GIỮA LÒNG ĐƯỜNG KHÁC.
+    // Vòng lặp trụ rải `tk = k/(nPier+1)` theo chiều dài, nên với nhịp NGẮN
+    // (12-21m — nhịp phẳng của cầu vượt) thì `nPier = 1` ⇒ trụ rơi ĐÚNG tâm
+    // nhịp = giữa lòng đường chạy bên dưới (đo được: nhịp 21m qua QL1A rộng
+    // 15m ⇒ 1 trụ giữa 2 làn). Trước đây không ai thấy vì 63 cầu cũ hầu hết
+    // qua nước. Sửa: chỉ dựng trụ ở chỗ KHÔNG có mặt đường nào khác, và chỉ
+    // tính đường NẰM DƯỚI (thấp hơn đáy dầm ≥1.0m — đường cùng cao độ hoặc
+    // dốc lên tới sát dầm thì không chặn).
+    _pierGridBuild() {
+        if (this._pierGrid) return;
+        const g = new Map();
+        const C = 96;
+        this._pierGrid = g;
+        this._pierCell = C;
+        const rg = this.roadGraph;
+        if (!rg || !rg.segments || !rg._nodeMap) return;
+        for (const s of rg.segments) {
+            if (s.class === "TUNNEL") continue;
+            const a = rg._nodeMap.get(s.from), b = rg._nodeMap.get(s.to);
+            if (!a || !b) continue;
+            const hw = (s.width || 12) * 0.5 + 0.8;
+            const x0 = Math.min(a.x, b.x) - hw, x1 = Math.max(a.x, b.x) + hw;
+            const z0 = Math.min(a.z, b.z) - hw, z1 = Math.max(a.z, b.z) + hw;
+            const rec = [a.x, a.z, b.x, b.z, a.y, b.y, hw, s.id];
+            for (let cx = Math.floor(x0 / C); cx <= Math.floor(x1 / C); cx++) {
+                for (let cz = Math.floor(z0 / C); cz <= Math.floor(z1 / C); cz++) {
+                    const k = cx + ":" + cz;
+                    let arr = g.get(k);
+                    if (!arr) { arr = []; g.set(k, arr); }
+                    arr.push(rec);
+                }
+            }
+        }
+    }
+
+    _pierHitsRoad(px, pz, deckBottom, segId) {
+        this._pierGridBuild();
+        const C = this._pierCell || 96;
+        const arr = this._pierGrid.get(Math.floor(px / C) + ":" + Math.floor(pz / C));
+        if (!arr) return false;
+        for (let i = 0; i < arr.length; i++) {
+            const e = arr[i];
+            if (e[7] === segId) continue;              // chính đoạn đang dựng
+            const dx = e[2] - e[0], dz = e[3] - e[1];
+            const l2 = dx * dx + dz * dz;
+            if (l2 < 1e-6) continue;
+            let t = ((px - e[0]) * dx + (pz - e[1]) * dz) / l2;
+            t = t < 0 ? 0 : (t > 1 ? 1 : t);
+            const qx = e[0] + dx * t, qz = e[1] + dz * t;
+            if (Math.hypot(px - qx, pz - qz) > e[6]) continue;   // ngoài bề rộng
+            const yRoad = e[4] + (e[5] - e[4]) * t;
+            if (deckBottom - yRoad < 1.0) continue;              // không ở dưới
+            return true;
+        }
+        return false;
+    }
+
     // MINIMAP (rule 34): CÙNG source of truth với world + PHẢI vẽ POI.
     // Canvas 200px @ scale 0.05 chỉ hiện được bán kính ~2km. Trước đây
     // ui.js quét TOÀN BỘ ~5k segment mỗi lần vẽ (10 lần/s) — trên N5000
@@ -4839,6 +5506,27 @@ export class MapLoader {
         return this.roadGraph ? this.roadGraph.getRouteWaypoints() : [];
     }
     getPOIs() { return this.stationsData; }
+    // Dữ liệu bến NGUYÊN VẸN (structures/fence/hall) cho hệ thống hành khách.
+    // Trước đây hàm này CHỈ có trên object của createMap() legacy, còn game
+    // dựng `new MapLoader()` trực tiếp -> `map.getStationsData` undefined ->
+    // npc.js nhận [] -> 0 hành khách tại bến Nam Tuy Hòa. Đặt trên class để
+    // cả hai đường gọi đều có.
+    getStationsData() { return this.stationsData; }
+    // Chốt CSGT thật (dựng tại trạm thu phí) — js/csgt.js dùng để CHỈ cảnh
+    // báo khi xe ở gần chốt có thực thể trong thế giới.
+    getCSGTCheckpoints() { return this.csgtCheckpoints || []; }
+    isInsideStation(x, z) {
+        return this.stationsData.some(station => {
+            if (station.type !== "BUS_STATION" && station.type !== "MAJOR_BUS_TERMINAL") return false;
+            const dx = x - station.x, dz = z - station.z;
+            const angle = -(station.rot || 0);
+            const cos = Math.cos(angle), sin = Math.sin(angle);
+            const localX = dx * cos - dz * sin;
+            const localZ = dx * sin + dz * cos;
+            return Math.abs(localX) <= Math.max(6, (station.w || 20) * 0.5) &&
+                Math.abs(localZ) <= Math.max(6, (station.d || 20) * 0.5);
+        });
+    }
 
     // ================================================================= LỚP
     // HÀNH CHÍNH (đơn vị sau sáp nhập, hiệu lực 12/6/2025 — NQ 202/2025/QH15)
@@ -4941,11 +5629,11 @@ export class MapLoader {
     // Trước đây chỉ nan của bến spawn trong 800m được trả về, nên 4 bến còn
     // lại luôn trống. Nay chọn theo vị trí NGƯỜI CHƠI (vẫn giới hạn 1 bến
     // mỗi lần gọi để không spawn 60 xe cùng lúc trên máy yếu).
-    getParkingSlots() {
+    getParkingSlots(excludePosition = null) {
         const out = [];
         if (!this.stationsData.length) return out;
         // neo theo vị trí player vuaa stream, fallback spawn
-        const p = this._playerPos || this.getSpawnPoint();
+        const p = excludePosition || this._playerPos || this.getSpawnPoint();
         let best = null, bestD = 1e9;
         for (const s of this.stationsData) {
             if (s.type !== "BUS_STATION" && s.type !== "MAJOR_BUS_TERMINAL") continue;
@@ -4956,6 +5644,7 @@ export class MapLoader {
         const s = best;
         const slots = Array.isArray(s.baySlots) ? s.baySlots : [];
         for (const slot of slots) {
+            if (excludePosition && hypot2(slot.x - excludePosition.x, slot.z - excludePosition.z) < 3) continue;
             out.push({
                 id: `${s.id}_${slot.x.toFixed(1)}_${slot.z.toFixed(1)}`,
                 station: s.id,
@@ -4997,6 +5686,13 @@ export class MapLoader {
         if (this._kmSignMats) this._kmSignMats.clear();
         for (const m of this._facadeMats.values()) m.dispose?.();
         for (const m of this._roofMats.values()) m.dispose?.();
+        // Dọn collider biển quảng cáo (stationGroup không phải chunk, không dọn qua _unloadChunk)
+        if (this._billboardColIds && this._billboardColIds.length && window.collisionSystem) {
+            for (const id of this._billboardColIds) window.collisionSystem.remove(id);
+            this._billboardColIds.length = 0;
+        }
+        // Giải phóng texture/material biển quảng cáo dùng chung
+        disposeBillboardAdMaterial();
         if (this.group && this.group.parent) this.group.parent.remove(this.group);
     }
 }
@@ -5013,16 +5709,18 @@ export function createMap(options) {
         setPlayerPosition: (x, z, dt, camDir) => loader.setPlayerPosition(x, z, dt, camDir),
         getHeight: (x, z) => loader.getHeight(x, z),
         getTerrainHeight: (x, z) => loader.getTerrainHeight(x, z),
-        getSpawnPoint: () => loader.getSpawnPoint(),
+        getSpawnPoint: (direction) => loader.getSpawnPoint(direction),
         getRouteWaypoints: () => loader.getRouteWaypoints(),
         getMinimapData: () => loader.getMinimapData(),
         getRoadGraph: () => loader.getRoadGraph(),
         getPOIs: () => loader.getPOIs(),
+        isInsideStation: (x, z) => loader.isInsideStation(x, z),
         getAdminUnit: (x, z) => loader.getAdminUnit(x, z),
-        getParkingSlots: () => loader.getParkingSlots(),
+        getParkingSlots: (excludePosition) => loader.getParkingSlots(excludePosition),
         // Dữ liệu bến nguyên vẹn (structures/fence/hall cho passenger spawn
         // tại bến) — dùng bởi npc.js; dữ liệu cũ đã có trong loader.stationsData.
         getStationsData: () => loader.stationsData,
+        getCSGTCheckpoints: () => loader.csgtCheckpoints || [],
         updateChunks: (x, z, dt, camDir) => loader.updateChunks(x, z, dt, camDir),
         dispose: () => loader.dispose()
     };

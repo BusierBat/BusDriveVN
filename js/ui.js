@@ -5,6 +5,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
     let minimapCtx = null, speedoCtx = null;
     let minimapData = null;
     let minimapMap = null;
+    let mainMenuAnimation = null;
     let _lastMinimapX = Infinity, _lastMinimapZ = Infinity, _lastHeading = Infinity;
     const els = {
         hud: document.getElementById('hud'),
@@ -40,6 +41,41 @@ export function createUI({ map = null, callbacks = {} } = {}) {
     if (els.speedometer) {
         speedoCtx = els.speedometer.getContext('2d');
         speedoCtx.imageSmoothingEnabled = false;
+    }
+
+    function setMainMenuVisible(visible) {
+        const menu = els.mainMenu;
+        if (!menu) return;
+        mainMenuAnimation?.cancel();
+        mainMenuAnimation = null;
+        const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+        if (reducedMotion || typeof menu.animate !== 'function') {
+            menu.style.display = visible ? 'flex' : 'none';
+            menu.style.pointerEvents = '';
+            return;
+        }
+        if (visible) {
+            menu.style.display = 'flex';
+            menu.style.pointerEvents = '';
+        } else {
+            if (menu.style.display === 'none') return;
+            menu.style.pointerEvents = 'none';
+        }
+        const animation = menu.animate(
+            visible
+                ? [{ opacity: 0, translate: '0 20px' }, { opacity: 1, translate: '0 0' }]
+                : [{ opacity: 1, translate: '0 0' }, { opacity: 0, translate: '0 20px' }],
+            { duration: visible ? 260 : 200, easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)', fill: 'forwards' }
+        );
+        mainMenuAnimation = animation;
+        animation.onfinish = () => {
+            if (mainMenuAnimation !== animation) return;
+            mainMenuAnimation = null;
+            menu.style.opacity = '';
+            menu.style.translate = '';
+            if (!visible) menu.style.display = 'none';
+            menu.style.pointerEvents = '';
+        };
     }
 
     // Khôi phục slider settings
@@ -217,12 +253,50 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         ctx.restore();
     }
 
-    function drawSpeedometer(speedKmh) {
+    function drawSpeedometer(speedKmh, speedLimit = null) {
         if (!speedoCtx) return;
         const ctx = speedoCtx, cx = 90, cy = 90, r = 70;
         ctx.clearRect(0, 0, 180, 180);
+        
         ctx.beginPath(); ctx.arc(cx, cy, r, 0.75 * Math.PI, 2.25 * Math.PI);
         ctx.lineWidth = 8; ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.stroke();
+
+        const lim = (typeof speedLimit === 'number' && speedLimit > 0) ? Math.min(speedLimit, 120) : null;
+        if (lim) {
+            const limAngle = 0.75 * Math.PI + (lim / 120) * 1.5 * Math.PI;
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, limAngle, 2.25 * Math.PI);
+            ctx.lineWidth = 8;
+            ctx.strokeStyle = 'rgba(239, 68, 68, 0.45)';
+            ctx.stroke();
+
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(limAngle);
+            ctx.beginPath();
+            ctx.moveTo(0, -r + 8);
+            ctx.lineTo(0, -r - 4);
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = '#ef4444';
+            ctx.stroke();
+            ctx.restore();
+
+            const badgeX = 145, badgeY = 35, badgeR = 18;
+            ctx.beginPath();
+            ctx.arc(badgeX, badgeY, badgeR, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+            ctx.lineWidth = 3.5;
+            ctx.strokeStyle = '#dc2626';
+            ctx.stroke();
+            ctx.fillStyle = '#0f172a';
+            ctx.font = 'bold 13px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(Math.round(lim), badgeX, badgeY);
+            ctx.textBaseline = 'alphabetic';
+        }
+
         ctx.save(); ctx.translate(cx, cy);
         for (let i = 0; i <= 12; i++) {
             ctx.rotate((1.5 * Math.PI) / 12);
@@ -230,13 +304,22 @@ export function createUI({ map = null, callbacks = {} } = {}) {
             ctx.lineWidth = 2; ctx.strokeStyle = i % 4 === 0 ? '#fff' : 'rgba(255,255,255,0.3)'; ctx.stroke();
         }
         ctx.restore();
-        const speed = Math.min(Math.abs(speedKmh), 120);
+
+        const currentSpeed = Math.abs(speedKmh || 0);
+        const speed = Math.min(currentSpeed, 120);
+        const isOverLimit = lim && (currentSpeed > lim);
         const angle = 0.75 * Math.PI + (speed / 120) * 1.5 * Math.PI;
         ctx.save(); ctx.translate(cx, cy); ctx.rotate(angle);
         ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(0, -r + 15); ctx.lineTo(10, 0);
-        ctx.fillStyle = '#ff4d4d'; ctx.fill(); ctx.restore();
-        ctx.fillStyle = '#fff'; ctx.font = 'bold 24px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText(Math.round(speedKmh), cx, cy + 40);
+        ctx.fillStyle = isOverLimit ? '#ef4444' : '#ff4d4d';
+        ctx.shadowColor = isOverLimit ? 'rgba(239, 68, 68, 0.8)' : 'transparent';
+        ctx.shadowBlur = isOverLimit ? 10 : 0;
+        ctx.fill();
+        ctx.restore();
+
+        ctx.fillStyle = isOverLimit ? '#f87171' : '#fff';
+        ctx.font = 'bold 24px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(Math.round(currentSpeed), cx, cy + 40);
         ctx.font = '10px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillText('km/h', cx, cy + 55);
     }
 
@@ -252,7 +335,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
 
     function update(state = {}) {
         if (els.fps) els.fps.textContent = Math.round(state.fps || 0);
-        if (els.passengers) els.passengers.textContent = `${state.passengers ?? 0}/24`;
+        if (els.passengers) els.passengers.textContent = `${state.passengers ?? 0}/${state.passengerCapacity ?? 24}`;
         if (els.time) els.time.textContent = formatTime(state.timeMinutes || 0);
         if (els.trip && state.trip) {
             const t = state.trip;
@@ -285,13 +368,13 @@ export function createUI({ map = null, callbacks = {} } = {}) {
             drawMinimap(state.x, state.z, state.heading || 0, state.npcZones || [], state.passengerZones || []);
             _lastMinimapX = state.x || 0; _lastMinimapZ = state.z || 0; _lastHeading = state.heading || 0;
         }
-        drawSpeedometer(state.speedKmh || 0);
+        drawSpeedometer(state.speedKmh || 0, state.speedLimit || null);
     }
 
     return { 
         els, setupMinimap, update, toast,
-        showMainMenu() { if (els.mainMenu) els.mainMenu.style.display = 'flex'; },
-        hideMainMenu() { if (els.mainMenu) els.mainMenu.style.display = 'none'; },
+        showMainMenu() { setMainMenuVisible(true); },
+        hideMainMenu() { setMainMenuVisible(false); },
         showConsole() { if (els.console) { els.console.style.display = 'flex'; els.consoleInput.focus(); } },
         hideConsole() { if (els.console) els.console.style.display = 'none'; els.consoleInput.value = ''; els.consoleInput.blur?.(); },
         showSettings() { if (els.settingsPanel) els.settingsPanel.style.display = 'block'; },

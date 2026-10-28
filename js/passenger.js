@@ -1,11 +1,12 @@
-﻿// js/passenger.js
+// js/passenger.js - Hệ thống hành khách hoàn chỉnh
 import * as THREE from "three";
-import { hypot2 } from "./utils.js";
-import { clamp } from "./utils.js";
+import { hypot2, clamp } from "./utils.js";
+
 const _tmpLerpTarget = new THREE.Vector3();
 let _passengerUpdateTimer = 0;
+let _passengerScanTimer = 0;
 
-export function createPassengerSystem({ scene, map, npc, bus, ui }) {
+export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType = "BED20" }) {
     if (!scene || !bus || !npc) {
         console.error("PassengerSystem thiếu dependency quan trọng!");
         return { update: () => {}, pickUpPassengers: () => 0, dropOffPassengers: () => 0, getActiveZones: () => [], onboardPassengers: [] };
@@ -17,8 +18,12 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
 
     let waitingPassengers = [];
     let onboardPassengers = [];
-    const MAX_PASSENGERS = 24;
+
+    // Dung lượng xe theo cấu hình thực tế: xe 20 chỗ <= 20 khách, xe 34 chỗ <= 34 khách
+    const isBed34 = interiorType === "BED34" || (window.gameSettings && window.gameSettings.interior === "BED34");
+    const MAX_PASSENGERS = isBed34 ? 34 : 20;
     const PICKUP_RANGE = 25;
+
     const SKIN_COLORS = [0xe8c9a0, 0xd4a574, 0xc4956a, 0xf5d6b8];
     const CLOTH_COLORS = [0x4a6fa5, 0xd64545, 0x2d7d46, 0x8b6b4a, 0x5d7f9c, 0x7c5f8f];
 
@@ -33,8 +38,6 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
     gctx.fillRect(0, 0, 256, 256);
     const glowTexture = new THREE.CanvasTexture(glowCanvas);
 
-    // ---- Shared geometry + material (tạo 1 lần, mọi passenger dùng chung) ----
-    // Tránh 50 khách = 200 material riêng (rule: không material-per-NPC).
     const _pGeo = {
         torso: new THREE.BoxGeometry(0.34, 0.47, 0.17),
         neck: new THREE.CylinderGeometry(0.05, 0.05, 0.05, 6),
@@ -56,8 +59,6 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
     }
 
     function createHumanoidModel(color1, color2) {
-        // Model humanoid đầy đủ (thay NPC tí hon cũ): head + neck + torso + shirt
-        // + arms + hands + legs + feet, tỷ lệ VN ~1.60m (giới hạn 1.50–1.75).
         const g = new THREE.Group();
         const skinMat = pMat(color2 || 0xe8c9a0, 0.65);
         const clothMat = pMat(color1 || 0x4a6fa5, 0.85);
@@ -65,7 +66,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         const shoeMat = pMat(0x222222, 0.7);
         const hairMat = pMat(0x1a1a1a, 0.9);
 
-        // TORSO (0.78 -> 1.25)
+        // TORSO
         const torso = new THREE.Mesh(_pGeo.torso, clothMat);
         torso.position.y = 0.78 + 0.47 * 0.5; g.add(torso);
         // NECK
@@ -79,7 +80,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         const hair = new THREE.Mesh(_pGeo.hair, hairMat);
         hair.scale.y = 1.15; hair.position.y = head.position.y + 0.03; g.add(hair);
 
-        // ARMS (pivot tại vai, y = 0.78 + 0.47*0.88 ≈ 1.19)
+        // ARMS
         const shoulderY = 0.78 + 0.47 * 0.88;
         function arm(side) {
             const ag = new THREE.Group();
@@ -95,7 +96,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         }
         arm(-1); arm(1);
 
-        // LEGS (pivot tại hông y = 0.78 — bàn chân chạm đất y≈0)
+        // LEGS
         function leg(side) {
             const lg = new THREE.Group();
             lg.position.set(side * 0.08, 0.78, 0);
@@ -115,18 +116,13 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
     }
 
     function createGlow() {
-        // Marker khách: beam xanh nhẹ — sprite glow + cột ánh sáng mảnh.
-        // Chiều cao giới hạn (~3m), alpha nhẹ, fade theo khoảng cách trong
-        // updatePassengers, KHÔNG che màn hình / biển báo / xe.
         const grp = new THREE.Group();
-
         const mat = new THREE.SpriteMaterial({ map: glowTexture, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.7 });
         const sprite = new THREE.Sprite(mat);
-        sprite.scale.set(4, 4, 1);        // nhỏ hơn hẳn bản 12x12 cũ (che màn)
-        sprite.position.y = 2.2;          // ✦ ở trên đầu, ~3m trần
+        sprite.scale.set(4, 4, 1);
+        sprite.position.y = 2.2;
         grp.add(sprite);
 
-        // Cột sáng mảnh (billboard-ish bằng sprite dọc)
         const beamMat = new THREE.SpriteMaterial({ map: glowTexture, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.28, color: 0x33bbff });
         const beam = new THREE.Sprite(beamMat);
         beam.scale.set(1.1, 3.0, 1);
@@ -143,12 +139,12 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         const currentIds = new Set(waitingPassengers.map(p => p.id));
         for (const w of waiting) {
             if (currentIds.has(w.id)) continue;
-            if (waitingPassengers.length >= 50) break;
+            if (waitingPassengers.length >= 60) break;
             const model = createHumanoidModel(CLOTH_COLORS[Math.floor(Math.random()*CLOTH_COLORS.length)], SKIN_COLORS[Math.floor(Math.random()*SKIN_COLORS.length)]);
             model.position.set(w.x, w.y, w.z);
             model.rotation.y = Math.random() * Math.PI * 2;
             const glow = createGlow();
-            glow.position.set(w.x, w.y, w.z);   // local sprite đã ở y=2.2 (trên đầu NPC)
+            glow.position.set(w.x, w.y, w.z);
             passengerGroup.add(model);
             passengerGroup.add(glow);
             waitingPassengers.push({
@@ -173,7 +169,6 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             if (inRange) {
                 p.state = 'IN_PICKUP_ZONE';
                 p.glowIntensity = Math.sin(now * 3) * 0.3 + 0.7;
-                // Fade theo khoảng cách: gần = rõ, xa = mờ dần (LOD thị giác)
                 const fade = clamp(1 - dist / 180, 0.15, 1);
                 const sp = p.glow.userData.sprite, bm = p.glow.userData.beam;
                 if (sp) sp.material.opacity = p.glowIntensity * 0.8 * fade;
@@ -194,29 +189,67 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
         }
     }
 
+    function calculateSeatPosition(index) {
+        if (isBed34) {
+            // Cấu hình 34 giường VIP: 3 dãy (trái 10, giữa 14, phải 10)
+            // 7 vị trí Z: [2.5, 1.1, -0.3, -1.7, -3.1, -4.5, -5.9]
+            const zRows = [2.5, 1.1, -0.3, -1.7, -3.1, -4.5, -5.9];
+            const tier = (index % 2 === 0) ? 0.67 : 1.67;
+            const pairIdx = Math.floor(index / 2); // 0..16
+            
+            let lx = 0, lz = 0;
+            if (pairIdx < 5) {
+                // Dãy trái (5 khoang)
+                lx = -0.87;
+                lz = zRows[pairIdx];
+            } else if (pairIdx < 12) {
+                // Dãy giữa (7 khoang)
+                lx = 0.0;
+                lz = zRows[pairIdx - 5];
+            } else {
+                // Dãy phải (5 khoang)
+                lx = 0.87;
+                lz = zRows[pairIdx - 12];
+            }
+            return new THREE.Vector3(lx, tier + 0.1, lz);
+        } else {
+            // Cấu hình 20 phòng VIP: 2 dãy bên (mỗi bên 5 khoang x 2 tầng)
+            const bedIndex = index % 20;
+            const side = (Math.floor(bedIndex / 10) % 2 === 0) ? 1 : -1;
+            const bayZ = [2.7, 0.9, -0.9, -2.7, -4.5];
+            const tier = (bedIndex % 10) < 5 ? 0.67 : 1.67;
+            const zIndex = (bedIndex % 10) % 5;
+            return new THREE.Vector3(side * 0.75, tier + 0.1, bayZ[zIndex]);
+        }
+    }
+
     function pickUpPassengers() {
         if (!bus || !bus.doorOpen) {
             ui?.toast("❌ Phải mở cửa (K) để đón khách!");
             return 0;
         }
-        const busPos = bus.group.position;
         let picked = 0;
         const inRange = waitingPassengers.filter(p => !p.picked && p.inRange);
         const available = Math.min(inRange.length, MAX_PASSENGERS - onboardPassengers.length);
+        
         for (let i = 0; i < available && i < inRange.length; i++) {
             const p = inRange[i];
             p.picked = true; p.state = 'ON_BUS'; p.glow.visible = false;
-            const bedIndex = onboardPassengers.length % 20;
-            const side = (Math.floor(bedIndex / 10) % 2 === 0) ? 1 : -1;
-            const bayZ = [2.7, 0.9, -0.9, -2.7, -4.5];
-            const tier = (bedIndex % 10) < 5 ? 0.67 : 1.67;
-            const zIndex = (bedIndex % 10) % 5;
-            const localPos = new THREE.Vector3(side * 0.75, tier + 0.1, bayZ[zIndex]);
-            bus.group.localToWorld(localPos);
+            
+            const localPos = calculateSeatPosition(onboardPassengers.length);
+            passengerGroup.remove(p.model);
+            bus.group.add(p.model);
             p.model.position.copy(localPos);
             p.model.rotation.y = Math.random() * Math.PI * 2;
             p.model.scale.set(0.6, 0.6, 0.6);
-            onboardPassengers.push({ id: p.id, model: p.model, destination: p.destination, targetX: localPos.x, targetY: localPos.y, targetZ: localPos.z });
+            onboardPassengers.push({
+                id: p.id,
+                model: p.model,
+                destination: p.destination,
+                targetX: localPos.x,
+                targetY: localPos.y,
+                targetZ: localPos.z
+            });
             picked++;
         }
         if (picked > 0) ui?.toast(`✅ Đón ${picked} khách! (${onboardPassengers.length}/${MAX_PASSENGERS})`);
@@ -226,23 +259,39 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
     }
 
     function dropOffPassengers(destination) {
+        if (!bus || !bus.doorOpen || typeof destination !== "string" || !destination) return 0;
         let dropped = 0;
         const remaining = [];
-        const busPos = bus.group.position;
         for (const p of onboardPassengers) {
-            if (p.destination === destination) {
-                // trả khách xuống mặt đất: busY = terrainY + 0.5 => người đứng ở terrainY
-                const groundY = (typeof busPos.y === "number" ? busPos.y - 0.5 : 0.5);
-                const dropPos = new THREE.Vector3(busPos.x + (Math.random() - 0.5) * 4, groundY, busPos.z + (Math.random() - 0.5) * 4);
+            // Trả nếu đúng destination hoặc nếu là trả toàn bộ ở bến đích
+            if (destination === "ALL" || p.destination === destination) {
+                const dropPos = bus.group.localToWorld(new THREE.Vector3(2.2, 0, 0));
+                bus.group.remove(p.model);
+                passengerGroup.add(p.model);
                 p.model.position.copy(dropPos);
                 p.model.scale.set(1, 1, 1);
-                setTimeout(() => { if (p.model.parent) passengerGroup.remove(p.model); }, 1000);
+                p.state = "DROPPED_OFF";
+                setTimeout(() => { if (p.model.parent) passengerGroup.remove(p.model); }, 1500);
                 dropped++;
-            } else remaining.push(p);
+            } else {
+                remaining.push(p);
+            }
         }
-        onboardPassengers = remaining;
-        if (dropped > 0) ui?.toast(`✅ Đã trả ${dropped} khách tại ${destination}!`);
+        onboardPassengers.length = 0;
+        onboardPassengers.push(...remaining);
+        if (dropped > 0) ui?.toast(`✅ Đã trả ${dropped} khách!`);
         return dropped;
+    }
+
+    function dropOffAtRouteDestination() {
+        if (!bus?.group || !onboardPassengers.length) return 0;
+        const destination = onboardPassengers[0].destination;
+        const graph = map?.getRoadGraph?.();
+        const node = graph?.getNode?.(destination);
+        if (!node) return 0;
+        const dx = node.x - bus.group.position.x;
+        const dz = node.z - bus.group.position.z;
+        return hypot2(dx, dz) <= PICKUP_RANGE ? dropOffPassengers(destination) : 0;
     }
 
     function getPassengerCount() {
@@ -262,15 +311,26 @@ export function createPassengerSystem({ scene, map, npc, bus, ui }) {
             _passengerUpdateTimer = 0;
             updatePassengers(bus.group.position, bus.group.rotation.y);
         }
+        // Quét bổ sung khách định kỳ
+        _passengerScanTimer += dt;
+        if (_passengerScanTimer >= 4.0) {
+            _passengerScanTimer = 0;
+            loadPassengers();
+        }
     }
 
     function dispose() {
+        for (const p of onboardPassengers) {
+            if (p.model?.parent) p.model.parent.remove(p.model);
+        }
         scene.remove(passengerGroup);
         while (passengerGroup.children.length) passengerGroup.remove(passengerGroup.children[0]);
+        waitingPassengers.length = 0;
+        onboardPassengers.length = 0;
     }
 
     return {
-        update, pickUpPassengers, dropOffPassengers, getPassengerCount, dispose, passengerGroup,
+        update, pickUpPassengers, dropOffPassengers, dropOffAtRouteDestination, getPassengerCount, dispose, passengerGroup,
         waitingPassengers, onboardPassengers, getActiveZones: () => waitingPassengers.filter(p => !p.picked)
     };
 }

@@ -456,11 +456,11 @@ export class AtmosphereSystem {
                 this.skyMaterial.uniforms.uHorizonColor.value.setHSL(lerp(0.02, 0.04, t), lerp(0.8, 0.6, t), lerp(0.3, 0.6, t));
                 this.skyMaterial.uniforms.uZenithColor.value.setHSL(0.62, 0.4, lerp(0.2, 0.4, t));
             } else {
-                // Night: darker horizon and zenith
-                this.skyMaterial.uniforms.uHorizonColor.value.setHSL(0.65, 0.2, 0.08);
-                this.skyMaterial.uniforms.uZenithColor.value.setHSL(0.65, 0.25, 0.03);
-                // Update uNightColor for the shader's night blend
-                this.skyMaterial.uniforms.uNightColor.value.setHSL(0.65, 0.25, 0.02);
+                // Night: sắc xanh tím đậm và chuyển sắc mềm mại (Mục F)
+                this.skyMaterial.uniforms.uHorizonColor.value.setHSL(0.70, 0.40, 0.06);
+                this.skyMaterial.uniforms.uZenithColor.value.setHSL(0.72, 0.45, 0.025);
+                // Update uNightColor for the shader's night blend (deep navy purple-blue)
+                this.skyMaterial.uniforms.uNightColor.value.setHSL(0.71, 0.42, 0.018);
             }
         }
 

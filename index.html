@@ -4,17 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BusDriveVN</title>
-    <!-- Favicon: dùng luôn logo game (tránh 404 /favicon.ico trong console) -->
+
     <link rel="icon" type="image/png" href="assets/ui/title.png">
     <link rel="stylesheet" href="style.css">
-    <!--
-      Three.js 0.160.0 được VENDOR trong `vendor/three/` — KHÔNG lấy từ CDN.
-      Lý do (đo được, không đoán): game không vào được với
-      `net::ERR_TUNNEL_CONNECTION_FAILED` từ cdn.jsdelivr.net, trong khi
-      PowerShell vẫn tải được 1.27MB qua chính CDN đó (chỉ browser bị chặn
-      qua proxy). Game offline phải chạy được offline.
-      Cập nhật: vendor/three/build/three.module.js + vendor/three/examples/jsm/**
-    -->
+
     <script type="importmap">
       {
         "imports": {
@@ -37,25 +30,76 @@
         <p id="loading-status" style="color:#64748b; margin-top:15px;"></p>
     </div>
 
-<!-- Menu chính GỐC -->
-    <div id="main-menu" style="display:flex;">
-        <img src="assets/ui/title.png" id="game-logo" alt="BusDriveVN Logo">
-        <button id="btn-new-game">🚍 LÁI XE THÔI!</button>
-      <button id="btn-uv-skin">🎨 THÊM UV SKIN</button>
-      <button id="btn-settings-main">⚙ CÀI ĐẾT</button>
+
+    <div id="main-menu" style="display:flex; flex-direction:column; align-items:center; gap:20px;">
+        <img src="assets/ui/title.png" id="game-logo" alt="BusDriveVN Logo" style="max-width:320px; max-height:160px; width:auto; height:auto; object-fit:contain; filter:drop-shadow(0 8px 24px rgba(59,130,246,0.4));">
+
+        <!-- 3 NÚT BẮT BUỘC TRÊN MENU CHÍNH -->
+        <div style="display:flex; flex-direction:column; gap:14px; width:min(340px, 86vw);">
+            <button id="btn-new-game" style="width:100%; padding:16px 28px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:14px; cursor:pointer; font-size:1.15rem; font-weight:800; transition:all 0.2s ease; box-shadow:0 6px 20px rgba(59,130,246,0.45); display:flex; align-items:center; justify-content:center; gap:10px;">
+                <span style="font-size:1.3rem;">🚍</span> LÁI XE
+            </button>
+            <button id="btn-settings-main" style="width:100%; padding:15px 24px; background:rgba(30,41,59,0.7); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:14px; cursor:pointer; font-size:1.05rem; font-weight:700; transition:all 0.2s ease; display:flex; align-items:center; justify-content:center; gap:10px; backdrop-filter:blur(6px);">
+                <span>⚙</span> CÀI ĐẶT
+            </button>
+            <button id="btn-uv-skin" style="width:100%; padding:15px 24px; background:rgba(30,41,59,0.7); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:14px; cursor:pointer; font-size:1.05rem; font-weight:700; transition:all 0.2s ease; display:flex; align-items:center; justify-content:center; gap:10px; backdrop-filter:blur(6px);">
+                <span>🎨</span> THÊM UV SKIN
+            </button>
+        </div>
+
+        <!-- Hiển thị số dư VNĐ trên Main Menu -->
+        <div id="main-menu-money" style="margin-top:4px; padding:10px 22px; background:linear-gradient(135deg, rgba(16,185,129,0.15) 0%, rgba(5,150,105,0.15) 100%); border:1px solid rgba(16,185,129,0.3); border-radius:12px; display:flex; align-items:center; gap:10px; font-family:monospace; min-width:200px; justify-content:center; backdrop-filter:blur(6px);">
+            <canvas id="money-icon" width="28" height="28" style="flex-shrink:0;"></canvas>
+            <span id="main-money-value" style="color:#34d399; font-size:1.1rem; font-weight:700; letter-spacing:0.5px;">9.000.000 VNĐ</span>
+        </div>
+    </div>
+
+    <!-- ===== GIAO DIỆN CHỌN TUYẾN ĐƯỜNG RIÊNG BIỆT (Mục D & K) ===== -->
+    <div id="route-picker-panel" class="anim-slide-up" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); border-radius:18px; z-index:970; width:92%; max-width:620px; box-shadow:0 25px 60px -12px rgba(0,0,0,0.7), 0 0 0 1px rgba(59,130,246,0.3); border:1px solid rgba(59,130,246,0.25); overflow:hidden;">
+        <div style="background:linear-gradient(90deg, #1e293b 0%, #0f172a 100%); padding:20px 24px; border-bottom:1px solid rgba(59,130,246,0.2); display:flex; align-items:center; justify-content:space-between;">
+            <h2 style="margin:0; font-size:1.25rem; font-weight:800; color:#fff; display:flex; align-items:center; gap:10px;">
+                <span style="font-size:1.35rem;">🗺️</span>
+                <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">CHỌN TUYẾN ĐƯỜNG</span>
+            </h2>
+            <button id="btn-close-route-picker" style="width:36px; height:36px; border:none; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)">✕</button>
+        </div>
+        <div style="padding:24px; display:flex; flex-direction:column; gap:16px;">
+            <p style="margin:0; color:#94a3b8; font-size:0.92rem; line-height:1.5;">Vui lòng chọn hướng hành trình trước khi xuất bến:</p>
+            
+            <div id="route-card-north" class="dir-btn" data-dir="north" style="padding:16px 20px; background:linear-gradient(135deg, rgba(30,58,95,0.6) 0%, rgba(15,23,42,0.8) 100%); border:2px solid #3b82f6; border-radius:14px; cursor:pointer; transition:all 0.2s ease; display:flex; align-items:center; gap:16px;">
+                <div style="font-size:2rem; background:rgba(59,130,246,0.2); width:50px; height:50px; border-radius:12px; display:flex; align-items:center; justify-content:center; flex-shrink:0;">🚌</div>
+                <div style="flex:1;">
+                    <div style="color:#fff; font-size:1.05rem; font-weight:800; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">
+                        <span>PHÚ YÊN → SÀI GÒN</span>
+                        <span style="font-size:0.75rem; background:#3b82f6; color:#fff; padding:2px 8px; border-radius:6px; font-weight:600;">CHIỀU XUÔI</span>
+                    </div>
+                    <div style="color:#94a3b8; font-size:0.82rem;">Bến xe Nam Tuy Hòa ➔ Bến xe Miền Đông Mới (QL1A)</div>
+                </div>
+            </div>
+
+            <div id="route-card-south" class="dir-btn" data-dir="south" style="padding:16px 20px; background:linear-gradient(135deg, rgba(95,30,30,0.4) 0%, rgba(15,23,42,0.8) 100%); border:2px solid rgba(239,68,68,0.4); border-radius:14px; cursor:pointer; transition:all 0.2s ease; display:flex; align-items:center; gap:16px;">
+                <div style="font-size:2rem; background:rgba(239,68,68,0.2); width:50px; height:50px; border-radius:12px; display:flex; align-items:center; justify-content:center; flex-shrink:0;">🚌</div>
+                <div style="flex:1;">
+                    <div style="color:#fff; font-size:1.05rem; font-weight:800; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">
+                        <span>SÀI GÒN → PHÚ YÊN</span>
+                        <span style="font-size:0.75rem; background:#ef4444; color:#fff; padding:2px 8px; border-radius:6px; font-weight:600;">CHIỀU NGƯỢC</span>
+                    </div>
+                    <div style="color:#94a3b8; font-size:0.82rem;">Bến xe Miền Đông Mới ➔ Bến xe Nam Tuy Hòa (QL1A)</div>
+                </div>
+            </div>
+
+            <div style="display:flex; gap:12px; margin-top:8px;">
+                <button id="btn-back-to-menu" style="flex:1; padding:14px; background:rgba(148,163,184,0.15); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease;">↩ QUAY LẠI</button>
+                <button id="btn-play-now" style="flex:2; padding:14px; background:linear-gradient(135deg, #10b981 0%, #059669 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1.1rem; font-weight:800; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(16,185,129,0.4);">🚍 CHƠI NGAY</button>
+            </div>
+        </div>
     </div>
 
     <!-- Overlay backdrop cho các panel -->
-    <!-- z-index 940: phải CAO HƠN #main-menu (900) — trước đây backdrop 99 và
-         panel 100 nằm DƯỚI main menu 900 -> mở Cài đặt/UV Skin từ menu chính
-         bị main menu đè lên (không thấy popup). Đây là nguyên nhân gốc
-         "UV Skin không mở được". -->
+
     <div id="panel-backdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); z-index:940; animation:fadeIn 0.2s ease;"></div>
 
-    <!-- ===== HỘP THOẠI XÁC NHẬN (dùng chung) =====
-         z-index 1200: nằm trên MỌI lớp (menu tạm dừng 950, popup 970) ->
-         không bao giờ bị che khuất. Có 3 lựa chọn rõ ràng cho thay đổi
-         chưa lưu: Lưu / Bỏ thay đổi / Tiếp tục chỉnh sửa. -->
+
     <div id="confirm-dialog" style="display:none; position:fixed; inset:0; z-index:1200; background:rgba(2,6,23,0.72); backdrop-filter:blur(3px); align-items:center; justify-content:center; padding:20px;">
         <div style="width:min(400px,92vw); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); border:1px solid rgba(59,130,246,0.25); border-radius:16px; padding:24px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.6);">
             <h3 style="margin:0 0 10px; font-size:1.1rem; color:#fff; font-weight:700;">⚠️ Thay đổi chưa lưu</h3>
@@ -68,9 +112,7 @@
         </div>
     </div>
 
-    <!-- ===== MENU TẠM DỪNG (ESC) ===== -->
-    <!-- z-index 950: nằm trên main menu + backdrop. Các popup con (Settings/UV
-         Skin) dùng z-index 970 nên mở từ đây vẫn hiện ĐÈ LÊN menu tạm dừng. -->
+
     <div id="pause-menu" style="display:none; position:fixed; inset:0; z-index:950; background:rgba(2,6,23,0.72); backdrop-filter:blur(6px); flex-direction:column; align-items:center; justify-content:center; gap:14px; animation:fadeIn 0.18s ease;">
         <h2 style="margin:0 0 10px; font-size:2rem; font-weight:800; color:#fff; letter-spacing:0.5px; text-shadow:0 2px 12px rgba(0,0,0,0.6);">⏸ TẠM DỪNG</h2>
         <button id="btn-pause-resume" style="width:min(340px,86vw); padding:14px 24px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(59,130,246,0.4);">▶ TIẾP TỤC</button>
@@ -249,6 +291,7 @@
     <style>
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes slideDown { from { opacity: 0; transform: translateX(-50%) translateY(-20px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+        @keyframes slideUp { from { opacity: 1; transform: translateX(-50%) translateY(0); } to { opacity: 0; transform: translateX(-50%) translateY(-20px); } }
 
         /* Hover effects cho buttons */
         #btn-close-uv-skin:hover, #btn-close-settings:hover {
@@ -309,17 +352,42 @@
 
     <!-- Giao diện chơi -->
     <div id="hud" style="display:none;">
-        <div id="hud-top-right">
+        <div id="hud-top-left" style="position:fixed; top:16px; left:16px; z-index:100; display:flex; flex-direction:column; gap:8px;">
+            <!-- Tiền VNĐ -->
+            <div id="hud-money" style="background:linear-gradient(135deg, rgba(2,6,23,0.9) 0%, rgba(15,23,42,0.95) 100%); border:1px solid rgba(16,185,129,0.3); border-radius:10px; padding:10px 14px; display:flex; align-items:center; gap:8px; backdrop-filter:blur(4px); box-shadow:0 4px 16px rgba(0,0,0,0.4);">
+                <canvas id="hud-money-icon" width="22" height="22" style="flex-shrink:0;"></canvas>
+                <span id="hud-money-value" style="color:#34d399; font-family:monospace; font-size:1rem; font-weight:700; letter-spacing:0.5px;">9.000.000 VNĐ</span>
+            </div>
+            <!-- Nhiên liệu -->
+            <div id="hud-fuel" style="background:linear-gradient(135deg, rgba(2,6,23,0.9) 0%, rgba(15,23,42,0.95) 100%); border:1px solid rgba(59,130,246,0.3); border-radius:10px; padding:10px 14px; display:flex; flex-direction:column; gap:4px; min-width:140px; backdrop-filter:blur(4px); box-shadow:0 4px 16px rgba(0,0,0,0.4);">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                    <span style="color:#94a3b8; font-size:0.75rem; font-weight:600;">⛽ NHIÊN LIỆU</span>
+                    <span id="hud-fuel-text" style="color:#fff; font-family:monospace; font-size:0.85rem; font-weight:700;">240/300L</span>
+                </div>
+                <div style="height:6px; background:rgba(255,255,255,0.1); border-radius:3px; overflow:hidden;">
+                    <div id="hud-fuel-bar" style="width:80%; height:100%; background:linear-gradient(90deg, #10b981, #34d399); border-radius:3px; transition:width 0.3s ease, background 0.3s ease;"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="hud-top-right" style="position:fixed; top:16px; right:16px; z-index:100; display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
+            <div id="hud-speed-limit" style="background:linear-gradient(135deg, rgba(2,6,23,0.9) 0%, rgba(15,23,42,0.95) 100%); border:1px solid rgba(251,191,36,0.3); border-radius:10px; padding:8px 14px; display:flex; align-items:center; gap:8px; backdrop-filter:blur(4px); box-shadow:0 4px 16px rgba(0,0,0,0.4);">
+                <span style="color:#fbbf24; font-size:0.75rem; font-weight:700;">TỐC ĐỘ CHO PHÉP</span>
+                <span id="hud-speed-limit-value" style="color:#fbbf24; font-family:monospace; font-size:1.1rem; font-weight:800;">80 km/h</span>
+            </div>
             <div>📍 TUYẾN: <span id="hud-next-dest">Phú Yên → TP. HCM</span></div>
             <div>🚍 KHÁCH: <span id="hud-passengers">0/24</span></div>
             <div>🗺️ X: <span id="hud-x">0</span> | Z: <span id="hud-z">0</span></div>
             <div>⏰ <span id="hud-time">06:30</span> | FPS: <span id="hud-fps">0</span></div>
-            <!-- Hành trình đo bởi TravelClock: quãng đường / thời gian game /
-                 tốc độ bình quân / loại đường / độ dốc. Không phải số gõ tay. -->
             <div id="hud-trip-row">🛣️ <span id="hud-trip">0.0 km · 0.0 km/h · —</span></div>
         </div>
-        <div id="hud-minimap-container"><canvas id="hud-minimap" width="200" height="200"></canvas></div>
-        <div id="hud-speedometer-container"><canvas id="hud-speedometer" width="180" height="180"></canvas></div>
+        
+        <div id="hud-minimap-container" style="position:fixed; bottom:16px; left:16px; z-index:100;"><canvas id="hud-minimap" width="200" height="200"></canvas></div>
+        <div id="hud-speedometer-container" style="position:fixed; bottom:16px; right:16px; z-index:100;"><canvas id="hud-speedometer" width="180" height="180"></canvas></div>
+        
+        <!-- CSGT Warning -->
+        <div id="hud-csgt-warning" style="position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); z-index:200; display:none; max-width:480px; pointer-events:none;"></div>
+        
         <div id="hud-warning" style="display:none;"></div>
         <div id="hud-notification"></div>
     </div>

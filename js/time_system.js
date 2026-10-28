@@ -355,8 +355,8 @@ export class TimeSystem {
         const duskHaze = lerp(0.00015, 0.0008, duskT);
         
         // Night (18-5h): navy đen, sao, trăng
-        const nightSkyH = 0.65, nightSkyS = 0.25, nightSkyL = 0.02 + moonFactor * 0.04;  // Reduced lightness for darker night
-        const nightFogH = 0.65, nightFogS = 0.2, nightFogL = 0.04 + moonFactor * 0.04;  // darker fog
+        const nightSkyH = 0.72, nightSkyS = 0.45, nightSkyL = 0.06 + moonFactor * 0.06;  // deep blue-purple night sky
+        const nightFogH = 0.72, nightFogS = 0.35, nightFogL = 0.08 + moonFactor * 0.06;  // matching fog
         const nightFogNear = 60, nightFogFar = 500, nightHaze = 0.0008;  // closer fog for night
 
         // Blend all periods smoothly

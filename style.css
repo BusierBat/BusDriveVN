@@ -388,3 +388,43 @@ canvas {
 #m-horn { right: 130px; }
 #m-light { right: 190px; }
 #m-door { right: 250px; }
+/* Menu & Modal Animations (Mục K) */
+.anim-slide-up {
+    animation: modalSlideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.anim-slide-down {
+    animation: modalSlideDown 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes modalSlideUp {
+    from {
+        opacity: 0;
+        transform: translate(-50%, calc(-50% + 24px));
+    }
+    to {
+        opacity: 1;
+        transform: translate(-50%, -50%);
+    }
+}
+
+@keyframes modalSlideDown {
+    from {
+        opacity: 1;
+        transform: translate(-50%, -50%);
+    }
+    to {
+        opacity: 0;
+        transform: translate(-50%, calc(-50% + 24px));
+    }
+}
+
+#main-menu { animation: menuFadeIn .3s ease; }
+@keyframes menuFadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+@media (prefers-reduced-motion: reduce) {
+    .anim-slide-up, .anim-slide-down, #main-menu, #pause-menu, #route-picker-panel, #uv-skin-panel, #settings-panel {
+        animation: none !important;
+        transition: none !important;
+    }
+}

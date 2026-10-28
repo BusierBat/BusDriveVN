@@ -7,6 +7,11 @@ const BED_LENGTH = 1.7;
 const BED_WIDTH = 0.7;
 const X_OFFSET = 0.75;
 const FRONT_VIEW_Z = 6.6;
+const TWO_PI = Math.PI * 2;
+
+function wrapAngle(angle) {
+  return ((angle + Math.PI) % TWO_PI + TWO_PI) % TWO_PI - Math.PI;
+}
 
 export const PASSENGER_SEATS = [];
 let seatId = 1;
@@ -117,11 +122,17 @@ export class CameraSystem {
     this._onMouseUp = () => { this.isMouseDown = false; };
     this._onMouseMove = (e) => this.onMouseMove(e);
     this._onWheel = (e) => this.onWheel(e);
+    this._onBlur = () => { this.isMouseDown = false; };
+    this._onVisibilityChange = () => {
+      if (document.hidden) this.isMouseDown = false;
+    };
 
     document.addEventListener('mousedown', this._onMouseDown);
     document.addEventListener('mouseup', this._onMouseUp);
     document.addEventListener('mousemove', this._onMouseMove);
     document.addEventListener('wheel', this._onWheel);
+    window.addEventListener('blur', this._onBlur);
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
 
     this.setMode(this.modes[0]);
   }
@@ -137,7 +148,7 @@ export class CameraSystem {
 
         if (isNaN(sensX) || isNaN(sensY)) return;
         if (mode === 'outside') {
-            this.orbitYaw -= sensX;
+            this.orbitYaw = wrapAngle(this.orbitYaw - sensX);
             this.orbitPitch -= sensY;
             this.orbitPitch = Math.max(-Math.PI / 1.7, Math.min(Math.PI / 1.7, this.orbitPitch));
         } else if (mode.startsWith('seat_')) {
@@ -150,7 +161,7 @@ export class CameraSystem {
             this.bedLookYaw = Math.max(pivot - 1.0, Math.min(pivot + 1.0, this.bedLookYaw));
             this.bedLookPitch = Math.max(-0.8, Math.min(0.8, this.bedLookPitch));
         } else {
-            this.cabinYaw -= sensX;
+            this.cabinYaw = wrapAngle(this.cabinYaw - sensX);
             this.cabinPitch -= sensY;
             this.cabinPitch = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, this.cabinPitch));
         }
@@ -180,9 +191,14 @@ export class CameraSystem {
     // thực tế ở ~1.40-1.45m; ở 1.28 nhìn xuống vô-lăng quá nhiều (báo cáo
     // "góc nhìn hơi thấp"). z 4.75 -> 4.88 để giữ nguyên góc nhìn về
     // đường/kính trước khi nâng cao.
-    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 1.42, 4.88);
-    // copilot: mắt (−0.35, 1.42, 4.88) — ghế bên kia dash.
-    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 1.42, 4.88);
+    // TAY LÁI LHD (Việt Nam): ghế tài xế + vô-lăng ở x=-0.35 (interior.js),
+    // ghế phụ ở x=+0.65. Bản trước đặt driver ở +0.65 (ĐỨNG TRƯỚC GHẾ PHỤ)
+    // nên không nhìn thấy vô-lăng/cụm đồng hồ — trái với Mục G.
+    // z 4.62 = mắt ngồi trên ghế (cushion z4.5) và LÙI sau vô-lăng (z5.1)
+    // ~0.48m đúng tỷ lệ buồng lái thật.
+    if (mode === 'driver') this.targetPos = new THREE.Vector3(-0.35, 1.45, 4.42);
+    // copilot: mắt (0.65, 1.45, 4.42) — ghế bên kia dash.
+    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(0.65, 1.45, 4.42);
     else if (mode === 'cabin') this.targetPos = new THREE.Vector3(0, 1.5, 3.2);
     else if (mode === 'outside') { /* nhanh orbit: update() dung orbitYaw/Pitch/Distance, khong dung targetPos */ }
     else if (mode.startsWith('seat_')) {
@@ -298,4 +314,16 @@ export class CameraSystem {
       this.camera.lookAt(localLookAt.applyMatrix4(busWorldMatrix));
     }
   }
+
+  dispose() {
+        document.removeEventListener('mousedown', this._onMouseDown);
+        document.removeEventListener('mouseup', this._onMouseUp);
+        document.removeEventListener('mousemove', this._onMouseMove);
+        document.removeEventListener('wheel', this._onWheel);
+        window.removeEventListener('blur', this._onBlur);
+        document.removeEventListener('visibilitychange', this._onVisibilityChange);
+        this.busGroup = null;
+        this.camera = null;
+        this.seats = null;
+    }
 }

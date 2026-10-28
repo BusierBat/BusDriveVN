@@ -485,7 +485,7 @@ export class TrafficSpawnManager {
     dispose() { this.activeVehicles.forEach(v => { if (v.vehicle?.group?.parent) v.vehicle.group.parent.remove(v.vehicle.group); }); }
 }
 
-export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpawnPos = null }) {
+export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpawnPos = null, direction = "north" }) {
     if (!scene || !map) return { update() {}, dispose() {}, getWaitingPassengers: () => [] };
     const random = createSeededRandom(seed);
     const group = new THREE.Group(); group.name = "npc"; scene.add(group);
@@ -510,7 +510,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
     let trafficManagerRef = null;
     
     let stationManager = null;
-    const parkingSlots = (map.getParkingSlots && map.getParkingSlots()) || [];
+    const parkingSlots = (map.getParkingSlots && map.getParkingSlots(playerSpawnPos)) || [];
     if (parkingSlots.length > 0) { try { stationManager = new BusStationManager(scene, map, parkingSlots, playerSpawnPos); } catch (e) { console.error("[npc] BusStationManager init failed:", e); } }
     
     let playerRef = playerBus || null;
@@ -528,44 +528,62 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
     // nút giao dày — bến đón ven QL1 đúng kiểu SAO limousine.
     function generateWaitingPassengers() {
         waitingPassengers = [];
-        const waypoints = graph.getRouteWaypoints();
+        const routeWaypoints = graph.getRouteWaypoints();
+        const waypoints = direction === "south" ? routeWaypoints.slice().reverse() : routeWaypoints;
         if (waypoints.length === 0) return;
-        const destId = waypoints[waypoints.length - 1].id;
 
-        // ---------- 12 NPC TẠI BẾN NAM TUY HÒA ----------
+        // Xác định bến xuất phát gần điểm spawn của người chơi
         const stData = (map.getStationsData && map.getStationsData()) || [];
         let stHub = null;
-        for (const s of stData) {
-            if (s.id === "nam_tuy_hoa" || s.is_spawn) { stHub = s; break; }
+        let destId = waypoints[waypoints.length - 1].id;
+
+        if (playerSpawnPos && stData.length > 0) {
+            let nearestDist = Infinity;
+            for (const s of stData) {
+                if (s.type === "BUS_STATION" || s.type === "MAJOR_BUS_TERMINAL") {
+                    const d = Math.hypot(s.x - playerSpawnPos.x, s.z - playerSpawnPos.z);
+                    if (d < nearestDist) {
+                        nearestDist = d;
+                        stHub = s;
+                    }
+                }
+            }
+        }
+        if (!stHub) {
+            for (const s of stData) {
+                if (s.id === "nam_tuy_hoa" || s.is_spawn) { stHub = s; break; }
+            }
         }
         if (!stHub) stHub = stData.find(s => s.type === "BUS_STATION" && s.baySlots && s.baySlots.length) || null;
+
+        // ---------- 12 NPC TẠI BẾN XUẤT PHÁT ----------
         const placedSt = [];
-        if (stHub) {
+        const waitingHall = stHub?.structures?.find(s => s.type === "WAITING_HALL");
+        if (stHub && waitingHall &&
+            [waitingHall.ox, waitingHall.oz, waitingHall.w, waitingHall.d].every(Number.isFinite)) {
             const co = Math.cos(stHub.rot || 0), si = Math.sin(stHub.rot || 0);
             const toWorld = (ox, oz) => [
                 stHub.x + co * ox - si * oz,
                 stHub.z + si * ox + co * oz
             ];
-            // vùng chờ tính trước ở khung local (đối chiếu bay + recycle):
-            // oz ∈ [-26..-10], ox ∈ [-14..+13] — ngoài hall (ox≤-20), ngoài
-            // dãy bãi bay band (ox 18..48 band, oz 18 line), ngoài road spine
-            // (ox 33, oz 0) và xa mốc spawn (0,0) của xe người chơi.
+            const gridCenterX = waitingHall.ox + waitingHall.w * 0.5 + 21.7;
+            const gridCenterZ = waitingHall.oz - waitingHall.d * 0.5 + 3.4;
             const GRID = [];
             for (let r = 0; r < 3; r++) {
                 for (let c = 0; c < 4; c++) {
-                    GRID.push([-12 + c * 8.3, -23 + r * 6.4]);   // (ox, oz)
+                    GRID.push([gridCenterX - 12 + c * 8.3, gridCenterZ - 6.4 + r * 6.4]);
                 }
             }
+            const stationFloorY = (typeof stHub.y === "number") ? stHub.y : 3.645;
             for (let i = 0; i < 12; i++) {
-                // jitter nhỏ tách đều (pattern shinable, không đứng chồng)
                 const jagX = ((i * 37) % 11 - 5) * 0.22;
                 const jagZ = ((i * 53) % 13 - 6) * 0.16;
                 const [px, pz] = toWorld(GRID[i][0] + jagX, GRID[i][1] + jagZ);
-                const gy = map.getTerrainHeight ? map.getTerrainHeight(px, pz) : 0.5;
+                // Bù BUS_AXLE (0.5m) để bàn chân NPC chạm đúng mặt sàn bến xe, không bị chìm
+                const rawGy = map.getTerrainHeight ? map.getTerrainHeight(px, pz, stationFloorY) : stationFloorY;
+                const gy = Math.max(stationFloorY, rawGy + 0.5);
                 placedSt.push({ id: `pass_station_${i}`, x: px, z: pz, y: gy, destination: destId });
             }
-        } else {
-            console.warn("[npc] khong tim thay du lieu ben Nam Tuy Hoa cho pass_station");
         }
 
         // ---------- 12 NPC DỌC TUYẾN (mép phải hướng xe chạy) ----------
@@ -580,8 +598,7 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
             deg.set(s.from, (deg.get(s.from) || 0) + 1);
             deg.set(s.to, (deg.get(s.to) || 0) + 1);
         }
-        // ứng viên: mọi cặp waypoint kế tiếp của route; cum-mét để chọn
-        // 12 điểm DÀN ĐỀU dọc tuyến (~44km/lần ở route 538km) thay vì dồn ở đầu
+
         const cand = [];
         let cum = 0;
         for (let i = 0; i < waypoints.length - 1; i++) {
@@ -601,7 +618,6 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
         const placedRoad = [];
         for (let k = 1; k <= 12; k++) {
             const target = routeTotal * (k / 13.0);
-            // ứng viên gần target nhất mà chưa dùng và cách các điểm đã chọn >= 4km
             let best = null, bestDt = Infinity;
             for (const c2 of cand) {
                 const dt = Math.abs(c2.cumStart + c2.segLen * 0.5 - target);
@@ -616,25 +632,21 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
             const a = best.a, b = best.b, seg = best.seg, segLen = best.segLen;
             const half = (seg.width || 12) * 0.5;
             const ux = (b.x - a.x) / segLen, uz = (b.z - a.z) / segLen;
-            // mé PHẢI theo hướng a->b (hướng xe chạy trên route):
-            // right = cross(dir, up) = (-dz, dx)
             const rx = -uz, rz = ux;
-            const off = half + 2.2 + ((k * 29) % 5) * 0.35;   // 2.2..3.6m lề
+            const off = half + 2.2 + ((k * 29) % 5) * 0.35;
             const px = a.x + ux * segLen * 0.5 + rx * off;
             const pz = a.z + uz * segLen * 0.5 + rz * off;
-            // yHint từ cao độ node đầu/cuối segment (node.y = mặt đường):
-            // không có hint, `_surfaceAt` chọn mặt CAO NHẤT — pedestrian dọc
-            // tuyến rơi trúng đè cầu/viaduct đi ngang gần segment. Hint neo
-            // scoring về mặt thuộc chính segment này.
+            
             let sideHintY = null;
             if (typeof a.y === "number" && typeof b.y === "number") sideHintY = a.y + (b.y - a.y) * 0.5;
             else if (typeof a.y === "number") sideHintY = a.y;
-            const gy = map.getTerrainHeight ? map.getTerrainHeight(px, pz, sideHintY) : 0.5;
+            const rawGy = map.getTerrainHeight ? map.getTerrainHeight(px, pz, sideHintY) : 0.5;
+            const gy = rawGy + 0.5; // bù BUS_AXLE
             placedRoad.push({ id: `pass_road_${k}`, x: px, z: pz, y: gy, destination: destId });
         }
 
         waitingPassengers = placedSt.concat(placedRoad);
-        console.log("[npc] waiting passengers: ", placedSt.length, "ben +", placedRoad.length, "duoc tuyen (muc tieu 12+12)");
+        console.log("[npc] waiting passengers: ", placedSt.length, "bến +", placedRoad.length, "dọc tuyến");
     }
     generateWaitingPassengers();
 
@@ -671,10 +683,17 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
         const dist = 40 + pedRandom() * (PED_SPAWN_RADIUS - 40);
         const sx = px + Math.sin(angle) * dist;
         const sz = pz + Math.cos(angle) * dist;
+        if (ctx.id === "BUS_STATION" &&
+            (!map.isInsideStation || !map.isInsideStation(sx, sz))) return false;
         // Trùng vị trí với ped đang active → bỏ qua
         for (const p of activePeds) {
             if (hypot2(p.group.position.x - sx, p.group.position.z - sz) < 6) return false;
         }
+
+        const gy = map.getTerrainHeight ? map.getTerrainHeight(sx, sz, playerScratch.y) : 0.5;
+        if (typeof window !== "undefined" && window.collisionSystem?.check(
+            sx, sz, 0.5, -1, ["static"], gy + 0.9, 1.8
+        )) return false;
 
         const npc = pedPool.pop() || createHumanoidNPC(seed + (pedIdCounter++));
         if (!npc) return false;
@@ -682,7 +701,6 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
         // trên cầu/hầm, pedestrian spawn xung quanh phải bám mặt CÙNG MỨC
         // player thay vì nhảy lên surface cao nhất trong vùng. Trả vềspace
         // node (surfaceY − 0.5) khớp cách dùng gy hiện có.
-        const gy = map.getTerrainHeight ? map.getTerrainHeight(sx, sz, playerScratch.y) : 0.5;
         npc.group.position.set(sx, gy, sz);
         npc.group.rotation.y = pedRandom() * TWO_PI;
         npc.group.visible = true;
@@ -752,23 +770,44 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
                 npc.stateTimer = 3 + pedRandom() * 8;
             }
 
-            // Di chuyển nếu WALK/RUN
+            // Di chuyển nếu WALK/RUN (Mục E1: tránh đi xuyên ruộng, nhà cửa, vách)
             if (npc.state === "WALK" || npc.state === "RUN") {
-                const spd = npc.state === "RUN" ? npc.speed * 2.2 : npc.speed;
-                npc.group.position.x += npc.walkDir.x * spd * dt;
-                npc.group.position.z += npc.walkDir.z * spd * dt;
-                if (map.getTerrainHeight) {
-                    // yHint = cao độ hiện tại của chính NPC (surface-space =
-                    // +0.5): bám mặt đang đứng, không nhảy qua deck cầu/viaduct
-                    // đi ngang lúc đi bộ cắt đường.
-                    npc.group.position.y = map.getTerrainHeight(
-                        npc.group.position.x, npc.group.position.z,
-                        npc.group.position.y + 0.5
-                    );
+                const spd = npc.state === "RUN" ? npc.speed * 1.8 : npc.speed;
+                const nextX = npc.group.position.x + npc.walkDir.x * spd * dt;
+                const nextZ = npc.group.position.z + npc.walkDir.z * spd * dt;
+                const nextY = map.getTerrainHeight
+                    ? map.getTerrainHeight(nextX, nextZ, npc.group.position.y + 0.5) + 0.5
+                    : npc.group.position.y;
+                
+                // Nếu NPC ở bến xe: không đi ra khỏi sân bến xe
+                let canMove = true;
+                if (npc.context === "BUS_STATION" && map.isInsideStation) {
+                    if (!map.isInsideStation(nextX, nextZ)) {
+                        canMove = false;
+                        npc.walkDir.negate();
+                        npc.group.rotation.y += Math.PI;
+                        npc.state = "IDLE";
+                        npc.stateTimer = 2 + pedRandom() * 4;
+                    }
                 }
-                // Đổi hướng ngẫu nhiên
-                if (pedRandom() < dt * 0.3) {
-                    npc.group.rotation.y += (pedRandom() - 0.5) * 1.5;
+                if (canMove && typeof window !== "undefined" && window.collisionSystem?.check(
+                    nextX, nextZ, 0.5, -1, ["static"], nextY + 0.9, 1.8
+                )) canMove = false;
+
+                if (canMove) {
+                    npc.group.position.x = nextX;
+                    npc.group.position.z = nextZ;
+                    npc.group.position.y = nextY;
+                } else if (npc.state !== "IDLE") {
+                    npc.walkDir.negate();
+                    npc.group.rotation.y += Math.PI;
+                    npc.state = "IDLE";
+                    npc.stateTimer = 2 + pedRandom() * 4;
+                }
+
+                // Đổi hướng ngẫu nhiên tự nhiên
+                if (pedRandom() < dt * 0.25) {
+                    npc.group.rotation.y += (pedRandom() - 0.5) * 1.2;
                     npc.walkDir.set(Math.sin(npc.group.rotation.y), 0, Math.cos(npc.group.rotation.y));
                 }
             }

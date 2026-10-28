@@ -7,12 +7,15 @@ import { createBus, loadNpcSkinList, BUS_DIMENSIONS } from "./bus.js";
 import { createBusInterior, createBusInterior34, optimizeInteriorLights, migrateInteriorCockpit } from "./interior.js";
 import { CameraSystem, PASSENGER_SEATS, PASSENGER_SEATS_34 } from "./camera.js";
 import { createAudioSystem } from "./audio.js";
+import { createMusicPlayer } from "./music.js";
 import { LightingSystem, LIGHTING_QUALITY_PRESETS } from "./lighting.js";
 import { TravelClock } from "./TravelClock.js";
 import { createPassengerSystem } from "./passenger.js";
 import { createTrafficManager } from "./traffic/TrafficManager.js";
 import { TrafficDebug } from "./traffic/TrafficDebug.js";
 import { initEndermanEasterEgg, updateEnderman } from "./enderman.js";
+import { getTravelDirection, setTravelDirection, getEconomyState, getFuelState, consumeFuel, earnFromPassengers, refuel, formatVND, resetEconomy, initFuelForBus } from "./economy.js";
+import { createCSGTManager } from "./csgt.js";
 import { CollisionSystem } from "./collisionSystem.js";
 
 let renderer, scene, camera, canvas, map, lighting, npc, bus, interior, passengerSystem, trafficManager, trafficDebug, ui, cameraSystem;
@@ -40,6 +43,7 @@ let gameSettings = {
     audioMute: false          // tắt tiếng
 };
 // GIÁ TRỊ MẶC ĐỊNH (nút "Đặt lại") — 1 nguồn duy nhất để không lệch nhau.
+let currentDirection = "north"; // mặc định: Phú Yên → Sài Gòn
 const DEFAULT_SETTINGS = { ...gameSettings };
 // npcDensity = "so xe NPC toi da" (maxVehicles). Zone cap = npcDensity x 0.6..1.5
 // theo mat do duong (TrafficManager._zoneCapFor): QL1A/cao toc (density 0.8-1.0)
@@ -502,6 +506,12 @@ function updateVehiclePhysics(dt) {
         steerTarget = 0;
     }
     
+    // VÔ-LĂNG + BÁNH TRƯỚC quay theo góc lái THẬT (Mục G).
+    // Trước đây bus.setSteering KHÔNG được gọi ở đâu cả → bánh trước và vô
+    // lăng trong cabin đứng im dù xe đang đánh lái.
+    bus.setSteering?.(steerAngle);
+    bus.setCockpitSteering?.(steerAngle);
+
     if (Math.abs(phys.speed) > 0.1) bus.group.rotation.y += steerAngle * dt * 1.5 * Math.sign(phys.speed);
     
     if (Math.abs(phys.speed) > 0.001) {
@@ -808,7 +818,9 @@ function initInput() {
             doorTarget = doorTarget === 0 ? 1 : 0;
             bus.doorOpen = doorTarget === 1;
             ui?.toast(`🚪 Cửa ${bus.doorOpen ? 'MỞ' : 'ĐÓNG'}`);
-            if (bus.doorOpen && passengerSystem) passengerSystem.pickUpPassengers();
+            if (bus.doorOpen && passengerSystem) {
+                if (!passengerSystem.dropOffAtRouteDestination?.()) passengerSystem.pickUpPassengers();
+            }
         }
         if (code === "KeyL" && bus && interior) {
             // L: Bật/tắt TẤT CẢ đèn cùng lúc (pha + đuôi + interior)
@@ -962,14 +974,54 @@ function togglePause() {
 let pauseMenuOpen = false;
 let settingsDirty = false;     // người chơi đã sửa setting nhưng chưa Lưu
 let audioSystem = null;
+let musicPlayer = null;
+let csgtManager = null;        // HUD giới hạn tốc độ + cảnh báo CSGT (js/csgt.js)
+const interfaceAnimations = new WeakMap();
+
+function setAnimatedVisibility(element, visible, display = "block") {
+    if (!element) return;
+    interfaceAnimations.get(element)?.cancel();
+    interfaceAnimations.delete(element);
+
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (reducedMotion || typeof element.animate !== "function") {
+        element.style.display = visible ? display : "none";
+        element.style.pointerEvents = "";
+        return;
+    }
+
+    if (visible) {
+        element.style.display = display;
+        element.style.pointerEvents = "";
+    } else {
+        if (element.style.display === "none") return;
+        element.style.pointerEvents = "none";
+    }
+
+    const animation = element.animate(
+        visible
+            ? [{ opacity: 0, translate: "0 16px" }, { opacity: 1, translate: "0 0" }]
+            : [{ opacity: 1, translate: "0 0" }, { opacity: 0, translate: "0 16px" }],
+        { duration: visible ? 220 : 180, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)", fill: "forwards" }
+    );
+    interfaceAnimations.set(element, animation);
+    animation.onfinish = () => {
+        if (interfaceAnimations.get(element) !== animation) return;
+        interfaceAnimations.delete(element);
+        element.style.opacity = "";
+        element.style.translate = "";
+        if (!visible) element.style.display = "none";
+        element.style.pointerEvents = "";
+    };
+}
 
 function closeAllPanels() {
     const backdrop = document.getElementById("panel-backdrop");
     const settingsPanel = document.getElementById("settings-panel");
     const uvPanel = document.getElementById("uv-skin-panel");
-    if (backdrop) backdrop.style.display = 'none';
-    if (settingsPanel) settingsPanel.style.display = 'none';
-    if (uvPanel) uvPanel.style.display = 'none';
+    setAnimatedVisibility(backdrop, false);
+    setAnimatedVisibility(settingsPanel, false);
+    setAnimatedVisibility(uvPanel, false);
     document.body.style.overflow = '';
     canvas?.focus?.();          // trả focus về game (ô nhập không giữ focus)
 }
@@ -979,7 +1031,7 @@ function togglePauseMenu(force) {
     const next = (typeof force === 'boolean') ? force : !pauseMenuOpen;
     pauseMenuOpen = next;
     const el = document.getElementById("pause-menu");
-    if (el) el.style.display = next ? 'flex' : 'none';
+    setAnimatedVisibility(el, next, "flex");
     if (next) {
         paused = true;                     // game DỪNG thật khi menu mở
         clearPressedKeys();
@@ -992,6 +1044,10 @@ function togglePauseMenu(force) {
 
 /** ESC tuỳ trạng thái giao diện: console -> popup -> menu tạm dừng. */
 function handleEscape() {
+    if (gameState !== "playing" && routePickerOpen) {
+        resetMenuToHome();
+        return;
+    }
     // Hộp thoại xác nhận đang mở -> ESC đóng nó (không đụng trạng thái game)
     const dlg = document.getElementById('confirm-dialog');
     if (dlg && dlg.style.display === 'flex') { closeConfirmDialog(); return; }
@@ -1091,6 +1147,7 @@ function applySettingsToGame() {
         audioSystem.setVolume(gameSettings.audioVolume);
         audioSystem.setMuted(gameSettings.audioMute);
     }
+    musicPlayer?.setVolume(gameSettings.audioVolume);
 }
 
 function saveSettingsToStorage() {
@@ -1217,6 +1274,7 @@ function initRenderer() {
 
 async function boot() {
     ui = createUI({ map: null });
+    musicPlayer = createMusicPlayer({ volume: gameSettings.audioVolume });
     if (isMobile || isLowEnd) { ui.saveSettings(); }
     ui.showMainMenu();
     scene = new THREE.Scene();
@@ -1232,8 +1290,63 @@ async function boot() {
     window.requestAnimationFrame(loop);
 }
 
+// ---- LUỒNG MENU CHÍNH ----
+// Menu chính chỉ có 3 nút (LÁI XE / THÊM UV SKIN / CÀI ĐẶT).
+// Chọn tuyến (chiều chạy) CHỈ hiện sau khi bấm LÁI XE; bấm CHƠI NGAY mới tải game.
+let routePickerOpen = false;
+
+function updatePrimaryMenuButton() {
+    const btn = document.getElementById('btn-new-game');
+    if (btn) btn.textContent = '🚍 LÁI XE';
+}
+
+function highlightDirectionButton(dir) {
+    document.querySelectorAll('.dir-btn').forEach(b => {
+        const on = b.dataset.dir === dir;
+        b.style.borderColor = on ? '#22d3ee'
+            : (b.dataset.dir === 'north' ? '#3b82f6' : '#ef4444');
+        b.style.boxShadow = on
+            ? '0 0 0 3px rgba(34,211,238,0.4), 0 6px 20px rgba(34,211,238,0.3)'
+            : (b.dataset.dir === 'north'
+                ? '0 4px 14px rgba(59,130,246,0.3)'
+                : '0 4px 14px rgba(239,68,68,0.3)');
+        b.style.transform = on ? 'scale(1.02)' : 'scale(1)';
+    });
+}
+
+/** Bấm LÁI XE để mở giao diện chọn tuyến. */
+function onPrimaryMenuButton() {
+    openRoutePicker();
+}
+
+function openRoutePicker() {
+    routePickerOpen = true;
+    ui.hideMainMenu();
+    const picker = document.getElementById('route-picker-panel');
+    if (picker) {
+        setAnimatedVisibility(picker, true);
+        picker.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    highlightDirectionButton(currentDirection);
+    updatePrimaryMenuButton();
+}
+
+/** Đưa menu về trạng thái ban đầu (3 nút, chưa mở chọn tuyến). */
+function resetMenuToHome() {
+    routePickerOpen = false;
+    const picker = document.getElementById('route-picker-panel');
+    setAnimatedVisibility(picker, false);
+    ui.showMainMenu();
+    updatePrimaryMenuButton();
+}
+
 function setupMenuEvents() {
-    document.getElementById("btn-new-game")?.addEventListener("click", startGameFromMenu);
+    document.getElementById("btn-new-game")?.addEventListener("click", onPrimaryMenuButton);
+    document.getElementById("btn-play-now")?.addEventListener("click", () => {
+        if (routePickerOpen) startGameFromMenu();
+    });
+    document.getElementById("btn-close-route-picker")?.addEventListener("click", resetMenuToHome);
+    document.getElementById("btn-back-to-menu")?.addEventListener("click", resetMenuToHome);
     
     const backdrop = document.getElementById('panel-backdrop');
     const settingsPanel = document.getElementById('settings-panel');
@@ -1280,10 +1393,26 @@ function setupMenuEvents() {
     rngFov?.addEventListener('input', () => { if(valFov) valFov.textContent = rngFov.value; });
     rngRenderDist?.addEventListener('input', () => { if(valRenderDist) valRenderDist.textContent = rngRenderDist.value; });
 
+    // Chọn chiều chạy — chỉ hiện sau khi bấm "LÁI XE"
+    document.querySelectorAll('.dir-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            currentDirection = btn.dataset.dir;
+            setTravelDirection(currentDirection);
+            highlightDirectionButton(currentDirection);
+            updatePrimaryMenuButton();
+        });
+    });
+    // Khôi phục chiều đã lưu (KHÔNG .click(): click sẽ đổi nút thành CHƠI NGAY
+    // ngay khi vừa vào menu, làm bỏ qua bước chọn tuyến).
+    const savedDir = getTravelDirection();
+    if (savedDir === 'north' || savedDir === 'south') currentDirection = savedDir;
+    highlightDirectionButton(currentDirection);
+    updatePrimaryMenuButton();
+
     // Helper to open panel with backdrop
     function openPanel(panel) {
-        if (backdrop) backdrop.style.display = 'block';
-        if (panel) panel.style.display = 'block';
+        setAnimatedVisibility(backdrop, true);
+        setAnimatedVisibility(panel, true);
         document.body.style.overflow = 'hidden';
     }
     // closeAllPanels: dùng bản GLOBAL (đã trả focus về game) — không khai
@@ -1435,6 +1564,8 @@ function setupMenuEvents() {
         togglePauseMenu(false);
         gameState = 'menu';
         paused = false;
+        csgtManager?.reset();
+        resetMenuToHome();
         document.getElementById('hud').style.display = 'none';
         ui.showMainMenu();
     });
@@ -1540,6 +1671,9 @@ async function startGameFromMenu() {
     if (startingGame) return;
     if (gameState === "playing") return;
     startingGame = true;
+    routePickerOpen = false;
+    const routePicker = document.getElementById('route-picker-panel');
+    setAnimatedVisibility(routePicker, false);
     ui.hideMainMenu();
     ui.setLoading("Đang tải...", 0.1);
     // ÂM THANH: tạo + khởi động NGAY TRONG click (user gesture) — trình duyệt
@@ -1602,7 +1736,7 @@ async function startGameFromMenu() {
         // RUNTIME lên mesh dashboard có sẵn — bus.setInteriorReference là hook hiện có.
         bus.setInteriorReference?.(interior);
         scene.add(bus.group);
-        const spawn = map.getSpawnPoint();
+        const spawn = map.getSpawnPoint(currentDirection);
         bus.group.position.set(spawn.x, spawn.y, spawn.z);
         bus.group.rotation.y = (spawn.heading || 0) + Math.PI / 2;
         bus.group.name = 'player_bus';
@@ -1620,6 +1754,8 @@ async function startGameFromMenu() {
             // He thong chieu sang + thoi gian. Cho phep doi gio trong ngay de test
             // ban ngay/buoi toi (vd: __busvn.lighting.setGameTime(14 * 60)).
             get lighting() { return lighting; },
+            // HUD cảnh báo CSGT + giới hạn tốc độ (js/csgt.js) — để test
+            get csgt() { return csgtManager; },
             // Dựng 1 khung hình thủ công (tab bị ẩn thì requestAnimationFrame
             // bị treo -> không test được). Dùng để đo FPS/draw call thật.
             tick: (times = 1) => { for (let i = 0; i < times; i++) loop(); },
@@ -1641,6 +1777,15 @@ async function startGameFromMenu() {
         await loadNpcSkinList();
         const roadGraph = map.getRoadGraph();
         if (!roadGraph) throw new Error("Road graph chưa sẵn sàng — loadInitialData() lỗi?");
+        // HUD tốc độ + CSGT: giới hạn đọc từ seg.speed của dữ liệu đường.
+        csgtManager?.dispose();
+        csgtManager = createCSGTManager({
+            roadGraph,
+            stationsData: map.getStationsData?.() || []
+        });
+        // Chốt CSGT THẬT trong thế giới (dựng tại trạm thu phí — js/map.js).
+        // HUD chỉ cảnh báo quanh các chốt này, không cảnh báo "ma".
+        csgtManager.addCheckpoints?.(map.getCSGTCheckpoints?.() || []);
         // Phase 6: giờ game suy từ lái xe thật. Độ dốc lấy từ `node.y` của
         // đoạn đường đứng (đã gồm ROAD_LIFT); `getHeight` chỉ dùng khi xe
         // chạy ngoài đường — lúc đó mới quy về địa hình.
@@ -1648,7 +1793,10 @@ async function startGameFromMenu() {
             roadGraph,
             getHeight: (x, z) => map.getHeight(x, z)
         });
-        npc = createNPC({ scene, map, seed: 2027, playerBus: bus, playerSpawnPos: { x: spawn.x, z: spawn.z } });
+        npc = createNPC({
+            scene, map, seed: 2027, playerBus: bus, direction: currentDirection,
+            playerSpawnPos: { x: spawn.x, z: spawn.z }
+        });
         trafficManager = createTrafficManager({ scene, roadGraph: roadGraph, playerRef: bus, maxVehicles: gameSettings.npcDensity || 5 });
         // NPC "học sinh cá biệt GDCD" (spawn hiếm) mở mồm qua HUD toast.
         trafficManager.onDialogue = (t) => ui?.toast(t);
@@ -1688,6 +1836,7 @@ async function startGameFromMenu() {
     } catch (error) {
         console.error("❌ Lỗi chi tiết:", error);
         alert("Lỗi tải game:\n" + error.message + "\n\nStack: " + error.stack);
+        resetMenuToHome();
         ui.showMainMenu();
     } finally {
         startingGame = false;   // cho phép thử lại nếu lần trước lỗi
@@ -1737,8 +1886,7 @@ function updateHUD(delta) {
     if (hudTimer < 0.1) return;
     hudTimer = 0;
     if (gameState !== "playing" || !bus || !ui) return;
-    const zones = passengerSystem?.getActiveZones?.() || [];
-    if (!window._npcZonesCache) window._npcZonesCache = [];
+    const zones = passengerSystem?.getActiveZones?.() || [];    if (!window._npcZonesCache) window._npcZonesCache = [];
     const npcZones = window._npcZonesCache;
     npcZones.length = 0;
     if (trafficManager?.aiVehicles) {
@@ -1747,10 +1895,19 @@ function updateHUD(delta) {
             if (c) npcZones.push(c);
         }
     }
+    // Giới hạn tốc độ + CSGT (lấy seg.speed thật của đoạn đường đang chạy)
+    csgtManager?.update(0.1, {
+        x: bus.group.position.x,
+        z: bus.group.position.z,
+        speedKmh: vehiclePhysics.currentSpeedKmh
+    });
+    const passengerCount = passengerSystem?.getPassengerCount?.();
     ui.update({
         fps: 1/delta,
         speedKmh: vehiclePhysics.currentSpeedKmh,
-        passengers: passengerSystem?.onboardPassengers?.length || 0,
+        speedLimit: csgtManager?.getLimitKmh() ?? null,
+        passengers: passengerCount?.onboard || 0,
+        passengerCapacity: passengerCount?.max || 24,
         timeMinutes: lighting?.getGameTime() || 0,
         x: bus.group.position.x,
         z: bus.group.position.z,
