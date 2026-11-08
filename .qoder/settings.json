@@ -1,0 +1,12 @@
+{
+  "autoMemoryEnabled": true,
+  "ui": {
+    "language": "en"
+  },
+  "respondToBashCommands": true,
+  "dream": {
+    "enabled": true
+  },
+  "promptSuggestionEnabled": false,
+  "autoMemoryUserScopeEnabled": true
+}

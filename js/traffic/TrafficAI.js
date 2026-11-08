@@ -26,6 +26,7 @@ import { createSeededRandom, lerpAngle, clamp } from "../utils.js";
 import { deriveLaneMeta } from "../RuntimeRoadGraph.js";
 import { hypot2 } from "../utils.js";
 import { BUS_DIMENSIONS } from "../bus.js";
+import { computeYawRate, computeVehicleForces, makeSimpleMassInfo, integrateBodyMotion, getSurfaceProperties } from "../physics_step.js";
 
 const TWO_PI = Math.PI * 2;
 const DEF_BUS_LEN = (BUS_DIMENSIONS && BUS_DIMENSIONS.length) || 12.8;
@@ -140,6 +141,17 @@ export class TrafficAI {
         this.speed = 0;
         this.targetSpeed = 0;        // v0 mong muốn (m/s)
         this.accel = 0;              // gia tốc hiện tại (m/s^2)
+        // PHASE 8 — trạng thái động cơ được giữ theo xe (không reset khi đổi
+        // mức mô phỏng LOD): số, RPM, tải máy, massInfo lazily theo kind.
+        this.engine = {
+          gear: 1, rpm: 800, engineLoad: 0, massInfo: null,
+          wet: false, grip: 1.0, surfaceRoughness: 0, massNorm: 1.0,
+        };
+        // PHASE 8 — body motion (pitch/roll/heave/sway) dùng bộ giải chung
+        this.body = { pitch: 0, pitchVel: 0, roll: 0, rollVel: 0, heave: 0, heaveVel: 0, sway: 0 };
+        this.accLongFiltered = 0;
+        this.latAccel = 0;
+        this.steerAngle = 0;
         this.heading = 0;
         this.targetHeading = 0;
         this.oldHeading = 0;
@@ -1060,10 +1072,62 @@ export class TrafficAI {
 
     // ---------------------------------------------------------- tích phân
     // Chạy MỖI FRAME bất kể LOD -> xe không đóng băng / không nhảy cóc.
+    // PHASE 8 — Động cơ/hộp số/tải trọng dùng chung physics core với xe người chơi.
+    // IDM (bên dưới) quyết định Ý ĐỊNH; computeVehicleForces thực thi → gia tốc thật
+    // theo khối lượng xe, tỉ số truyền, mô-men, bám đường, cản lăn/khí động/dốc.
+    _updateEngineDynamics(dt) {
+        // massInfo dựng 1 lần khi biết kind (TrafficManager gán vehicleKind SAU constructor)
+        if (!this.engine.massInfo) {
+            const kind = this.vehicleKind || 'BUS';
+            const massKg = kind === 'CAR' ? 1350 : kind === 'VAN16' ? 3500 : kind === 'TRUCK' ? 8000 : kind === 'SEMI' ? 9200 : 12000;
+            this.engine.massInfo = makeSimpleMassInfo(massKg, kind === 'CAR' ? 0.6 : 1.1);
+            this.engine.massNorm = clamp(massKg / 4000, 0.6, 1.8);
+        }
+        // Bề mặt đoạn đường đang chạy (cùng bảng SEGMENT_SURFACE_MAP của player)
+        const seg = (this.meta && this.meta.seg) || (this.roadGraph && this.roadGraph.getSegment ? this.roadGraph.getSegment(this.currentSegmentId) : null);
+        const props = getSurfaceProperties(seg || null);
+        this.engine.wet = props.wet;
+        this.engine.grip = props.tireGrip;
+        this.engine.surfaceRoughness = props.roughness;
+        // Độ dốc đoạn (từ cao độ node — cùng nguồn với map)
+        let gradeRad = 0;
+        const f = this._frame;
+        if (f) {
+            const dy = f.p1.y - f.p0.y;
+            const dxz = Math.hypot(f.p1.x - f.p0.x, f.p1.z - f.p0.z) || 1;
+            gradeRad = Math.atan2(dy, dxz) * (this.direction === 0 ? 1 : -1);
+        }
+        // IDM → pedal
+        const aDes = this.accel;   // ý định gia tốc (chưa kẹp)
+        const acc = this.profile.acceleration;
+        let throttle = 0, brake = 0;
+        if (aDes >= 0.05) throttle = clamp(aDes / Math.max(acc, 0.5), 0, 1);
+        else if (aDes <= -0.05) brake = clamp(-aDes / Math.max(this.profile.emergencyDecel, 0.5), 0, 1);
+        // Hộp số tự động — cùng ngưỡng tốc độ với xe người chơi
+        const kmh = Math.abs(this.speed) * 3.6;
+        const gear = kmh < 12 ? 1 : kmh < 28 ? 2 : kmh < 52 ? 3 : kmh < 82 ? 4 : 5;
+        this.engine.gear = gear;
+        const forces = computeVehicleForces(
+            this.speed, throttle, brake, gear, false,
+            this.engine.massInfo, gradeRad, this.engine.wet, this.engine.grip, null,
+            this.latAccel || 0
+        );
+        this.accel = forces.accelLong;
+        this.engine.rpm = forces.engineRPM;
+        this.engine.load = Math.min(1, forces.engineTorque / 800);
+        // EMA gia tốc dài — dùng cho body motion (pitch)
+        this.accLongFiltered += (this.accel - this.accLongFiltered) * Math.min(1, dt * 8);
+    }
+
     _integrate(dt) {
         if (!this._frame && !this._updateFrame()) return;
 
         if (this.stop.phase === 'PARKED') { this.speed = 0; this.accel = 0; }
+
+        // PHASE 8 — gia tốc THẬT từ computeVehicleForces (khối lượng xe, tỉ số truyền,
+        // mô-men, bám đường, cản lăn/khí động). emergencyDecel vẫn do IDM quyết định
+        // khi cần phanh gấp; forces chỉ kẹp theo giới hạn vật lý của lốp.
+        this._updateEngineDynamics(dt);
 
         this.speed = Math.max(0, this.speed + this.accel * dt);
         if (this.targetSpeed <= 0.05 && this.speed < 0.2 && this.accel <= 0) { this.speed = 0; this.accel = 0; }
@@ -1382,20 +1446,68 @@ export class TrafficAI {
         // Nghiêng lái nhẹ theo chuyển dịch ngang (yaw sai số khi đổi làn)
         const yawBias = clamp((this.targetLaneOffset - this.laneOffset) * -0.05, -0.16, 0.16);
         const segHeading = this._getSegmentHeading() + yawBias;
-        this.heading = lerpAngle(this.heading, segHeading, Math.min(1, dt * 1.5));
+
+        // PHASE 5: Use shared physics core for heading (computeYawRate)
+        // instead of simple lerpAngle — ensures NPC yaw matches player physics.
+        // Compute desired heading change, derive steering angle, apply physics.
+        let diff = segHeading - this.heading;
+        while (diff > Math.PI) diff -= TWO_PI;
+        while (diff < -Math.PI) diff += TWO_PI;
+
+        // Steering angle proportional to heading error (PID-ish)
+        // Max steer 0.55 rad (from physics_step MAX_STEER_ANGLE)
+        const steerAngle = clamp(diff * 2.5, -0.55, 0.55);
+        this.steerAngle = steerAngle;   // cho đồng bộ vô lăng/tay lái NPC
+
+        // Apply shared yaw rate physics
+        const yawRate = computeYawRate(this.speed, steerAngle);
+        this.latAccel = this.speed * yawRate;   // gia tốc ngang — body motion + friction ellipse
+        const headingDelta = yawRate * dt;
+
+        // Blend physics heading with direct lerp for stability
+        // (physics gives realistic turn rate limits; lerp ensures convergence)
+        const physicsHeading = this.heading + headingDelta;
+        this.heading = lerpAngle(physicsHeading, segHeading, Math.min(1, dt * 0.5));
     }
 
-    _updateVehicle() {
+    _updateVehicle(dt) {
         if (!this.vehicle) return;
+        const fdt = Number.isFinite(dt) ? Math.min(0.1, Math.max(0, dt)) : 1 / 60;
         this.vehicle.group.position.set(this.collider.x, this.collider.y, this.collider.z);
         this.vehicle.group.rotation.y = this.heading;
+        // Xoay bánh theo vòng tua động cơ (setWheelRotation dùng cho CẢ bus khách lẫn xe tải/con)
+        this.wheelSpin = (this.wheelSpin || 0) + (this.speed / Math.max(0.05, this.vehicle.wheelRadius || 0.525)) * fdt;
+        if (typeof this.vehicle.setWheelRotation === 'function') {
+            this.vehicle.setWheelRotation(this.wheelSpin);
+        }
+        let gradePitch = 0;
         const pts = this._getSegmentPoints();
         if (pts) {
             const dy = pts.p1.y - pts.p0.y;
             const dxz = hypot2(pts.p1.x - pts.p0.x, pts.p1.z - pts.p0.z) || 1;
-            const pitch = Math.atan2(dy, dxz) * (this.direction === 0 ? -1 : 1);
-            this.vehicle.group.rotation.x = THREE.MathUtils.lerp(this.vehicle.group.rotation.x, pitch * 0.5, 0.1);
+            gradePitch = Math.atan2(dy, dxz) * (this.direction === 0 ? -1 : 1) * 0.5;
         }
+        // PHASE 8 — body motion qua bộ giải chung (pitch gia tốc + roll dồn tải)
+        let bodyPitch = 0, bodyRoll = 0;
+        if (this.engine && this.body) {
+            integrateBodyMotion(this.body, fdt, {
+                accelLong: this.accLongFiltered,
+                speedMs: this.speed,
+                speedKmh: this.speed * 3.6,
+                surfaceRoughness: this.engine.surfaceRoughness,
+                massNorm: this.engine.massNorm,
+                tireGrip: this.engine.grip,
+                impact: 0,
+                latAccel: this.latAccel,
+                isMoving: this.speed > 0.05,
+            });
+            bodyPitch = this.body.pitch;
+            bodyRoll = this.body.roll;
+        }
+        const targetPitch = gradePitch + bodyPitch;
+        const k = 1 - Math.exp(-6 * fdt);   // tiến gần theo thời gian, không giật
+        this.vehicle.group.rotation.x += (targetPitch - this.vehicle.group.rotation.x) * k;
+        this.vehicle.group.rotation.z += ((-bodyRoll) - this.vehicle.group.rotation.z) * k;
     }
 
     // ---------------------------------------------------------- vòng đời
@@ -1403,7 +1515,7 @@ export class TrafficAI {
         if (!this.active || this.isStatic) return;
         const dt = Math.min(deltaTime, 0.1);
         if (allVehicles) this._lastVehicles = allVehicles;
-        if (!this._updateFrame()) { this._recover(); this._updateVehicle(); return; }
+        if (!this._updateFrame()) { this._recover(); this._updateVehicle(dt); return; }
 
         this.decTimer -= dt;
         if (this.decTimer <= 0) {
@@ -1411,7 +1523,7 @@ export class TrafficAI {
             this._decide(this.updateInterval, this._lastVehicles);
         }
         this._integrate(dt);
-        this._updateVehicle();
+        this._updateVehicle(dt);
         this.lastUpdateTime = 0;
     }
 

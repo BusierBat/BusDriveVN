@@ -14,15 +14,16 @@ import { createPassengerSystem } from "./passenger.js";
 import { createTrafficManager } from "./traffic/TrafficManager.js";
 import { TrafficDebug } from "./traffic/TrafficDebug.js";
 import { initEndermanEasterEgg, updateEnderman } from "./enderman.js";
-import { getTravelDirection, setTravelDirection, getEconomyState, getFuelState, consumeFuel, earnFromPassengers, refuel, formatVND, resetEconomy, initFuelForBus } from "./economy.js";
+import { getTravelDirection, setTravelDirection } from "./economy.js";
 import { createCSGTManager } from "./csgt.js";
 import { CollisionSystem } from "./collisionSystem.js";
+import { updatePhysicsState, PHYSICS_STATE, registerImpact, computeYawRate, updateRoadRoughness, applySurfaceFromSegment, computeVehicleMass, computeVehicleForces, rectContactMTV, computeEnginePower } from "./physics_step.js"; // vật lý cảm giác (roll/pitch/heave + nhíp bánh + RPM)
 
 let renderer, scene, camera, canvas, map, lighting, npc, bus, interior, passengerSystem, trafficManager, trafficDebug, ui, cameraSystem;
 let travelClock = null;   // ước lượng giờ game từ lái xe thật (js/TravelClock.js)
 const clock = new THREE.Clock();
 let gameState = "menu", paused = false;
-let doorProgress = 0, doorTarget = 0;
+let doorProgress = 0, doorTarget = 0, doorServiceStarted = false;
 let playerColId = -1;
 let playerStuckT = 0;   // đếm thời gian bị chặn hoàn toàn liên tục (Bug "dính cứng")
 let lastRescuePress = 0;
@@ -45,11 +46,7 @@ let gameSettings = {
 // GIÁ TRỊ MẶC ĐỊNH (nút "Đặt lại") — 1 nguồn duy nhất để không lệch nhau.
 let currentDirection = "north"; // mặc định: Phú Yên → Sài Gòn
 const DEFAULT_SETTINGS = { ...gameSettings };
-// npcDensity = "so xe NPC toi da" (maxVehicles). Zone cap = npcDensity x 0.6..1.5
-// theo mat do duong (TrafficManager._zoneCapFor): QL1A/cao toc (density 0.8-1.0)
-// -> cap ~ x1.34. npcDensity=5 cu -> chi ~7 xe chay (do duoc = 6-7 xe).
-// YEU CAU x3 so xe dang hoat dong (6-7 -> ~18-21) => npcDensity 5 -> 15
-// (cap ~ 20 o duong lon). Graphics preset MEDIUM/HIGH van cho phep (25/40).
+
 
 // Load settings from localStorage
 try {
@@ -70,90 +67,30 @@ try {
     }
 } catch(e) {}
 
-// Chi ep renderDist cho may yeu/di dong. KHONG ep npcDensity nua.
-// BUG 3 - "xe NPC qua thua": truoc do co `gameSettings.npcDensity = 3;` o day.
-// Vi thu tu la: (1) load localStorage -> (2) ep isLowEnd = 3, nen lan nao cung bi
-// ve 3, bo qua ca default (5) lan ca slider nguoi dung da chon. Do duoc runtime:
-//   maxVehicles = 3 -> moving = 3 xe chay tren ca mang duong (spawnDistance 340m),
-//   trong khi static = 60, stationSpawnQueue = 286 xe cho xong ma khong duoc ra.
-// isLowEnd = hardwareConcurrency<=4 || deviceMemory<=4 -> Pentium N5000 4GB luon bi ep.
-// Yeu cau sua ro rang: "Khong giam so xe NPC dang hoat dong de dat muc tieu toi uu FPS"
-// va "Khong giam hieu nang nen" -> giu nguyen renderDist (cham do chunk), bo npcDensity.
 if (isMobile || isLowEnd) {
     gameSettings.renderDist = 1;
-    // Máy yếu/di động: chất lượng ánh sáng mặc định MEDIUM = 3 cascade shadow
-    // 1024² + contact shadows + god rays + sky 64 — đo trên iGPU yếu (UHD 605)
-    // đây là khoản GPU TO NHẤT mỗi frame; GPU nghẽn làm compositor trình duyệt
-    // đứng theo ("lag cả trình duyệt"). Ép LOW: shadow 512² × 2 cascade +
-    // update cách frame, tắt contact/god rays, sky 32. Vẫn chỉnh lại được
-    // trong Settings như renderDist (đổi là áp dụng ngay).
+
     gameSettings.lightingQuality = 'LOW';
 }
 
 let mobileInput = { steer: 0, accel: 0, brake: 0 };
 
-const SPEED_CONVERSION = 0.4;
+// 1 unit = 1 meter. Speed in m/s; km/h = m/s * 3.6
+const SPEED_CONVERSION = 1 / 3.6; // 0.2777... so that phys.speed (m/s) / SPEED_CONVERSION = km/h
+const MS_TO_KMH = 3.6;
+const KMH_TO_MS = 1 / MS_TO_KMH;
 
-// ===== BUG "HITBOX VA CHAM ẢO" - PHAN NHAP (NARROW PHASE) OBB =====
-// Truoc do main.js kiem tra bang HINH TRON r=4.0, NPC dang ky r=3.0 ->
-// 4.0 + 3.0 = 7.0m tam-den-tam moi bao va cham, trong khi be rong THAT cua
-// xe chi 2.5268m:
-//   * Xe o lan ke (tam cach 3.5m, ke hong that 0.97m, KHONG cham) van bi
-//     bao va cham -> phys.speed = 0 khi vuot xe / chay song song.
-//   * Nguoc lai hinh tron lai QUA NGAN theo chieu dai: cham dau-duoi can
-//     tam cach 12.8m, nhung vung do chi 7.0m -> xe cung cham hon 5.8m vao
-//     duoi xe kia moi phat hien.
-// -> Giu hinh tron lam BROAD PHASE (grid), them SAT 2 OBB 12.8 x 2.5268
-// dung HUONG XE THAT lam narrow phase. Chi bao va cham khi 2 hop THAT SU
-// cham/chan nhau (cong 0.12m de khong cho xuyen nhau o toc do cao).
-const OBB_HALF_LEN = BUS_DIMENSIONS.length * 0.5;   // 6.4024m
-const OBB_HALF_W   = BUS_DIMENSIONS.width * 0.5;     // 1.2634m
-const OBB_MARGIN   = 0.12;   // cung mức “cham som 12cm” mà filter NPC đang dùng
-// Tam XA nhat ma 2 OBB van co the cham = 2 * ban kinh duong chep (6.5259*2 =
-// 13.06m). NPC dang ky r=3.0 -> ban kinh query can 13.06 - 3.0 = 10.06m
-// (truoc day 4.0 -> cham dau-duoi khong bao gio bat duoc som).
+
+const OBB_HALF_LEN = BUS_DIMENSIONS.length * 0.5; 
+const OBB_HALF_W   = BUS_DIMENSIONS.width * 0.5; 
+const OBB_MARGIN   = 0.12;   
 const PLAYER_HITBOX_QUERY_R = 10.1;
 
-// SAT 2D TỔNG QUÁT cho 2 hình chữ nhật xo bất kỳ (mtv = Minimum Translation
-// Vector). Trả null khi KHÔNG chồng (kể cả margin). Khi chồng trả
-// { depth, nx, nz } — depth = độ xâm nhập nhỏ nhất (m); (nx, nz) = hướng ĐẨY
-// A KHỎI B dọc trục xâm nhập nhỏ nhất (vector đơn vị 2D).
-// DÙNG CHUNG cho: bus player (OBB 12.8×2.53), xe NPC (cùng OBB), vật thể môi
-// trường tĩnh (nhà = hộp xoay, cây = hình tròn hl=hw=r). main.js dùng MTV để
-// cho xe TRƯỢT dọc bề mặt chạm thay vì khóa tọa độ — 2 xe va chạm không còn
-// "dính cứng" (mọi ngay va chạm cũng có hướng thoát).
-// Mảng tĩnh cho 4 trục SAT (chống alloc mỗi frame)
-const _SAT_AXES = new Float64Array(8);
+
+// SAT OBB×OBB — một implementation duy nhất ở physics_step (rectContactMTV),
+// dùng chung với TrafficManager. Giữ hàm wrapper để callers không phải đổi tên.
 function rectContact(ax, az, aRot, ahl, ahw, bx, bz, bRot, bhl, bhw) {
-    const aFx = Math.sin(aRot), aFz = Math.cos(aRot);   // hướng tới của A
-    const bFx = Math.sin(bRot), bFz = Math.cos(bRot);
-    const dx = bx - ax, dz = bz - az;
-    // 4 trục cạnh: (hướng tới, pháp tuyến) của A rồi của B (mảng tĩnh).
-    // Cho mỗi trục, required = bán kính hình chiếu của A + của B + margin.
-    // |chiếu d| > required -> trục phân ly -> KHÔNG chạm.
-    let bestPen = Infinity, bestNx = 0, bestNz = 0, bestSign = 1;
-    const axes = _SAT_AXES;
-    axes[0] = aFx; axes[1] = aFz; axes[2] = aFz; axes[3] = -aFx;
-    axes[4] = bFx; axes[5] = bFz; axes[6] = bFz; axes[7] = -bFx;
-    for (let i = 0; i < 4; i++) {
-        const nx = axes[i * 2], nz = axes[i * 2 + 1];
-        const proj = dx * nx + dz * nz;
-        const absProj = Math.abs(proj);
-        const required =
-              ahl * Math.abs(aFx * nx + aFz * nz)
-            + ahw * Math.abs(aFz * nx - aFx * nz)
-            + bhl * Math.abs(bFx * nx + bFz * nz)
-            + bhw * Math.abs(bFz * nx - bFx * nz)
-            + OBB_MARGIN;
-        if (absProj > required) return null;
-        const pen = required - absProj;
-        if (pen < bestPen) {
-            bestPen = pen;
-            bestNx = nx; bestNz = nz;
-            bestSign = proj >= 0 ? -1 : 1;
-        }
-    }
-    return { depth: bestPen, nx: bestSign > 0 ? bestNx : -bestNx, nz: bestSign > 0 ? bestNz : -bestNz };
+    return rectContactMTV(ax, az, aRot, ahl, ahw, bx, bz, bRot, bhl, bhw, OBB_MARGIN);
 }
 
 // Bọc cũ cho xe↔xe (2 bus OBB), giữ tên cho các nơi gọi cũ
@@ -161,13 +98,7 @@ function obbContact(ax, az, aRot, bx, bz, bRot) {
     return rectContact(ax, az, aRot, OBB_HALF_LEN, OBB_HALF_W, bx, bz, bRot, OBB_HALF_LEN, OBB_HALF_W);
 }
 
-// MTV giữa xe người chơi và 1 collider bất kỳ của collisionSystem:
-//  - NPC (có hướng thật, thân xe OBB): nhét vào SAT với kích thước xe.
-//  - Mọi thứ còn lại (tĩnh/môi trường): coi là HỘP xoay với kích thước
-//    { hl, hw, rot } lưu trong c.data (hộp nhà), hoặc hình tròn hl=hw=c.r
-//    (cây/cột — SAT với hình tròn = kiểm chỉ theo 2 trục của player, vẫn hình
-//    đúng vì hl=hw => bán kính hình chiếu hằng số theo mọi trục).
-// Bắc Y đã lọc trong check(); hàm này chỉ làm 2D narrow-phase.
+
 function mtvForHit(x, z, aRot, c) {
     const data = c.data;
     if (data && data.ai) {
@@ -185,41 +116,38 @@ function mtvForHit(x, z, aRot, c) {
 
 const vehiclePhysics = {
     speed: 0,
-    maxSpeedKmh: 200,
-    maxSpeed: 200 * SPEED_CONVERSION,
-    maxReverseSpeed: -40 * SPEED_CONVERSION,
-    acceleration: 20.0 * SPEED_CONVERSION,
-    braking: 40.0 * SPEED_CONVERSION,
-    drag: 4.0 * SPEED_CONVERSION,
+
+    maxSpeedKmh: 110,
+    maxSpeed: (110 / 3.6), // m/s
+    maxReverseSpeed: -(15 / 3.6), // m/s — lùi chậm như xe khách thật
     currentSpeedKmh: 0,
     isReversing: false,
-    forwardVector: new THREE.Vector3()
+    forwardVector: new THREE.Vector3(),
+    // Trạng thái động cơ/hộp số (được cập nhật từ computeVehicleForces)
+    gear: 1,
+    gearTarget: 1,
+    gearShiftTimer: 0,   // s — đang trong thời gian chuyển số (ly hợp)
+    engineRPM: 800,
+    engineLoad: 0,
+    engineTorque: 200,
+    enginePowerKW: 0,
+    massInfo: null,
+    throttleInput: 0,
+    brakeInput: 0
 };
 
 let steerAngle = 0, steerTarget = 0;
+let wheelSpinAngle = 0;   // rad — góc quay cộng dồn của bánh (theo quãng đường thật)
 
-// ===== INPUT: sống được với UniKey / IME tiếng Việt =====
-// VẤN ĐỀ CŨ: game đọc KeyboardEvent.code thẳng. Nhưng khi bộ gõ tiếng Việt
-// (UniKey / IME Windows) ở chế độ VI, nó can thiệp vào stream phím:
-//   - có khi nuốt luôn event (code === "" ),
-//   - có khi bơm ký tự đã gõ thay cho phím vật lý: W -> "ư", D -> "đ", A -> "á"...
-// Ket qua: keysPressed.add("") -> WASD khong con ten -> phai chuyen EN moi lai duoc.
-// CACH FIX: resolve event ve ma phim VẬT LÝ theo 3 lớp, lớp nào chắc nhất dùng lớp đó:
-//   1) e.code      -> chuẩn nhất (KeyW/KeyA/KeyS/KeyD), ko phụ thuộc gõ gì.
-//   2) e.key       -> ký tự/tên phím, map ngược lại mã vật lý (kể cả chữ tiếng Việt).
-//   3) e.which/kc  -> UniKey hay bơm sự kiện theo VK (W=87, A=65...).
-// Không resolve được -> bỏ qua, KHÔNG bịa phím ảo.
-// Quy tắc an toàn: keyup dùng CÙNG bộ resolve (nếu không thì phím kẹt vĩnh viễn),
-// và không bao giờ đụng tới khi đang gõ trong ô input (text/UI vẫn gõ bình thường).
+
 
 const KEY_BY_NAME = new Map();
 const LEGACY_BY_KEYCODE = new Map();
 const keysPressed = new Map();   // code -> timestamp keydown gần nhất (chống phím kẹt)
+const steerReleaseAt = new Map();
+const steerReleaseReady = new Set();
 
-// == DIAG UniKey: lệnh console "keys" bật/tắt GHI nhận phím (tối đa 200 event
-// gần nhất). MẶC ĐỊNH TẮT — chỉ lưu khi bật, KHÔNG tốn công nào trong game.
-// Dùng để xác định UniKey VI thực sự nhả event gì (code/key/kc/comp) thay vì
-// đoán — khi user paste lại "keys" dump sẽ fix chính xác đường resolve.
+
 let keyDiagOn = false;
 const keyDiagLog = [];
 function keyDiagPush(kind, e) {
@@ -245,6 +173,7 @@ function keyDiagDump() {
 
 const KEY_HOLD_TIMEOUT_MS = 5000;
 const STEER_KEY_HOLD_TIMEOUT_MS = 800; // Thời gian timeout ngắn hơn cho phím lái (A/D) để tránh "ghost steering" do IME nuốt keyup
+const STEER_KEY_MIN_HOLD_MS = 60;
 // Chống phím kẹt khi IME nuốt keyup. 5000ms an toàn cho cả Windows repeat chậm nhất
 // (delay <= 1s + interval <= 0.5s) nên phím đang giữ thật không bị nhả nhầm.
 //
@@ -377,12 +306,26 @@ function isEditableTarget(target) {
 function pruneStaleKeys(now) {
     if (!keysPressed.size) return;
     for (const [code, last] of keysPressed) {
+        const releaseAt = steerReleaseAt.get(code);
+        if (releaseAt !== undefined && now >= releaseAt) {
+            steerReleaseAt.delete(code);
+            steerReleaseReady.add(code);
+            continue;
+        }
         const timeout = (code === "KeyA" || code === "KeyD") ? STEER_KEY_HOLD_TIMEOUT_MS : KEY_HOLD_TIMEOUT_MS;
-        if (now - last > timeout) keysPressed.delete(code);
+        if (now - last > timeout) {
+            keysPressed.delete(code);
+            steerReleaseAt.delete(code);
+            steerReleaseReady.delete(code);
+        }
     }
 }
 
-function clearPressedKeys() { keysPressed.clear(); }
+function clearPressedKeys() {
+    keysPressed.clear();
+    steerReleaseAt.clear();
+    steerReleaseReady.clear();
+}
 
 // Thu vi tri TAT CA cot den duong trong scene (dung cho street lights pool
 // cua lighting.js — xem STREET_LIGHT_* o do).
@@ -429,6 +372,102 @@ const _tmpRight = new THREE.Vector3();
 const _tmpNormal = new THREE.Vector3();
 let _lastValidGroundY = 10.0;
 
+// === HỘP SỐ TỰ ĐỘNG (PHASE 1) ===
+// Giữ ĐÚNG thông số với physics_step.js (GEAR_RATIOS_PH2, FINAL_DRIVE,
+// WHEEL_RADIUS) — kiểm bằng _tmpbench test gearbox. Số chọn theo tốc độ với
+// vùng trễ ±GEAR_HYSTERESIS_KMH để không nhảy số liên tục.
+const GEAR_RATIOS_MAIN = [0, 3.80, 2.40, 1.50, 1.00, 0.75];
+const FINAL_DRIVE_MAIN = 4.10;
+const WHEEL_RADIUS_MAIN = 0.525;
+const GEAR_MAX_RPM_MAIN = 4500;
+const GEAR_UPSHIFT_RPM = 3400;
+const GEAR_DOWNSHIFT_RPM = 1500;
+const GEAR_HYSTERESIS_KMH = 2;
+const GEAR_SHIFT_TIME = 0.45;   // s — hộp số tự động xe khách (có ly hợp)
+
+/** RPM ứng với tốc độ + cấp số (bánh ↔ động cơ, hộp số cơ khí). */
+function rpmForGear(speedMs, gear) {
+    const ratio = GEAR_RATIOS_MAIN[gear] || 1;
+    return (Math.abs(speedMs) / WHEEL_RADIUS_MAIN) * ratio * FINAL_DRIVE_MAIN * (60 / (2 * Math.PI));
+}
+
+/** Tốc độ (km/h) mà RPM ứng với `rpm` ở `gear`. */
+function gearSpeedForRpm(rpm, gear) {
+    return (rpm * 2 * Math.PI / 60) * WHEEL_RADIUS_MAIN / ((GEAR_RATIOS_MAIN[gear] || 1) * FINAL_DRIVE_MAIN) * 3.6;
+}
+
+/**
+ * Chọn cấp số theo tốc độ, vùng trễ quanh ngưỡng lên/xuống số:
+ *   lên số khi vượt (GEAR_UPSHIFT_RPM + trễ) ở số hiện tại,
+ *   về số khi tụt dưới (GEAR_DOWNSHIFT_RPM − trễ).
+ * Chặn cứng vòng tua tối đa (số có trần tốc độ lý thuyết).
+ */
+function selectGear(speedKmh, currentGear) {
+    const v = Math.abs(speedKmh || 0);
+    if (v < 0.5) return 1;
+    let gear = Math.min(5, Math.max(1, currentGear || 1));
+    const upKmh = gearSpeedForRpm(GEAR_UPSHIFT_RPM, gear) + GEAR_HYSTERESIS_KMH;
+    if (gear < 5 && v > upKmh) gear++;
+    const downKmh = gearSpeedForRpm(GEAR_DOWNSHIFT_RPM, gear) - GEAR_HYSTERESIS_KMH;
+    if (gear > 1 && v < downKmh) gear--;
+    // Không cấp số nào vượt vòng tua tối đa (khi maxSpeed cho phép số 5 vẫn dư phòng)
+    while (gear > 1 && rpmForGear(v / 3.6, gear) > GEAR_MAX_RPM_MAIN) gear--;
+    return gear;
+}
+
+function updateGearbox(phys) {
+    if (phys.gearShiftTimer > 0) {
+        phys.gearShiftTimer -= FIXED_STEP;
+        if (phys.gearShiftTimer <= 0) phys.gear = phys.gearTarget;
+        return;
+    }
+    const kmh = Math.abs(phys.speed) * 3.6;
+    const target = selectGear(kmh, phys.gear);
+    if (target !== phys.gear) {
+        phys.gearTarget = target;
+        phys.gearShiftTimer = GEAR_SHIFT_TIME;
+    }
+}
+
+/**
+ * Đoạn đường bus đang chạy: độ dốc (rad, dương = LÊN dốc) + bề mặt.
+ * Hình chiếu tâm xe lên segment gần nhất (segmentsNear r=2.0) để nội suy
+ * node.y — cùng nguồn cao độ map dùng dựng mặt đường, không đoán.
+ * Ưu tiên giữ segment đang chạy nếu vẫn còn trong bán kính (ổn định bề mặt).
+ */
+let _roadSegId = null;
+function roadSegmentInfo(phys) {
+    const g = map?.roadGraph;
+    const info = { gradeRad: _lastGrade, segment: null };
+    if (!g || !bus?.group) return info;
+    const p = bus.group.position;
+    const segs = g.segmentsNear(p.x, p.z, 2.0);
+    if (!segs.length) return info;
+    let seg = segs[0];
+    if (_roadSegId) {
+        const same = segs.find(s => s.id === _roadSegId);
+        if (same) seg = same;
+    }
+    if (_roadSegId !== seg.id) {
+        _roadSegId = seg.id;
+        applySurfaceFromSegment(seg);
+    }
+    info.segment = seg;
+    const a = g.getNode(seg.from), b = g.getNode(seg.to);
+    if (!a || !b) return info;
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const horiz = Math.sqrt(dx * dx + dz * dz) || 1;
+    const ay = Number.isFinite(a.y) ? a.y : 0, by = Number.isFinite(b.y) ? b.y : ay;
+    // Hướng xe (forward = +z local): lên dốc nếu đi về phía node cao hơn.
+    const fz = Math.sin(bus.group.rotation.y), fx = Math.cos(bus.group.rotation.y);
+    const dir = (fz * dz + fx * dx) / horiz >= 0 ? 1 : -1;
+    _lastGrade = dir * Math.atan2(by - ay, horiz);
+    info.gradeRad = _lastGrade;
+    return info;
+}
+let _lastGrade = 0;
+let _terrainNullWarned = false;
+
 // js/main.js - Chỉ phần updateVehiclePhysics được thay đổi
 
 function updateVehiclePhysics(dt) {
@@ -440,44 +479,98 @@ function updateVehiclePhysics(dt) {
     const isShift = keysPressed.has("ShiftLeft") || keysPressed.has("ShiftRight");
     const isAlt = keysPressed.has("AltLeft") || keysPressed.has("AltRight");
     
-    if (keysPressed.has("Space")) {
-        // Space: thắng gấp — dừng ngay lập tức
+    // ===== DẠT GA / PHANH (D-03, D-04) =====
+    // Trước đây: W chỉ GIỮ tốc độ (không tăng), Shift+W mới tăng; Space đặt
+    // speed = 0 trong đúng 1 bước (phanh tức thời, không có quãng phanh).
+    // Nay mô phỏng đúng chân ga/phanh của xe khách:
+    //   W = ga (giữ ga thì tăng tốc), Shift+W = ga tối đa (vượt)
+    //   S = phanh -> hết đà thì lùi; Alt = phanh thường (không lùi)
+    //   Space = phanh khẩn cấp (giảm tốc lớn nhưng HỮU HẠN)
+    //   Thả hết = chỉ còn lực cản lăn + cản khí động
+    const isSpace = keysPressed.has("Space");
+
+    let throttle = 0;
+    let brake = 0;
+    let wantReverse = false;
+    if (isSpace) {
+        brake = 1.0;
+    } else if (isShift && isAccel) {
+        throttle = 1.0;
+    } else if (isAccel) {
+        throttle = 0.62;
+    } else if (isBrake) {
+        // Đang tiến -> phanh 0.85; đã đứng yên -> ga lùi (lùi chậm như xe khách
+        // thật, trần = maxReverseSpeed). Trước đây S chỉ có phanh đối kháng
+        // tốc độ về 0 nên xe KHÔNG BAO GIỜ lùi được (model lực không có nguồn
+        // lực âm nào ở v=0) — comment “hết đà thì lùi” chỉ là comment.
+        if (phys.speed > 0.05) brake = 0.85;
+        else { throttle = 0.5; wantReverse = true; }
+    } else if (isAlt) {
+        brake = 0.72;
+    }
+
+    phys.throttleInput = throttle;
+    phys.brakeInput = -brake;
+
+    const paxCount = passengerSystem?.getPassengerCount?.()?.onboard || 0;
+    const loadDist = passengerSystem?.getLoadDistribution?.() || null;
+    const massInfo = computeVehicleMass(paxCount, 0, gameSettings.interior || 'BED20', loadDist);
+    phys.massInfo = massInfo;   // share sang updateWorld (massInfo là local của hàm này)
+
+    // Ý lùi = CHỈ do paddle R (muốn lùi), KHÔNG suy từ dấu vận tốc — nếu suy từ
+    // speed<0 thì đang trôi lùi mà đạp D vẫn ra lực lùi (đà lùi không chặn nổi).
+    const isReverse = wantReverse;
+
+    // ===== HỘP SỐ TỰ ĐỘNG THẬT (PHASE 1) =====
+    // Lỗi cũ: `phys.gear = phys.gear` (tự gán chính nó) nên số kẹt ở 1 mãi,
+    // trong khi computeVehicleForces lại suy RPM TỪ số đó → vòng lặp khép kín
+    // (số 1 ở 100 km/h = 11700 RPM bị cắt về 4500, mô-men sụt → không lên nổi).
+    // Nay: số chọn theo TỐC ĐỘ + vùng trễ, RPM suy từ số+bánh (một nguồn duy
+    // nhất, có chặn vòng tua tối đa nên số có trần tốc độ theo lý thuyết).
+    if (!isReverse) updateGearbox(phys);
+
+    // Độ dốc THẬT + bề mặt của đoạn đường đang chạy (node.y đã grade trong
+    // generator). Trước đây truyền hằng 0 → lên/xuống dốc không có lực cản/trợ.
+    const road = roadSegmentInfo(phys);
+    const gradeRad = road.gradeRad;
+
+    const forces = computeVehicleForces(
+        phys.speed, throttle, brake, phys.gear, isReverse,
+        massInfo, gradeRad, PHYSICS_STATE.surfaceWet || false, PHYSICS_STATE.tireGrip || 1.0,
+        phys.engineRPM, PHYSICS_STATE.lateralAccel || 0 // friction ellipse — lực ngang hiện tại
+    );
+
+    // Traction clamp now lives INSIDE computeVehicleForces (single source of truth).
+    // Previously main.js modified forces.netForce as a side-effect after return.
+
+    const accel = forces.netForce / Math.max(1, massInfo.mass);
+    phys.speed += accel * dt;
+
+    if (phys.speed > phys.maxSpeed) phys.speed = phys.maxSpeed;
+    if (phys.speed < phys.maxReverseSpeed) phys.speed = phys.maxReverseSpeed;
+    // Chốt đứng yên CHỈ KHI THẢ hết ga/phanh — nếu snapshot điểm 0 vô điều kiện
+    // thì mỗi bước xe nhích 0.0067 m/s bị xóa về 0 mãi, xe không bao giờ khởi
+    // động được từ v=0 (lỗi "đạp ga đứng yên vĩnh viễn").
+    const driveIntent = throttle > 0 || brake > 0;
+    if (Math.abs(phys.speed) < 0.02 && !driveIntent) {
         phys.speed = 0;
         phys.isReversing = false;
-    } else if (isShift && isAccel) {
-        // Shift+W: LUÔN tăng tốc từ từ đến giới hạn 200 km/h, không bao giờ tụt
-        phys.speed += phys.acceleration * 0.5 * dt;
-        phys.speed = Math.min(phys.speed, phys.maxSpeed);
-        phys.isReversing = false;
-    } else if (isBrake) {
-        // S: giảm tốc từ từ, khi về 0 thì lùi
-        if (phys.speed > 0) {
-            phys.speed = Math.max(phys.speed - phys.braking * dt, 0);
-        } else {
-            phys.isReversing = true;
-            phys.speed = Math.max(phys.speed - phys.acceleration * dt, phys.maxReverseSpeed);
-        }
-    } else if (isAlt) {
-        // Alt: thắng (không gấp) — giảm từ từ, dừng tại 0, KHÔNG lùi
-        phys.speed = phys.speed > 0
-            ? Math.max(phys.speed - phys.braking * dt, 0)
-            : Math.min(phys.speed + phys.braking * dt, 0);
-        if (phys.speed === 0) phys.isReversing = false;
-    } else if (isAccel) {
-        // W: giữ nguyên tốc độ — không tăng không giảm
-        if (phys.speed < 0) {
-            // Đang lùi mà bấm W → thắng dần về 0 rồi giữ
-            phys.speed = Math.min(phys.speed + phys.braking * dt, 0);
-        }
     } else {
-        // Thả W / Shift+W: giảm tốc từ từ (drag), dừng hẳn khi về 0
-        phys.speed = phys.speed > 0
-            ? Math.max(phys.speed - phys.drag * dt, 0)
-            : Math.min(phys.speed + phys.drag * dt, 0);
-        if (phys.speed === 0) phys.isReversing = false;
+        phys.isReversing = phys.speed < 0;
     }
-    
-    phys.currentSpeedKmh = phys.speed / SPEED_CONVERSION;
+
+    // RPM/Số do chính computeVehicleForces tính (một nguồn duy nhất — không
+    // còn model RPM song song trong physics_step).
+    phys.engineRPM = forces.engineRPM;
+    phys.engineLoad = Math.min(1, forces.engineTorque / 800);
+    phys.engineTorque = forces.engineTorque;
+    phys.enginePowerKW = computeEnginePower(forces.engineTorque, forces.engineRPM);
+
+    // Cập nhật currentSpeedKmh (km/h) từ phys.speed (m/s) — được dùng bởi
+    // steering limit, HUD, audio, travelClock. Without this, currentSpeedKmh
+    // stays at 0 and the bus never steers correctly.
+    phys.currentSpeedKmh = phys.speed * 3.6;
+
     const speedKmh = Math.abs(phys.currentSpeedKmh);
     // Smoother steering limit: more gradual reduction at high speeds
     const speedSteerLimit = 1 - Math.min(0.85, Math.pow(speedKmh / 180, 1.5));
@@ -486,6 +579,7 @@ function updateVehiclePhysics(dt) {
     const isSteeringLeft = keysPressed.has("KeyA");
     const isSteeringRight = keysPressed.has("KeyD");
     
+    // Keep A/D aligned with the driver's perceived left/right directions.
     if (isSteeringLeft && !isSteeringRight) steerTarget = 0.5 * speedSteerLimit;
     else if (isSteeringRight && !isSteeringLeft) steerTarget = -0.5 * speedSteerLimit;
     else if (mobileInput.steer !== 0) steerTarget = 0.5 * speedSteerLimit * mobileInput.steer;
@@ -512,7 +606,13 @@ function updateVehiclePhysics(dt) {
     bus.setSteering?.(steerAngle);
     bus.setCockpitSteering?.(steerAngle);
 
-    if (Math.abs(phys.speed) > 0.1) bus.group.rotation.y += steerAngle * dt * 1.5 * Math.sign(phys.speed);
+    // D-02: xoay thân theo MỘT mô hình kinematic bicycle (chung với
+    // physics_step qua computeYawRate) thay vì công thức rời rạc
+    // steerAngle*dt*1.5*sign(speed) — trước đây thân xe xoay khác hoàn toàn
+    // gia tốc ngang dùng để tính roll.
+    const yawRate = computeYawRate(phys.speed, steerAngle);
+    PHYSICS_STATE.roadGradeRad = gradeRad;
+    if (yawRate !== 0) bus.group.rotation.y += yawRate * dt;
     
     if (Math.abs(phys.speed) > 0.001) {
         const forward = phys.forwardVector.set(0, 0, 1).applyQuaternion(bus.group.quaternion);
@@ -551,8 +651,11 @@ function updateVehiclePhysics(dt) {
                     // cào vào mặt chạm: bỏ thành phần cào -> trượt dọc mặt
                     moveDx -= contactMtv.nx * into;
                     moveDz -= contactMtv.nz * into;
+                    // VA CHẠM THẬT -> physics_step.registerImpact: rung camera +
+                    // gằn chấn theo cường độ xâm thực (tốc độ tiếp cận m/s /25)
+                    registerImpact(Math.min(1, (Math.abs(into) / Math.max(1e-3, dt)) / 25));
                     // Realistic collision response: stop instead of bouncing back
-                    if (Math.abs(phys.speed) > 5 * SPEED_CONVERSION) {
+                    if (Math.abs(phys.speed) > 5 * KMH_TO_MS) {   // > 5 km/h = va đủ mạnh
                         phys.speed = 0; // Hard stop at high speed
                     } else {
                         phys.speed *= 0.2; // Gentle slowdown at low speed
@@ -564,12 +667,21 @@ function updateVehiclePhysics(dt) {
             }
         }
 
+        // BÁNH QUAY theo quãng đường THẬT đã đi (trước đây không ai gọi
+        // setWheelRotation → bánh đứng im dù xe chạy). ω = v/R, cộng dồn góc.
+        wheelSpinAngle += (phys.speed / (bus.wheelRadius || 0.525)) * dt;
+        bus.setWheelRotation?.(wheelSpinAngle);
+
         if (Math.abs(moveDx) > 1e-6 || Math.abs(moveDz) > 1e-6) {
             bus.group.position.x += moveDx;
             bus.group.position.z += moveDz;
             playerStuckT = 0;
         } else if (contactMtv) {
-            // bị chặn hoàn toàn (chạm trực diện) -> đếm thời kẹt
+            // bị chặn hoàn toàn (chạm trực diện) -> đếm thời kẹt.
+            // D-09: trước đây ngay sau khối này có `playerStuckT = 0;` vô điều
+            // kiện -> bộ đếm bị xóa mỗi frame, không bao giờ đạt 2s nên phần
+            // đẩy nhẹ + auto-rescue bên dưới là code chết. Chỉ reset khi xe
+            // THOÁT được (nhánh if phía trên).
             playerStuckT += dt;
             if (playerStuckT > 2.0 && (isAccel || isBrake)) {
                 // đẩy nhẹ tách 2 khối; vẫn bounded bởi depth → hết chồng là dừng
@@ -577,10 +689,30 @@ function updateVehiclePhysics(dt) {
                 bus.group.position.x += contactMtv.nx * push;
                 bus.group.position.z += contactMtv.nz * push;
             }
+            // Kẹt cứng > 3.5s mà vẫn giữ ga/thắng -> cứu hộ về đường gần nhất
+            if (playerStuckT > 3.5 && (isAccel || isBrake)
+                && typeof rescuePlayerToNearestRoad === 'function') {
+                playerStuckT = 0;
+                rescuePlayerToNearestRoad();
+            }
         }
-    } else {
-        playerStuckT = 0;
-    }
+        } else {
+            if (keysPressed.has("KeyW") || keysPressed.has("KeyS") || mobileInput.accel !== 0 || mobileInput.brake !== 0) {
+                playerStuckT += dt;
+                if (playerStuckT > 1.5 && (isAccel || isBrake)) {
+                    // Auto-rescue attempt gently
+                    if (playerStuckT > 3.0) {
+                        playerStuckT = 0;
+                        // Try rescue if available
+                        if (typeof rescuePlayerToNearestRoad === 'function') {
+                            rescuePlayerToNearestRoad();
+                        }
+                    }
+                }
+            } else {
+                playerStuckT = 0;
+            }
+        }
     
     // ĐỊA HÌNH PHẲNG TUYỆT ĐỐI - KHÔNG RAYCAST
     // /P42: truyền `yHint` = cao độ xe ĐANG ở. Không có nó thì thuật toán
@@ -588,9 +720,19 @@ function updateVehiclePhysics(dt) {
     // nhảy lên cầu. Có `yHint` thì nó bám đúng mặt xe đang đứng trên đó, và
     // đi lên ramp/cầu vượt vẫn leo được vì cao độ thay đổi liên tục.
     const yHint = bus.group.position.y;
-    const targetY = map
-        ? map.getTerrainHeight(bus.group.position.x, bus.group.position.z, yHint) + 0.5
-        : 10.5;
+    let terrainH = map ? map.getTerrainHeight(bus.group.position.x, bus.group.position.z, yHint) : null;
+    if (!Number.isFinite(terrainH)) {
+        // MAP-000: getTerrainHeight trả null (ngoài lưới chunk đã dựng, vd điểm
+        // spawn sân bến chưa stream). Trước đây cộng null -> NaN -> xe "chết"
+        // và trả về sớm. Nay: giữ cao độ hiện tại (không rơi, không bịa) và
+        // báo 1 lần để còn chẩn đoán.
+        if (!_terrainNullWarned) {
+            _terrainNullWarned = true;
+            console.warn('[tree] getTerrainHeight = null tại', bus.group.position.x.toFixed(1), bus.group.position.z.toFixed(1), '— giữ cao độ hiện tại');
+        }
+        terrainH = yHint;
+    }
+    const targetY = terrainH + 0.5;
 
     // Bám mặt đường MƯỢT mà vẫn không rơi khỏi mặt: giới hạn tốc độ đổi
     // cao độ mỗi frame. Chặn trên là bám (mượt), nhưng vẫn cho xe đuổi kịp
@@ -601,14 +743,16 @@ function updateVehiclePhysics(dt) {
     else if (targetY < yHint - maxStep) ny = yHint - maxStep;
     bus.group.position.y = ny;
     
-    // Visual Pitch/Roll
-    const pitchAngle = (isBrake || isAlt) ? -0.04 : (isAccel ? 0.02 : 0);
-    const targetRoll = -steerAngle * 0.03 * (speedKmh / 60);
-    bus.group.rotation.x = THREE.MathUtils.lerp(bus.group.rotation.x, pitchAngle, dt * 4);
-    bus.group.rotation.z = THREE.MathUtils.lerp(bus.group.rotation.z, targetRoll, dt * 3);
+    // Nghiêng/CHÚI thân xe MO PHỎNG GIÁC NHÌN VIA physics_step.js (setBodyMotion
+    // chạy trong updateWorld trên MOTION GROUP — phần thân nghiêng, bánh giữ
+    // trên root nên KHÔNG chôn lấp xuống asphalt). Block pitch/roll tĩnh gán
+    // trực tiếp lên bus.group đã GỠ: kèm BUG DẤU cũ (phanh => đầu ngẩng ngược
+    // thực tế) và nghiêng kép khi có motion group.
     
     if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z, bus.group.position.y);
     bus.group.updateMatrixWorld(true);
+    for (const code of steerReleaseReady) keysPressed.delete(code);
+    steerReleaseReady.clear();
 }
 
 // ===== PHÍM CỨU HỘ (R) — đưa xe về điểm ĐƯỜNG HỢP LỆ gần nhất =====
@@ -752,12 +896,14 @@ function initInput() {
         // keyup vẫn dùng bộ resolve chung + xóa A/D khi IME nuốt keyup (giữ nguyên).
         if (code === "KeyA" || code === "KeyD") {
             const hasEvidence = _physCode || legacyKeyCodeToCode(e);
-            if (keysPressed.has(code) && !hasEvidence && !e.repeat) {
+            if (keysPressed.has(code) && !steerReleaseAt.has(code) && !hasEvidence && !e.repeat) {
                 return;
             }
             // lần bấm mới không chứng cứ (ký tự IME) đi tiếp tới keysPressed.set
         }
 
+        steerReleaseAt.delete(code);
+        steerReleaseReady.delete(code);
         keysPressed.set(code, _now);
         // Windows chỉ auto-repeat phím được nhấn SAU CÙNG. Giữ Shift+W rồi bấm A/D
         // để rẽ -> Shift+W ngừng repeat -> pruneStaleKeys xóa -> xe giảm tốc oan.
@@ -777,13 +923,24 @@ function initInput() {
         // cùng sống trong map. Phím lái ma bị xóa NGAY khi người chơi bấm hướng còn
         // lại, nên lỗi "bấm lái phải không có tác dụng" không thể xảy ra — đây là
         // phân quyền input (last-press wins), không phải khóa hay ép steering = 0.
-        if (code === "KeyA") keysPressed.delete("KeyD");
-        else if (code === "KeyD") keysPressed.delete("KeyA");
+        if (code === "KeyA") {
+            keysPressed.delete("KeyD");
+            steerReleaseAt.delete("KeyD");
+            steerReleaseReady.delete("KeyD");
+        } else if (code === "KeyD") {
+            keysPressed.delete("KeyA");
+            steerReleaseAt.delete("KeyA");
+            steerReleaseReady.delete("KeyA");
+        }
         
         // Additional safety: if both A and D are somehow pressed, cancel both (neutral)
         if (keysPressed.has("KeyA") && keysPressed.has("KeyD")) {
             keysPressed.delete("KeyA");
             keysPressed.delete("KeyD");
+            steerReleaseAt.delete("KeyA");
+            steerReleaseAt.delete("KeyD");
+            steerReleaseReady.delete("KeyA");
+            steerReleaseReady.delete("KeyD");
         }
         // Shift/Alt không auto-repeat khi phím khác được nhấn -> sync từ state vật lý.
         if (!composing) {
@@ -816,11 +973,9 @@ function initInput() {
         }
         if (code === "KeyK" && bus) {
             doorTarget = doorTarget === 0 ? 1 : 0;
-            bus.doorOpen = doorTarget === 1;
-            ui?.toast(`🚪 Cửa ${bus.doorOpen ? 'MỞ' : 'ĐÓNG'}`);
-            if (bus.doorOpen && passengerSystem) {
-                if (!passengerSystem.dropOffAtRouteDestination?.()) passengerSystem.pickUpPassengers();
-            }
+            bus.doorOpen = false;
+            doorServiceStarted = false;
+            ui?.toast(`🚪 Cửa ${doorTarget === 1 ? 'MỞ' : 'ĐÓNG'}`);
         }
         if (code === "KeyL" && bus && interior) {
             // L: Bật/tắt TẤT CẢ đèn cùng lúc (pha + đuôi + interior)
@@ -847,7 +1002,15 @@ function initInput() {
     window.addEventListener("keyup", (e) => {
         const code = resolveEventCode(e);
         keyDiagPush("U", e);
-        if (code) { keysPressed.delete(code); return; }
+        if (code) {
+            if ((code === "KeyA" || code === "KeyD") && keysPressed.has(code)) {
+                steerReleaseAt.set(code, performance.now() + STEER_KEY_MIN_HOLD_MS);
+            } else {
+                keysPressed.delete(code);
+                steerReleaseAt.delete(code);
+            }
+            return;
+        }
 
         // BUG 7 FIX — xe tu quẹo trai du khong bam A:
         // keyup bi IME/UniKey nuot hoan toan (e.code = '' VA e.key = '') nen
@@ -881,8 +1044,9 @@ function initInput() {
         // Neu khong chac chan, de pruneStaleKeys (800ms) tu tu xoa -> tranh mat lai.
         const wasHoldingSteer = keysPressed.has("KeyA") || keysPressed.has("KeyD");
         if ((imeSwallow || !_upPhys) && wasHoldingSteer) {
-            keysPressed.delete("KeyA");
-            keysPressed.delete("KeyD");
+            const releaseAt = performance.now() + STEER_KEY_MIN_HOLD_MS;
+            if (keysPressed.has("KeyA")) steerReleaseAt.set("KeyA", releaseAt);
+            if (keysPressed.has("KeyD")) steerReleaseAt.set("KeyD", releaseAt);
         }
     });
 
@@ -1103,14 +1267,14 @@ function applyInteriorConfig(configId) {
     const moved = migrateInteriorCockpit(oldInterior, newInt);
     // 3) Gỡ + giải phóng cấu hình cũ
     if (oldInterior) {
-        bus.group.remove(oldInterior);
+        (bus.motionGroup || bus.group).remove(oldInterior);
         oldInterior.traverse((o) => {
             if (o.isMesh && o.geometry) o.geometry.dispose();
         });
     }
     // 4) Gắn cấu hình mới
     interior = newInt;
-    bus.group.add(interior);
+    (bus.motionGroup || bus.group).add(interior);
     bus.setInteriorReference?.(interior);
     // 5) Camera: bộ ghế hành khách theo cấu hình (tọa độ riêng, không chép
     //    nguyên của cấu hình kia). Nếu đang ở ghế hành khách mà cấu hình mới
@@ -1226,7 +1390,7 @@ function handleResize() {
 }
 
 function initRenderer() {
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "low-power", stencil: false, depth: true });
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance", stencil: false, depth: true });
     renderer.setClearColor(0x87ceeb, 1);
     renderer.setPixelRatio(isLowEnd ? 0.8 : 1.0);
     renderer.setSize(window.innerWidth, window.innerHeight, true);
@@ -1320,6 +1484,10 @@ function onPrimaryMenuButton() {
 }
 
 function openRoutePicker() {
+    // CHỐT state machine: nút #btn-new-game vẫn nằm trong DOM sau khi vào game;
+    // mà không guard thì click ẩn/bot khi đã playing mở picker đè lên gameplay.
+    // Người thật không click được nút ẩn, nhưng rà lỗi phải chặn ở gốc.
+    if (startingGame || gameState === "playing") return;
     routePickerOpen = true;
     ui.hideMainMenu();
     const picker = document.getElementById('route-picker-panel');
@@ -1492,32 +1660,16 @@ function setupMenuEvents() {
 
     // Reset settings to defaults
     btnResetSettings?.addEventListener("click", () => {
-        gameSettings = { graphics: 'low', renderDist: 2, npcDensity: 15, camSens: 30, fov: 70, lightingQuality: 'MEDIUM', godRays: 'high' };
-        // Update UI
-        const selGraphics = document.getElementById('setting-graphics');
-        const selLighting = document.getElementById('setting-lighting');
-        const selGodRays = document.getElementById('setting-godrays');
-        const selInterior = document.getElementById('setting-interior');
-        const rngKeySens = document.getElementById('setting-key-sens');
-        const valKeySens = document.getElementById('val-key-sens');
-        const rngAudioVol = document.getElementById('setting-audio-volume');
-        const valAudioVol = document.getElementById('val-audio-volume');
-        const chkAudioMute = document.getElementById('setting-audio-mute');
-        if(selGraphics) selGraphics.value = gameSettings.graphics;
-        if(selLighting) selLighting.value = gameSettings.lightingQuality.toLowerCase();
-        if(selGodRays) selGodRays.value = gameSettings.godRays;
-        if(selInterior) selInterior.value = gameSettings.interior;
-        if(rngNpc) { rngNpc.value = gameSettings.npcDensity; if(valNpc) valNpc.textContent = gameSettings.npcDensity; }
-        if(rngCamSens) { rngCamSens.value = gameSettings.camSens; if(valCamSens) valCamSens.textContent = gameSettings.camSens; }
-        if(rngFov) { rngFov.value = gameSettings.fov; if(valFov) valFov.textContent = gameSettings.fov; }
-        if(rngRenderDist) { rngRenderDist.value = gameSettings.renderDist; if(valRenderDist) valRenderDist.textContent = gameSettings.renderDist; }
-        if(rngKeySens) { rngKeySens.value = gameSettings.keySens; if(valKeySens) valKeySens.textContent = Number(gameSettings.keySens).toFixed(1); }
-        if(rngAudioVol) { rngAudioVol.value = Math.round(gameSettings.audioVolume * 100); if(valAudioVol) valAudioVol.textContent = Math.round(gameSettings.audioVolume * 100) + '%'; }
-        if(chkAudioMute) chkAudioMute.checked = !!gameSettings.audioMute;
-        // Đặt lại = trả về MẶC ĐỊNH đã định nghĩa, áp dụng thật, lưu luôn.
+        // BUG-010: bản cũ đặt gameSettings = object tạm THIẾU KHÓA (interior/
+        // keySens/audioVolume/audioMute) rồi cập nhật UI TỪ OBJECT ĐÓ trước khi
+        // gán DEFAULT_SETTINGS -> select "Cấu hình nội thất" hiện TRỐNG sau khi
+        // bấm ĐẶT LẠI (value=undefined), phải đóng-mở panel mới đồng bộ lại.
+        // Fix gốc: 1 nguồn duy nhất (DEFAULT_SETTINGS), áp dụng + LƯU + đồng bộ
+        // UI bằng syncSettingsUI (bản sync đầy đủ dùng chung cho cả 2 cửa mở).
         gameSettings = { ...DEFAULT_SETTINGS };
         applySettingsToGame();
         saveSettingsToStorage();
+        syncSettingsUI();
         settingsDirty = false;
         ui?.toast("↩ Đã đặt lại mặc định!");
     });
@@ -1726,7 +1878,8 @@ async function startGameFromMenu() {
         interior = (gameSettings.interior === 'BED34') ? createBusInterior34() : createBusInterior();
         interior.configId = (gameSettings.interior === 'BED34') ? 'BED34' : 'BED20';
         if (!interior?.isObject3D) interior = new THREE.Group();
-        bus.group.add(interior);
+        // Nội thất vào MOTION GROUP (nghiêng cùng thân xe; bám camera PHẦN 10.5)
+        (bus.motionGroup || bus.group).add(interior);
         // GỘP ĐÈN cabin: 31 PointLight (20 phòng) -> 9 (giữ nguyên mesh dải
         // LED). Mỗi PointLight là 1 vòng lặp trong shader của MỌI vật liệu;
         // 38 đèn trong scene = frame ~1.1s trên iGPU N5000 (đo được) ->
@@ -1735,6 +1888,19 @@ async function startGameFromMenu() {
         // Cockpit tài xế (Windows Update/BSOD/speedo, nút phân màu) được gán
         // RUNTIME lên mesh dashboard có sẵn — bus.setInteriorReference là hook hiện có.
         bus.setInteriorReference?.(interior);
+    // Pass physics to camera for vibration
+    if (cameraSystem) {
+        cameraSystem.setMotionSource(PHYSICS_STATE);
+    }
+    // Ensure steering/cockpit sync on init
+    bus.setSteering?.(0);
+    bus.setCockpitSteering?.(0);
+    bus.setDriverTelemetry?.(vehiclePhysics.currentSpeedKmh || 0, vehiclePhysics.engineRPM || 800, 1, 0);
+    if (PHYSICS_STATE) {
+        PHYSICS_STATE.surfaceRoughness = 0.15;
+        PHYSICS_STATE.tireGrip = 1.0;
+        PHYSICS_STATE.impactIntensity = 0;
+    }
         scene.add(bus.group);
         const spawn = map.getSpawnPoint(currentDirection);
         bus.group.position.set(spawn.x, spawn.y, spawn.z);
@@ -1749,6 +1915,11 @@ async function startGameFromMenu() {
             get map() { return map; },
             get bus() { return bus; },
             get npc() { return npc; },
+            // Trạng thái chạy thật của xe (speed m/s, RPM, gear) — để test
+            // Phase 1 so sánh đồng hồ ↔ quãng đường thật.
+            get vehiclePhysics() { return vehiclePhysics; },
+            get physicsState() { return PHYSICS_STATE; },
+            get passengerSystem() { return passengerSystem; },
             get traffic() { return trafficManager; },
             get trafficDebug() { return trafficDebug; },
             // He thong chieu sang + thoi gian. Cho phep doi gio trong ngay de test
@@ -1759,6 +1930,13 @@ async function startGameFromMenu() {
             // Dựng 1 khung hình thủ công (tab bị ẩn thì requestAnimationFrame
             // bị treo -> không test được). Dùng để đo FPS/draw call thật.
             tick: (times = 1) => { for (let i = 0; i < times; i++) loop(); },
+            // Chay N buoc mo phong CO DINH (FIXED_STEP) khong phu thuoc FPS cua
+            // trinh duyet — dung cho test CDP headless: trang an/khong focus thi
+            // requestAnimationFrame bi dung, nhung logic game van phai kiem duoc.
+            manualStep: (n = 1) => {
+                for (let i = 0; i < n; i++) { updateWorld(FIXED_STEP); updateHUD(FIXED_STEP); }
+                renderer?.render(scene, camera);
+            },
             // DEBUG: cac phim dieu khien dang duoc nhan (dung de test IME/UniKey)
             pressedKeys: () => [...keysPressed.keys()],
             resolveKey: (ev) => resolveEventCode(ev),
@@ -1771,6 +1949,8 @@ async function startGameFromMenu() {
         cameraSystem.setMode("driver");
         cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
         cameraSystem.settings.fov = gameSettings.fov;
+        // Camera dán cùng chuyển động thân (PHẦN 10.5 — không rung khi vô nguyên do)
+        cameraSystem.setMotionSource(PHYSICS_STATE);
         await new Promise(r => setTimeout(r, 300));
         
         ui.setLoading("Giao thông & Hành khách...", 0.8);
@@ -1818,7 +1998,7 @@ async function startGameFromMenu() {
             }
         }
         
-        passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui });
+        passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui, interiorType: gameSettings.interior });
         await new Promise(r => setTimeout(r, 10));
         
         ui.setLoading("Hoàn tất...", 1.0);
@@ -1831,6 +2011,7 @@ async function startGameFromMenu() {
         paused = false;
         document.getElementById("hud").style.display = "block";
         initInput();
+        canvas?.focus?.();
         clock.start();
         lastTime = performance.now();
     } catch (error) {
@@ -1862,21 +2043,92 @@ function updateWorld(delta) {
     // Pass busGroup for shadow cascade updates
     lighting.update(delta, bus?.group || null);
     if (bus && bus.setDoor) {
-        doorProgress += (doorTarget - doorProgress) * 2.0 * delta;
-        bus.setDoor(doorProgress);
+        doorProgress += (doorTarget - doorProgress) * Math.min(1, 3.0 * delta);
+        bus.setDoor?.(doorProgress);
+        bus.doorOpen = doorTarget === 1 && doorProgress >= 0.98;
+        if (bus.doorOpen && !doorServiceStarted) {
+            doorServiceStarted = true;
+            if (passengerSystem &&
+                !passengerSystem.dropOffAtRouteDestination?.()) {
+                passengerSystem.pickUpPassengers();
+            }
+        } else if (doorTarget === 0) {
+            doorServiceStarted = false;
+        }
     }
+    // === VẬT LÝ CẢM GIÁC (physics_step.js) — nhận TRẠNG THÁI THẬT ===
     updateVehiclePhysics(delta);
+    // main.js giữ nguồn lái/tốc/phanh (có settings keySens); physics_step chỉ
+    // tính đại lượng cho camera/nội thất/âm thanh: roll/pitch/heave/sway,
+    // nhíp 4 bánh, RPM/hộp số — KHÔNG chạy hệ lái thứ hai song song.
+    const accelActivePhys = keysPressed.has("KeyW") || mobileInput.accel > 0;
+    const boostActivePhys = (keysPressed.has("ShiftLeft") || keysPressed.has("ShiftRight")) && accelActivePhys;
+    const throttleVal = boostActivePhys ? 1 : (accelActivePhys ? 0.3 : 0);
+    const brakeVal = keysPressed.has("Space") ? -1 :
+        (keysPressed.has("KeyS") || mobileInput.brake > 0 || keysPressed.has("AltLeft") || keysPressed.has("AltRight") ? -0.75 : 0);
+    // Tải xe theo số hành khách THẬT (nguồn duy nhất: hệ hành khách)
+    const paxInfo = passengerSystem?.getPassengerCount?.();
+    if (paxInfo && PHYSICS_STATE) {
+        PHYSICS_STATE.passengerCount = paxInfo.onboard || 0;
+        PHYSICS_STATE.massFactor = 1.0 + (paxInfo.onboard || 0) / (paxInfo.max || 20) * 0.33;
+    }
+    // PHASE 3 — Lấy mẫu cao độ mặt đường dưới 4 bánh (dữ liệu THẬT từ map qua
+    // getTerrainHeight — road surface boxes / địa hình; KHÔNG suy diễn).
+    let wheelSurface = null;
+    if (map?.getTerrainHeight && bus?.group) {
+      const p = bus.group.position, yaw = bus.group.rotation.y;
+      const sinY = Math.sin(yaw), cosY = Math.cos(yaw);
+      const d = BUS_DIMENSIONS;
+      const halfTrack = d.halfTrack ?? (d.width / 2 - 0.13);
+      const faZ = d.frontAxleZ ?? 3.65, raZ = d.rearAxleZ ?? -2.60;
+      const sample = (lx, lz) => {
+        const wx = p.x + lx * cosY + lz * sinY;
+        const wz = p.z - lx * sinY + lz * cosY;
+        const h = map.getTerrainHeight(wx, wz, p.y);
+        return Number.isFinite(h) ? h : null;
+      };
+      const ref = map.getTerrainHeight(p.x, p.z, p.y);
+      // fl/fr là trước-TRÁI/trước-PHẢI (+x bus local = bên PHẢI theo hệ bus)
+      const fl = sample(-halfTrack, faZ), fr = sample(halfTrack, faZ);
+      const rl = sample(-halfTrack, raZ),  rr = sample(halfTrack, raZ);
+      if ([ref, fl, fr, rl, rr].every(Number.isFinite)) wheelSurface = { fl, fr, rl, rr, ref };
+    }
+    const physState = updatePhysicsState(delta, vehiclePhysics.currentSpeedKmh || 0, steerAngle, throttleVal, brakeVal, vehiclePhysics.engineRPM, vehiclePhysics.gear, vehiclePhysics.massInfo || null, wheelSurface);
+    // Thân xe nghiêng/chúi/nhún qua motion group (bánh + đèn ngoài giữ root)
+    bus.setBodyMotion?.(physState.pitch, physState.roll, physState.heave, physState.sway);
+    // Nhíp 4 bánh nén/giãn theo tải (PHẦN 9.4/9.6)
+    bus.setWheelSuspension?.(physState.suspension);
+    // Road surface simulation — D-08: mô hình rung xác định theo quãng đường
+    // (physics_step.updateRoadRoughness), không còn Math.random() mỗi frame.
+    // PHASE 3: Surface properties from segment class/type (procedural, no map JSON change)
+    if (PHYSICS_STATE) {
+        // Bề mặt đã được cập nhật mỗi BƯỚC VẬT LÝ trong updateVehiclePhysics
+        // (cùng chỗ có đoạn đường đang chạy + độ dốc). Trước đây quét lưới
+        // segmentsNear ở đây mỗi bước (60 Hz) = cấp phát mảng vô ích.
+        updateRoadRoughness(delta, vehiclePhysics.speed);
+        // Grip is set by applySurfaceFromSegment on segment change (single source).
+        // No per-frame drift — that was a bug that slowly moved grip away from
+        // the correct surface value.
+    }
     // bus.update trước đây KHÔNG được gọi → đèn xi nhan/blink chết. Nối lại,
     // đồng thời là chu kỳ redraw cockpit (script update/BSOD 1s/lần).
     bus.update?.(delta);
     // tốc độ xe thật (kmh có dấu) → đồng hồ tài xế
-    bus.setDriverTelemetry?.(vehiclePhysics.currentSpeedKmh);
-    // Tiếng máy bám theo tốc độ thật (audio system — xem js/audio.js)
-    if (audioSystem?.isStarted()) audioSystem.setSpeed(vehiclePhysics.currentSpeedKmh);
+    bus.setDriverTelemetry?.(vehiclePhysics.currentSpeedKmh, vehiclePhysics.engineRPM, vehiclePhysics.isReversing ? -1 : vehiclePhysics.gear, vehiclePhysics.enginePowerKW);
+    // Tiếng máy bám TUA + TẢI thật (physics_step) — js/audio.js
+    if (audioSystem?.isStarted()) audioSystem.setSpeed(vehiclePhysics.currentSpeedKmh, PHYSICS_STATE.engineRPM, PHYSICS_STATE.engineLoad);
     cameraSystem?.update(delta);
-    if (bus?.group && map) map.updateChunks(bus.group.position.x, bus.group.position.z, delta, null, camera);
+    if (bus?.group && map) {
+        const t0 = performance.now();
+        map.updateChunks(bus.group.position.x, bus.group.position.z, delta, null, camera);
+        perfSection.chunk += performance.now() - t0;
+    }
     if (npc) npc.update(delta, 0);
-    if (trafficManager) trafficManager.update(delta, { x: bus.group.position.x, z: bus.group.position.z });
+    if (trafficManager) {
+        const t0 = performance.now();
+        trafficManager.update(delta, { x: bus.group.position.x, z: bus.group.position.z });
+        perfSection.traffic += performance.now() - t0;
+    }
     if (passengerSystem) passengerSystem.update(delta);
     if (bus?.group && camera && lighting) updateEnderman(scene, camera, lighting, { x: bus.group.position.x, z: bus.group.position.z }, bus.group.rotation.y, delta);
 }
@@ -1920,6 +2172,17 @@ function updateHUD(delta) {
 }
 
 const FIXED_STEP = 1/30;
+// D-07 — chống "thời gian mô phỏng trôi" (time dilation).
+// Trước đây: rawDelta bị kẹp 0.1s, chạy tối đa 2 bước, rồi `accumulator = 0`
+// → phần thời gian dư bị XOÁ, mô phỏng chạy chậm hơn thực tế (đo được 8 bước
+// trong 7 s khi tab bị throttle). Nay: giữ accumulator có biên, chạy tối đa
+// MAX_SUBSTEPS bước/frame, không xoá sạch phần dư.
+const MAX_FRAME_DELTA = 0.25;   // tab ẩn/breakpoint: không nhảy quá 250ms
+// Máy chậm (Pentium N5000 + iGPU): frame có thể tới 500-2000ms.
+// MAX_SUBSTEPS=4 cũ chỉ chạy 0.133s sim mỗi frame → sim chạy 1/4 đến 1/15 real-time
+// → xe gần như đứng yên. Tăng lên 15: ở 2 FPS xe vẫn chạy real-time; máy nhanh vẫn
+// chỉ dùng 1 substep/frame (accumulator không bao giờ đầy).
+const MAX_SUBSTEPS = 15;        // 15 × 33.3ms = 0.5s mô phỏng/frame (đủ cho 2 FPS)
 const MAX_FRAME_TIME = 50; // ms - if frame takes longer, log warning
 let accumulator = 0;
 let frameTimeHistory = new Array(60);
@@ -1930,6 +2193,8 @@ const MAX_HISTORY = 60;
 let perfWindowStart = performance.now();
 let perfWindowSum = 0, perfWindowCount = 0;
 let perfSpikeCount = 0, perfPeakMs = 0, perfMaxMs = 0;
+// Instrumentation chi tiết từng section (ms accumulated trong cửa sổ 10s)
+const perfSection = { physics: 0, traffic: 0, chunk: 0, shadow: 0, render: 0, other: 0 };
 
 function loop() {
     try {
@@ -1939,25 +2204,36 @@ function loop() {
         const now = performance.now();
         let rawDelta = (now - lastTime) / 1000;
         lastTime = now;
-        if (rawDelta > 0.1) rawDelta = 0.1;
+        if (rawDelta > MAX_FRAME_DELTA) rawDelta = MAX_FRAME_DELTA;
         if (gameState === "playing" && !paused && !isConsoleOpen) {
             accumulator += rawDelta;
+            // Giữ backlog có biên (không xoá sạch → không mất thời gian mô phỏng)
+            const maxAccum = FIXED_STEP * MAX_SUBSTEPS;
+            if (accumulator > maxAccum) accumulator = maxAccum;
             let steps = 0;
-            while (accumulator >= FIXED_STEP && steps < 2) {
+            while (accumulator >= FIXED_STEP && steps < MAX_SUBSTEPS) {
+                const t0 = performance.now();
                 updateWorld(FIXED_STEP);
+                perfSection.physics += performance.now() - t0;
                 accumulator -= FIXED_STEP;
                 steps++;
             }
-            if (steps >= 2) accumulator = 0;
+            if (accumulator < 0) accumulator = 0;
         }
         if (trafficDebug && trafficDebug.enabled) trafficDebug.update(rawDelta);
         
         // Render shadows BEFORE main scene render
         if (lighting && gameState === "playing") {
+            const t0 = performance.now();
             lighting.renderShadows(bus?.group || null);
+            perfSection.shadow += performance.now() - t0;
         }
         
-        if (renderer && scene && camera) renderer.render(scene, camera);
+        if (renderer && scene && camera) {
+            const t0 = performance.now();
+            renderer.render(scene, camera);
+            perfSection.render += performance.now() - t0;
+        }
         if (gameState === "playing") updateHUD(rawDelta);
         
         // Frame time monitoring
@@ -1983,10 +2259,16 @@ function loop() {
         if (nowLoop - perfWindowStart >= 10000) {
             if (perfSpikeCount > 0) {
                 const avg = perfWindowSum / Math.max(1, perfWindowCount);
-                console.warn(`[PERF] Spikes ${perfSpikeCount}/${perfWindowCount} frame trong 10s — đỉnh ${perfMaxMs.toFixed(1)}ms, TB ${avg.toFixed(1)}ms`);
+                const n = Math.max(1, perfWindowCount);
+                const s = perfSection;
+                console.warn(`[PERF] Spikes ${perfSpikeCount}/${perfWindowCount} frame trong 10s — đỉnh ${perfMaxMs.toFixed(1)}ms, TB ${avg.toFixed(1)}ms`
+                    + ` | updateWorld ${(s.physics / n).toFixed(1)}ms (chunk ${(s.chunk / n).toFixed(1)}, traffic ${(s.traffic / n).toFixed(1)})`
+                    + ` · shadow ${(s.shadow / n).toFixed(1)}ms · render ${(s.render / n).toFixed(1)}ms`);
             }
             perfWindowStart = nowLoop;
             perfWindowSum = 0; perfWindowCount = 0; perfSpikeCount = 0; perfPeakMs = 0; perfMaxMs = 0;
+            perfSection.physics = 0; perfSection.traffic = 0; perfSection.chunk = 0;
+            perfSection.shadow = 0; perfSection.render = 0; perfSection.other = 0;
         }
     } catch (e) {
         console.error("Loop Error:", e);

@@ -16,6 +16,7 @@
 // =====================================================================
 import { createNpcBus, pickNpcSkinPath, pickLedColor, loadNpcSkinList } from "../bus.js";
 import { TrafficAI, AI_STATE } from "./TrafficAI.js";
+import { rectContactMTV } from "../physics_step.js";
 import { getGraphicsSettings } from "./GraphicsSettings.js";
 import { hypot2 } from "../utils.js";
 import { createSeededRandom, clamp } from "../utils.js";
@@ -66,7 +67,7 @@ const VEHICLE_DRIVER = {
 //   * player: collisionSystem đăng ký r=4 KHÔNG data (chỉ là broad-phase);
 //     khối tròn r=4 quá rộng ngang (1.265+4+0.12 ≈ 5.4m) -> NPC phanh ảo ở
 //     làn kề. Dùng OBB xe thật theo heading hiện hành của playerActor.
-const _SAT_AXES_NPC = new Float64Array(8);
+// SAT overlap OBB×OBB dùng helper CHUNG với xe người chơi (physics_step.rectContactMTV)
 function _narrowOverlap(ai, hit, playerRot) {
     const d = hit.data;
     let bhl, bhw, bRot;
@@ -86,23 +87,9 @@ function _narrowOverlap(ai, hit, playerRot) {
         bhw = d && typeof d.hw === 'number' ? d.hw : bhl;
         bRot = d && typeof d.rot === 'number' ? d.rot : 0;
     }
-    const aFx = Math.sin(ai.heading), aFz = Math.cos(ai.heading);
-    const bFx = Math.sin(bRot), bFz = Math.cos(bRot);
-    const dx = hit.x - ai.collider.x, dz = hit.z - ai.collider.z;
-    const axes = _SAT_AXES_NPC;
-    axes[0] = aFx; axes[1] = aFz; axes[2] = aFz; axes[3] = -aFx;
-    axes[4] = bFx; axes[5] = bFz; axes[6] = bFz; axes[7] = -bFx;
-    for (let i = 0; i < 4; i++) {
-        const nx = axes[i * 2], nz = axes[i * 2 + 1];
-        const required =
-              ahl * Math.abs(aFx * nx + aFz * nz)
-            + ahw * Math.abs(aFz * nx - aFx * nz)
-            + bhl * Math.abs(bFx * nx + bFz * nz)
-            + bhw * Math.abs(bFz * nx - bFx * nz)
-            + 0.12;   // nghe OBB_MARGIN của main.js: hãm hơi sớm hơn chút, đỡ lún
-        if (Math.abs(dx * nx + dz * nz) > required) return false;   // trục phân ly
-    }
-    return true;
+    // Cùng margin 0.12 với xe người chơi (đỡ lún)
+    return !!rectContactMTV(ai.collider.x, ai.collider.z, ai.heading, ahl, ahw,
+        hit.x, hit.z, bRot, bhl, bhw, 0.12);
 }
 
 // Lấy LOOKAHEAD từ TrafficAI (tránh duplicate constant)
@@ -181,6 +168,11 @@ export class TrafficManager {
         // Dùng cho TrafficAI._scan để chỉ quét xe trong bán kính LOOKAHEAD
         this._vehicleGrid = new Map();
         this._vehicleGridCellSize = 100; // 100m cells
+        // Pool mảng kết quả _getNearbyVehicles (tránh cấp phát mảng mới mỗi xe mỗi frame -> GC churn trên máy yếu)
+        this._nearbyOut = [];
+        // Chỉ rebuild spatial grid khi player di chuyển đủ xa (cellSize * 0.5 = 50m)
+        // Như vậy khi mọi vật đứng yên / di chuyển chậm, grid không bị rebuild bất cứ frame nào.
+        this._lastGridRebuildPos = { x: 0, z: 0 };
 
         // Throttle A* retarget: A* trên graph ~10k nodes có thể tốn 10-40ms.
         // Nếu nhiều xe cùng retarget cùng lúc (sau spawn) → frame spike.
@@ -611,6 +603,9 @@ export class TrafficManager {
             else if (lvl === 'MID') { if (dist < 150) next = 'NEAR'; else if (dist > 320) next = 'FAR'; }
             else { if (dist < 300) next = 'MID'; }
             if (next !== lvl) ai.setAILevel(next);
+            // Khoang lái NPC: đồng bộ vô lăng/tay lái + ẩn xa (tiết kiệm draw call)
+            if (ai.vehicle.setCockpitSteering) ai.vehicle.setCockpitSteering(ai.steerAngle || 0);
+            if (ai.vehicle.setCockpitVisible) ai.vehicle.setCockpitVisible(dist < 150);
 
             // Throttle A* retarget: chỉ cho phép 1 xe retarget mỗi 0.5s
             // Xe không được retarget sẽ giữ goal cũ (hoặc không goal) — an toàn
@@ -811,10 +806,20 @@ export class TrafficManager {
     // chiếu qua đêm -> an toàn khi tái sử dụng.
     _updateVehicleGrid() {
         const frameNo = this._frameNo;
+        const playerPos = this.lastPlayerPos;
+        const cellSize = this._vehicleGridCellSize;
+        const dx = playerPos.x - this._lastGridRebuildPos.x;
+        const dz = playerPos.z - this._lastGridRebuildPos.z;
+        // Chỉ rebuild grid khi player di chuyển đủ xa (50m). Như vậy khi đứng yên
+        // / di chuyển chậm, grid không bị rebuild bất cứ frame nào -> giảm O(N)
+        // mỗi frame trên máy yếu. Xe NPC di chuyển chậm, grid cũ vẫn chấp nhận.
+        if (Math.hypot(dx, dz) <= cellSize * 0.5) return;
+        this._lastGridRebuildPos.x = playerPos.x;
+        this._lastGridRebuildPos.z = playerPos.z;
+
         for (const a of this._vehicleGrid.values()) {
             if (a._f !== frameNo) a.length = 0;
         }
-        const cellSize = this._vehicleGridCellSize;
         for (let i = 0; i < this.aiVehicles.length; i++) {
             const ai = this.aiVehicles[i];
             if (!ai.active || !ai.collider) continue;
@@ -832,12 +837,14 @@ export class TrafficManager {
     }
 
     // Lấy xe trong bán kính (O(1) query qua grid)
+    // Mảng kết quả được reuse (`_nearbyOut`) để tránh cấp phát mảng mới mỗi xe mỗi frame.
     _getNearbyVehicles(x, z, radius) {
         const cellSize = this._vehicleGridCellSize;
         const rCells = Math.ceil(radius / cellSize);
         const cx0 = Math.floor(x / cellSize);
         const cz0 = Math.floor(z / cellSize);
-        const out = [];
+        const out = this._nearbyOut;
+        out.length = 0;
         for (let dx = -rCells; dx <= rCells; dx++) {
             for (let dz = -rCells; dz <= rCells; dz++) {
                 const key = (cx0 + dx) + ',' + (cz0 + dz);

@@ -9,7 +9,7 @@ const DEFAULTS = {
     updateInterval: 0.25,    // s: tần số quét (4 Hz)
     toleranceKmh: 5,         // vượt quá limit + tolerance mới tính vi phạm
     violationHoldSec: 1.5,   // phải vượt liên tục chừng này giây mới phạt
-    warningSec: 6,           // thời gian hiện bảng cảnh báo
+    warningSec: 4,           // thời gian hiện bảng cảnh báo
     resetAfterSec: 10,       // thời gian hết vi phạm để hạ nhiệt
 };
 
@@ -19,7 +19,7 @@ function pointSegDist(px, pz, ax, az, bx, bz) {
     const l2 = dx * dx + dz * dz;
     let t = l2 > 0 ? ((px - ax) * dx + (pz - az) * dz) / l2 : 0;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
-    const ex = px - (ax + dx * t), ez = pz - (az + dz * t);
+    const ex = px - (ax + dx * t), ez =         pz - (az + dz * t);
     return Math.sqrt(ex * ex + ez * ez);
 }
 
@@ -30,7 +30,8 @@ export function getSegmentSpeedLimit(roadGraph, seg) {
     if (Number.isFinite(raw) && raw > 0) return raw;
     if (roadGraph && typeof roadGraph.getLaneMeta === "function") {
         try {
-            const meta = roadGraph.getLaneMeta(seg);
+            const meta = roadGra
+            ph.getLaneMeta(seg);
             const m = meta ? Number(meta.speedKmh) : NaN;
             if (Number.isFinite(m) && m > 0) return m;
         } catch (e) { /* bỏ qua nếu thiếu dữ liệu */ }
@@ -69,28 +70,6 @@ export function createCSGTManager({ roadGraph, stationsData = [], options = {} }
                 stopSignal: st.stopSignal === true
             });
         }
-    }
-
-    // Nạp thêm chốt CSGT THẬT trong thế giới (map.getCSGTCheckpoints()).
-    // Chỉ nhận mục được đánh dấu rõ là CSGT — không suy diễn từ trạm thu phí,
-    // trạm dừng nghỉ hay bến xe (đó chính là nguồn cảnh báo "ma" trước đây).
-    function addCheckpoints(list) {
-        if (!Array.isArray(list)) return csgtCheckpoints.length;
-        for (const st of list) {
-            if (!st || st.type !== "CSGT") continue;
-            if (!Number.isFinite(st.x) || !Number.isFinite(st.z)) continue;
-            if (csgtCheckpoints.some(cp => cp.id === (st.id || st.name))) continue;
-            csgtCheckpoints.push({
-                id: st.id || st.name,
-                name: st.name || "Chốt CSGT",
-                x: st.x,
-                y: Number.isFinite(st.y) ? st.y : 0,
-                z: st.z,
-                radius: Number.isFinite(st.radius) && st.radius > 0 ? st.radius : cfg.csgtDetectRadius,
-                stopSignal: st.stopSignal === true
-            });
-        }
-        return csgtCheckpoints.length;
     }
 
     function findNearestSegment(x, z) {
@@ -262,9 +241,8 @@ export function createCSGTManager({ roadGraph, stationsData = [], options = {} }
     hideWarning();
 
     return {
-        update, reset, dispose, addCheckpoints,
+        update, reset, dispose,
         getLimitKmh: () => limitKmh,
         getViolations: () => violations,
-        getCheckpoints: () => csgtCheckpoints,
     };
 }

@@ -411,12 +411,17 @@ export class BusStationManager {
         // "trống trơn" với collisionSystem nên xe lái xuyên qua cả dãy xe
         // đậu (15 bãi Nam Tuy Hòa như không khí). data.ai (chỉ heading) cho
         // mtvForHit dùng đúng OBB full kích thước xe khách.
-        if (window.collisionSystem && bus.userData.colId === undefined) {
-            bus.userData.colId = window.collisionSystem.register(
-                slot.position.x, slot.position.z, 7.0, 'static',
-                { ai: { heading: bus.group.rotation.y } },
-                sy, 4.0
-            );
+        if (window.collisionSystem) {
+            // userData luôn tự nảy nếu nguồn tạo quên (belt & braces) — trước đây
+            // bus.userData undefined nổ TypeError 'colId' trong _spawnOneBus.
+            if (!bus.userData) bus.userData = {};
+            if (bus.userData.colId === undefined) {
+                bus.userData.colId = window.collisionSystem.register(
+                    slot.position.x, slot.position.z, 7.0, 'static',
+                    { ai: { heading: bus.group.rotation.y } },
+                    sy, 4.0
+                );
+            }
         }
         this.stationBuses.push({ bus, state: 'PARKED' });
     }
