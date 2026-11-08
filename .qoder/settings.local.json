@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la js/traffic; echo \"---generated---\"; ls -la generated | head -40; echo \"---assets---\"; ls assets; echo \"---docs---\"; ls docs; echo \"---vendor---\"; ls vendor; echo \"---package---\"; cat package.json 2>/dev/null; echo \"---README---\"; cat README.md)",
+      "Bash(ls -la generated/maps | head; echo \"---assets/model---\"; ls assets/model; echo \"---assets/other---\"; ls assets/other; echo \"---assets/textures---\"; ls assets/textures | head -50; echo \"---ui---\"; ls assets/ui; echo \"---grep importmap---\"; grep -n \"importmap\\\\|module\\\\|script\" index.html | head -40)",
+      "Bash(cat server.js; echo \"---gitignore---\"; cat .gitignore; echo \"---_tmpbench---\"; ls -la _tmpbench | head; echo \"---node_modules---\"; ls node_modules | head -40)",
+      "Bash(cd X:\\\\Documents\\\\PentiumStudio\\\\CoachVN-Source-main-main\\\\CoachVN-Source-main-main && sed -n 1,60p _tmpbench/cdp_errprobe.mjs)",
+      "Bash(ls \"/c/Program Files/BraveSoftware/Brave-Browser/Application/\" 2>/dev/null | head -5; ls \"/c/Program Files/Google/Chrome/Application/\" 2>/dev/null | head -5; ls \"/c/Program Files \\(x86\\)/Microsoft/Edge/Application/\" 2>/dev/null | head -5; node --version)",
+      "Bash(node:*)",
+      "Bash(Grep\\(\\) { :; }; true)",
+      "Bash(sleep 1; curl -s -o /dev/null -w \"%{http_code} %{redirect_url}\\\\n\" http://127.0.0.1:8931/ ; node _tmpbench/cdp_phase0_baseline.mjs 2>&1 | tail -60)",
+      "Bash(node _tmpbench/cdp_phase0_baseline.mjs 2>&1 | tail -50)",
+      "Bash(node _tmpbench/cdp_diag_input.mjs 2>&1 | tail -20)",
+      "Bash(cd \"$\\(pwd\\)\" && python - <<'EOF'\nimport io\np='_tmpbench/cdp_diag_input.mjs'\ns=io.open\\(p,encoding='utf-8'\\).read\\(\\)\nstart=s.index\\('  // expose internal physics module for diagnosis'\\)\nend=s.index\\('  for\\(let i=0;i<20;i++\\){await send\\(\"Input.dispatchKeyEvent\"'\\)\ns=s[:start]+s[end:]\nio.open\\(p,'w',encoding='utf-8',newline='\\\\n'\\).write\\(s\\)\nprint\\(\"ok\"\\)\nEOF)",
+      "Bash(node _tmpbench/cdp_diag_move.mjs 2>&1 | tail -24)",
+      "Bash(node _tmpbench/cdp_diag_forces.mjs 2>&1 | tail -60)",
+      "Bash"
+    ]
+  }
+}

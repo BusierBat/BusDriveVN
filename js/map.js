@@ -1,43 +1,4 @@
-﻿// js/map.js — BUSDRIVEVN WORLD RUNTIME
-// =============================================================================
-// Vai trò: load + stream + render world 3D (terrain thật, road network, bến xe,
-//          building, vật thể dọc đường) và cung cấp API contract cho game.
-// API CONTRACT (KHÔNG ĐƯỢC ĐỔI — main.js / npc.js / ui.js / traffic/* dùng):
-//   new MapLoader(scene)            -> loadInitialData()
-//   getTerrainHeight(x, z)          -> number   (main.js mỗi frame)
-//   getHeight(x, z)                 -> alias của getTerrainHeight
-//   getSpawnPoint(direction?)       -> {x,y,z,heading}
-//   getRoadGraph()                  -> RuntimeRoadGraph (nodes/segments/pois)
-//   getMinimapData()                -> {segments, route, pois}
-//   getParkingSlots(excludePosition?) -> [{position:{x,y,z}, rotation}]
-//   getRouteWaypoints() / getPOIs()
-//   getAdminUnit(x, z)               -> đơn vị hành chính sau sáp nhập 12/6/2025
-//   getDriveableSurface(x, z, yHint) -> height query: mặt đường ĐANG LÁI + box
-//   debugSurfaceAt(x, z, yHint)      -> debug "Xe rơi ở đâu?" (seg/box/transform)
-//   updateChunks(x, z, dt?, camDir?) | setPlayerPosition(x, z, dt?, camDir?)
-//   dispose()
-// NGUỒN SỰ THẬT: tools/map_generator.py (SOURCE OF TRUTH)
-//   world.json.terrain = { coast, corridor:[x,z,u], anchors, roadLift, yardLift }
-//   -> getElevation() ở đây COPY NGUYÊN VĂN công thức Python, nên
-//      terrain (JS) == node.y (Python) == mặt đường => XE KHÔNG BAY, KHÔNG CHÌM.
-// LỚP Y (rule 38):
-//   terrainY  = getElevation(x,z)
-//   road top  = node.y + ROAD_LIFT      (nổi nhẹ -> không z-fighting)
-//   yard      = node.y + YARD_LIFT
-//   bus       = getTerrainHeight(x,z) + 0.5   (main.js)
-// RULE 44: mọi fetch chunk có try/catch/finally, in-flight luôn được giải phóng.
-// RULE 50: merge geometry + InstancedMesh + pooling, KHÔNG tạo mesh/segment.
-// DỮ LIỆU CHUNK (v2): generator gom 4x4 chunk (1024m) vào 1 file "sectors/x_z.json"
-//   thay vì 1 file/chunk (14k file -> ~1.9k file). world.json có
-//   sectorSize + sectorIndex (tên file có sẵn) để skip 404.
-//   => _fetchSector() + cache LRU 6 sector. Vẫn giữ đường chunk cũ (fallback).
-// HỖ TRỢ ĐỊA HÌNH (mirror Python):
-//   sông/hồ  : world.water -> waterFactor() khắc lòng sông + vẽ mặt nước
-//   cầu      : seg.bridge -> mặt cầu + lan can + trụ
-//   hầm      : seg.class === "TUNNEL" -> vỏ hầm + 2 cổng hầm
-//   chi tiết : đèn đường, vạch sơn, vỉa hè, bảng hiệu + mái hiên, lan can,
-//              điểm dừng xe buýt, trạm thu phí (thi trường 1 lần, không lặp)
-// =============================================================================
+﻿// js/map.js
 
 import * as THREE from "three";
 import { hypot2 } from "./utils.js";
@@ -45,16 +6,15 @@ import { RuntimeRoadGraph } from "./RuntimeRoadGraph.js";
 
 const DATA_PATH = "generated/maps/";
 
-// ---- streaming / chunk infrastructure (chunk là HẠ TẦNG, không phải địa lý) ----
 const CHUNK_SIZE = 256;
-const LOAD_RADIUS = 6;
-const RENDER_RADIUS_MAX = 5;   // <= fog far (1450m)
+const LOAD_RADIUS = 4;         // 1024m — đủ buffer ngoài fog.far (800m), không preload chunk ngoài tầm nhìn
+const RENDER_RADIUS_MAX = 5;   // 1280m — tầm render tối đa, fog che phần còn lại
 const RENDER_RADIUS_MIN = 3;
-const UNLOAD_RADIUS = 9;
+const UNLOAD_RADIUS = 6;       // 1536m — buffer unload hợp lý, tránh keep chunk xa remnant
 const MAX_LOAD_PER_TICK = 2;   // Giảm từ 4 -> 2 để spread load, tránh frame spike
 // NGAN SACH DỰNG HÌNH CHUNK MOI FRAME (ms) — fix "dong bang vai giay khi dang
 // lai". Do duoc: 1 chunk day du = 901-1258ms (may thu), va truoc day
-// _loadChunk goi _tryBuildChunk NGAY trong microtask sau fetch -> 1-2 chunk
+// _loadChunk goi _tryBuildChunk NGAY trong microtask sau fetch -> 1-       2 chunk
 // moi tick = block main thread 1-2.5s moi lan vao vung moi. Gio dang chia
 // thanh 4 giai doan va moi frame chi tieu toan nhat BUILD_BUDGET_MS.
 const BUILD_BUDGET_MS = 8;
@@ -65,18 +25,12 @@ const ACC_CELL = 4096;         // cell của spatial index (mirror Python)
 
 // ---- lớp Y (mirror Python) ----
 const ROAD_LIFT = 0.12;
-// P87 — kernel `u` theo khoảng cách tới các điểm corridor (thay bảng bin-median
-// theo z: bảng KHÔNG biểu diễn được corridor đi 2 lần qua cùng z ⇒ terrain cliff
-// 13–19m). Wendland compact-support: w = (1-(d/R)^2)^2, w=0 ngoài R ⇒ u liên
-// tục khi điểm tra đổi đoạn gần nhất. R = 3.5km an toàn với ring r=1 (±4096m).
-// TRỘN với bảng z theo khoảng cách: sát corridor dùng kernel (đúng nhánh), xa
-// hơn dùng bảng z (dữ liệu export ⇒ py/js luôn khớp ⇒ parity an toàn).
+
 const U_KERNEL_R = 3500;
 const U_KERNEL_R2 = U_KERNEL_R * U_KERNEL_R;
 const YARD_LIFT = 0.02;   // 2 cm — vừa đủ tránh z-fighting, khớp slot/terrain (trước 0.10 = 10 cm => sân lơ lửng, cỏ lọt)
 const BUS_AXLE = 0.5;
-// BỀ DÀY THÂN ĐƯỜNG. Đường là KHỐI, không phải texture: mặt trên +
-// váy bên xuống. 0.55m = bề dày nền đường sau vỉa.
+
 const ROAD_THICK = 0.55;
 // Bán kính dò mặt đường quanh xe. Rộng hơn "width*0.5+2" của
 // `_nearestRoad` vì phải dò NHIỀU mặt đường (kể cả mặt thấp hơn) rồi chọn
@@ -1095,7 +1049,7 @@ function clipRect(poly, minX, maxX, minZ, maxZ) {
 // Vì sao dùng chung: 1 texture 2MB × N biển = ngốn VRAM; 1 material =
 // 1 shader program, ít draw call. Fallback Canvas nếu ảnh lỗi.
 // =============================================================================
-const AD_TEXTURE_PATH = "assets/other/quangcao.png";
+const AD_TEXTURE_PATH = "assets/other/signboard.png";
 const AD_ASPECT = 1196 / 896;         // tỷ lệ ảnh thật (đo từ file)
 let _adMat = null;                   // material dùng chung
 let _adTex = null;                   // texture dùng chung
@@ -1304,6 +1258,9 @@ export class MapLoader {
             this._buildRoadGroup();
             this._buildStations();
             this._buildAdminIndex();
+            // Đóng băng world matrix cho stationGroup (bến, biển, trạm...) — tất cả
+            // mesh/InstancedMesh tĩnh trong đó, giảm CPU matrix recompose mỗi frame.
+            this.freezeStaticMeshes(this.stationGroup);
             // WARMUP (xem _warmupBuilders): dựng thử chunk spawn trong màn hình
             // loading — chuyển chi phí "lạnh" (fetch sector + V8 compile 4 hàm
             // build lớn; đo call đầu LẠNH 142ms vs 37ms khi ấm) ra khỏi những
@@ -1810,6 +1767,19 @@ export class MapLoader {
     }
 
     _buildRoadGroup() { /* roads render theo chunk trong _loadChunk */ }
+
+    /**
+     * Đóng băng world matrix của toàn bộ mesh/InstancedMesh đã dựng xong trong
+     * một group — không có vật thể tĩnh nào trong chunk di chuyển, nên renderer
+     * không cần recompose matrix mỗi frame (CPU tiết kiệm đáng kể khi ~20k mesh).
+     * Không ảnh hưởng render/shadow/culling — chỉ tắt update matrix runtime.
+     */
+    freezeStaticMeshes(root) {
+        if (!root) return;
+        root.updateMatrixWorld(true);
+        root.traverse((o) => { if (o.isMesh || o.isInstancedMesh) o.matrixAutoUpdate = false; });
+    }
+
 
     // ---------------------------------------------------------------------
     // GIAO LỠ — index tinh, dựng 1 LẦN khi load (rule 12/13)
@@ -4909,7 +4879,10 @@ export class MapLoader {
         }
 
         // Frustum culling for rendered chunks - hide chunks outside view
-        if (this._frustum) {
+        // Chạy mỗi 2 frame (frustum ít thay đổi giữa các frame) để giảm tải CPU
+        // trên máy yếu. 1 frame trễ ~16ms, không đáng kể về hình ảnh.
+        this._frustumCullTick = ((this._frustumCullTick || 0) + 1) & 1;
+        if (this._frustum && this._frustumCullTick === 0) {
             for (const [key, entry] of this.loadedChunks) {
                 if (!entry.built || !entry.group.boundingBox) continue;
                 const visible = this._frustum.intersectsBox(entry.group.boundingBox);
@@ -5131,7 +5104,7 @@ export class MapLoader {
                 // chunk mới được chia đều ra các frame thay vì dồn cùng 1 render.
                 if (attachedThisCall >= 1) return;
                 this.chunkRoot.add(g);
-                g.updateMatrixWorld(true);
+                this.freezeStaticMeshes(g);
                 e.group.boundingBox = new THREE.Box3().setFromObject(g);
                 e.built = true;
                 e.building = false;
@@ -5169,7 +5142,7 @@ export class MapLoader {
         }
         this.chunkRoot.add(g);
         // Compute bounding box for frustum culling
-        entry.group.updateMatrixWorld(true);
+        this.freezeStaticMeshes(g);
         const box = new THREE.Box3().setFromObject(entry.group);
         entry.group.boundingBox = box;
         entry.built = true;

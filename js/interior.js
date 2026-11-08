@@ -1,21 +1,51 @@
-// js/interior.js
+function wallBoxSide(w, h, d, mat, x, y, zCenter, group, side, doorCut) {
+    if (!(side < 0 && doorCut)) return box(w, h, d, mat, x, y, zCenter, group);
+    const z0 = zCenter - d / 2, z1 = zCenter + d / 2;
+    const y0 = y - h / 2, y1 = y + h / 2;
+    const dz0 = doorCut.z0, dz1 = doorCut.z1;
+    const dy0 = doorCut.y0 ?? -1e9, dy1 = doorCut.y1 ?? 1e9;
+    if (dz1 <= z0 || dz0 >= z1 || dy1 <= y0 || dy0 >= y1) return box(w, h, d, mat, x, y, zCenter, group);
+    if (dz0 - z0 > 1e-4) box(w, h, dz0 - z0, mat, x, y, (z0 + dz0) / 2, group);
+    if (z1 - dz1 > 1e-4) box(w, h, z1 - dz1, mat, x, y, (dz1 + z1) / 2, group);
+    const cz0 = Math.max(z0, dz0), cz1 = Math.min(z1, dz1);
+    const above = y1 - Math.max(y0, dy1);
+    if (above > 1e-4) box(w, above, cz1 - cz0, mat, x, Math.max(y0, dy1) + above / 2, (cz0 + cz1) / 2, group);
+    const below = Math.min(y1, dy0) - y0;
+    if (below > 1e-4) box(w, below, cz1 - cz0, mat, x, y0 + below / 2, (cz0 + cz1) / 2, group);
+    return null;
+}
+
 import * as THREE from "three";
 
 const L = 12, W = 2.4, H = 3.3;
-const FLOOR_Y = 0.0, CEILING_Y = 3.2;
+// ===== TÁI CẤU TRÚC CHIỀU CAO HAI TẦNG (Thaco Mobihome — neo theo texture vỏ xe) =====
+// Texture vỏ xe (bus.js, PX.sideR) định nghĩa 2 dải kính CỐ ĐỊNH trong texture:
+//   Kính dưới : y 1.920 … 2.441
+//   Dải đen phân tầng: y 2.441 … 2.843
+//   Kính trên : y 2.843 … 3.405
+//   Gầm xe    : y 0.307 (BODY_BOTTOM — thân xe bắt đầu)
+// Sàn hành khách NÂNG LÊN ~1m → khoảng trống 0.307..0.92 để trống cho khoang
+// hành lý tương lai. Nội thất (giường/vách/kính nội thất/đèn) neo theo các dải
+// kính của vỏ xe, KHÔNG neo theo số cũ của cấu hình phòng 20/34.
+const FLOOR_Y = 1.00, CEILING_Y = 3.6;   // sàn khoang hành khách / trần
+const UPPER_FLOOR_Y = 2.49;              // sàn tầng trên (vách phân tầng) — mép y 2.45..2.53
 const WALL_X = 1.15;
 const CABIN_END_Z = 4.8;
+// Texture WELCOME dùng CHUNG cho mọi lần dựng platform bậc lên (không tạo lại
+// CanvasTexture khi đổi cấu hình nội thất 20 phòng <-> 34 giường).
+let _welcomePlateShared = { tex: null };
 
 const BED_WIDTH = 0.7;
 const BED_LENGTH = 1.7;
 const BED_Z_POSITIONS = [1.85, 2.05, 0.25, -1.85, -3.5, -5.15];
-const LOWER_BED_Y = 0.67;
-const UPPER_BED_Y = 1.67;
+const LOWER_BED_Y = 1.62;
+const UPPER_BED_Y = 2.69;
 
-const WIN_LO_BOT = 0.8;
-const WIN_LO_TOP = 1.4;
-const WIN_HI_BOT = 1.8;
-const WIN_HI_TOP = 2.4;
+// Kính nội thất PHẢI trùng dải kính vẽ trong texture vỏ xe (bus.js):
+const WIN_LO_BOT = 1.92;
+const WIN_LO_TOP = 2.44;
+const WIN_HI_BOT = 2.845;
+const WIN_HI_TOP = 3.405;
 
 const matBrownLeather = new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.7 });
 const matBrownLeatherDark = new THREE.MeshStandardMaterial({ color: 0x4a2a12, roughness: 0.8 });
@@ -29,10 +59,10 @@ const matGlassClear = new THREE.MeshStandardMaterial({ color: 0x1a2a3a, transpar
 const matShell = new THREE.MeshStandardMaterial({ color: 0xc8c0b0, roughness: 0.9 });
 const matDark = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.7 });
 const matBlack = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
-const matDashboard = new THREE.MeshStandardMaterial({ color: 0x1a1a2a, roughness: 0.6, metalness: 0.2 });
-const matDashboardPanel = new THREE.MeshStandardMaterial({ color: 0x222233, roughness: 0.4, metalness: 0.3 });
+const matDashboard = new THREE.MeshStandardMaterial({ color: 0x252540, roughness: 0.55, metalness: 0.2 });
+const matDashboardPanel = new THREE.MeshStandardMaterial({ color: 0x2e2e46, roughness: 0.4, metalness: 0.3 });
 const matCluster = new THREE.MeshStandardMaterial({ color: 0x0a0a14, emissive: 0x35ffd0, emissiveIntensity: 0.6, roughness: 0.3 });
-const matSteeringWheel = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.7 });
+const matSteeringWheel = new THREE.MeshStandardMaterial({ color: 0x222228, roughness: 0.7 });
 const matSeat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.8 });
 const matSeatCushion = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.9 });
 
@@ -67,7 +97,7 @@ const matDivider = new THREE.MeshStandardMaterial({ color: 0xc8c0b0, roughness: 
 const matUpperFloor = new THREE.MeshStandardMaterial({ color: 0xd0c8b8, roughness: 0.8 });
 const matBtn = new THREE.MeshStandardMaterial({ color: 0x333344 });
 const matFloorPax = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 });
-const matScreen = new THREE.MeshStandardMaterial({ color: 0x0a0a1a, emissive: 0x224488, emissiveIntensity: 0.3 });
+const matScreen = new THREE.MeshStandardMaterial({ color: 0x0a0a1a, emissive: 0x2f6fbf, emissiveIntensity: 0.5 });
 
 function box(w, h, d, mat, x, y, z, group) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -109,7 +139,15 @@ function buildCabin(groups) {
     windshield.matrixAutoUpdate = false;
     Windows.add(windshield);
 
+    // Kính buồng lái 2 bên + khung viền.
+    // LƯU Ý (CHẶN CỬA): bên -x LÀ CỬA LÊN XE — lỗ cửa z 5.14..6.19 cắt
+    // y 0.31..2.75 trong vỏ xe (bus.js wallQuad). Kính/khung lẻ bên -x đứng
+    // NGUYÊN tại z 5.5 (y 0.8..2.4) sẽ chặn lối đi BẤT KỂ cửa đóng/mở — cửa
+    // trượt mở vẫn bị tấm "kính giả" bịt lại. Lối vào CHỈ còn thông thoáng khi
+    // bỏ cặp kính-khung BÊN TRÁI (bề mặt cửa đã có kínhhình vẽ trên texture
+    // + door mesh bus.js). Bên +x giữ nguyên (cửa sổ ghế lái, RHD).
     for (const side of [1, -1]) {
+        if (side < 0) continue;   // cửa bên -x: không dựng kính/khung tĩnh
         const xGlass = side * (WALL_X + 0.01);
         const cabinWin = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 1.6), matGlassClear);
         cabinWin.position.set(xGlass, 1.6, 5.5);
@@ -122,107 +160,286 @@ function buildCabin(groups) {
         box(0.6, 0.04, 0.04, matShell, side * WALL_X, 2.4, 5.5, BodyShell);
     }
 
-    box(2.1, 0.04, 0.06, matShell, 0, 2.5, 6.0, BodyShell);
-    box(2.1, 0.06, 0.06, matShell, 0, 1.1, 6.0, BodyShell);
-    box(0.04, 1.5, 0.06, matShell, -1.05, 1.8, 6.0, BodyShell);
+    // Keep the front frame but leave the stair-width entry corridor clear.
+    const addFrontCrossbar = (y, h) => {
+        const xMin = -1.05, xMax = 1.05;
+        const entryMin = -1.12, entryMax = -0.40;
+        const segments = [
+            [xMin, Math.min(xMax, entryMin)],
+            [Math.max(xMin, entryMax), xMax]
+        ];
+        for (const [x0, x1] of segments) {
+            if (x1 > x0) box(x1 - x0, h, 0.06, matShell, (x0 + x1) / 2, y, 6.0, BodyShell);
+        }
+    };
+    addFrontCrossbar(2.5, 0.04);
+    addFrontCrossbar(1.1, 0.06);
+    // Khung trước: bên -x chừa không gian gần mép cửa (aperture tới z 6.189) — chỉ dựng đoạn an toàn
+    box(0.04, 1.5, 0.06, matShell, -1.05, 1.8, 5.00, BodyShell);
     box(0.04, 1.5, 0.06, matShell, 1.05, 1.8, 6.0, BodyShell);
-    box(0.06, 1.8, 0.06, matShell, -WALL_X, 1.8, 5.8, BodyShell);
+    // Cột tiền buồng lái: CHỈ bên +x. Bên -x (x = -WALL_X) tại z 5.8 nằm GIỮA
+    // khoang cửa lên xe (aperture thân xe z 5.139..6.189, bus.js) — giữ cột này
+    // sẽ chặn lối đi khi cửa mở. Bề mặt cửa do door mesh + bodyDoorWall quản lý.
     box(0.06, 1.8, 0.06, matShell, WALL_X, 1.8, 5.8, BodyShell);
 
-    // ===== TÁP-LÔ (REBUILD — hết dạng "bàn": không còn slab nổi + phần thả lơ lửng) =====
-    // Cấu trúc khối kín: mặt trên nghiêng nhẹ (đá cản gió vùng kính) + mặt trước
-    // đứng + vách hai bên xuống gần sàn + kick chỗ chân + knee console ghế lái.
-    // Toàn bộ nằm y 0.36..1.25, x ±1.13 (chạm cột cạnh), z 4.87..5.97 — sát kính
-    // (kính trước y1.1..2.5 @z6.0). Mắt tài xế (camera.js: x-0.35, y1.28, z4.75)
-    // vẫn nhìn xuyên qua trên mép dash về kính/đường.
-    // NEU COCKPIT RUNTIME (bus.js createDriverCockpit findMesh bám theo KÍCH
-    // THƯỚC mesh): màn 0.5×0.25×0.05, cluster 0.35×0.2×0.05, gauge 0.25×0.15×0.05
-    // và 4 nút 0.04³ — giữ nguyên kích thước, chỉ dời vị trí lên mặt dash mới.
+    // ===== TÁP-LÔ (PHASE 3 REBUILD — THACO Mobihome style) =====
+    // Dashboard bao gồm 5 vùng chức năng:
+    //   - Vùng trên: mặt nghiêng chắn kính + dải chrome + LED thông báo
+    //   - Vùng giữa: cụm đồng hồ + màn thông tin + cửa gió + nút bấm
+    //   - Vùng dưới: kick panel + bàn đạp + hộp đựng đồ
+    //   - Vách hai bên và cột chuyển đổi mềm
+    //   - Ghế lái + ghế phụ phía trước
+    //
+    // QUAN TRỌNG (bus.js createDriverCockpit findMesh):
+    //   màn 0.5×0.25×0.05, cluster 0.35×0.2×0.05, gauge 0.25×0.15×0.05, nút 0.04³
+    //   — giữ nguyên kích thước, chỉ cải tiến vị trí và chi tiết thêm.
     {
+        // --- Mặt trên (có độ sâu 3D, cong nhẹ) ---
         dashPiece(2.26, 0.055, 1.10, matDashboardPanel, 0, 1.175, 5.42, Dashboard, 0.08); // mặt trên nghiêng
-        dashPiece(2.26, 0.38, 0.05, matDashboard, 0, 0.926, 5.785, Dashboard, 0);         // mặt trước (gắn đồng hồ/màn)
-        dashPiece(2.26, 0.37, 0.05, matDashboard, 0, 0.551, 5.785, Dashboard, 0);         // kick panel chỗ chân
-        dashPiece(0.05, 0.72, 0.92, matDashboard, -1.115, 0.875, 5.30, Dashboard, 0);     // vách trái (dừng trước cột kính z5.77)
-        dashPiece(0.05, 0.72, 0.92, matDashboard, 1.115, 0.875, 5.30, Dashboard, 0);      // vách phải (dừng trước cột kính z5.77)
-        // Knee console: gọn nhẹ, lùi sát kick panel (z5.65) để không nhô ra trước volang.
-        // Kích thước nhỏ: rộng 0.45, cao 0.25, sâu 0.18 — chỉ đỡ gối, không thành "bàn".
-        dashPiece(0.45, 0.25, 0.18, matDashboard, -0.35, 0.68, 5.65, Dashboard, 0);        // knee console ghế lái (gọn, sát dash)
+        // Thêm lớp đệm đường cong phía trước mặt trên
+        dashPiece(2.26, 0.025, 0.18, matDashboard, 0, 1.148, 5.88, Dashboard, 0.04);
 
-        dashPiece(0.5, 0.25, 0.05, matScreen, 0, 0.94, 5.83, Dashboard, 0);               // màn trung tâm
-        dashPiece(0.35, 0.2, 0.05, matCluster, -0.45, 0.99, 5.83, Dashboard, 0);          // cluster tốc độ (trước T/L)
-        dashPiece(0.25, 0.15, 0.05, matCluster, 0.45, 0.98, 5.83, Dashboard, 0);          // gauge phụ (copilot)
+        // --- Cụm giải trí + đồng hồ (giữ kích thước cho bus.js) ---
+        dashPiece(2.26, 0.38, 0.05, matDashboard, 0, 0.926, 5.785, Dashboard, 0);           // mặt trước
+        dashPiece(2.26, 0.37, 0.05, matDashboard, 0, 0.551, 5.785, Dashboard, 0);           // kick panel
+        // KHÔNG dựng vách bên -x (cửa lên xe): tấm vách đứng y 0.51..1.24
+        // z 4.84..5.76 sẽ bịt lối vào người đi lên cầu thang (panel che lối
+        // vào → loại theo Mission 2). Chỉ giữ vách bên +x (ghế lái).
+        dashPiece(0.05, 0.72, 0.92, matDashboard, 1.115, 0.875, 5.30, Dashboard, 0);        // vách phải (ghế lái)
+        dashPiece(0.45, 0.25, 0.18, matDashboard, 0.65, 0.68, 5.65, Dashboard, 0);          // knee console ghế lái
+
+
+        // THACO Mobihome style infotainment (giữ kích thước cho bus.js)
+        dashPiece(0.54, 0.29, 0.015, matDashboardPanel, 0, 0.94, 5.818, Dashboard, 0);      // viền màn hình
+        dashPiece(0.5, 0.25, 0.05, matScreen, 0, 0.94, 5.83, Dashboard, 0);                 // màn trung tâm
+
+        // Cụm đồng hồ (RHD: trước tài xế bên PHẢI)
+        dashPiece(0.35, 0.2, 0.05, matCluster, 0.45, 0.99, 5.83, Dashboard, 0);             // cluster tốc độ
+        dashPiece(0.25, 0.15, 0.05, matCluster, -0.45, 0.98, 5.83, Dashboard, 0);           // gauge phụ (copilot)
+
+        // Nút bấm + công tắc (giữ kích thước 0.04 cho bus.js)
         for (let i = 0; i < 4; i++) {
-            dashPiece(0.04, 0.04, 0.04, matBtn, -0.3 + i * 0.15, 0.80, 5.82, Dashboard, 0);
+            dashPiece(0.04, 0.04, 0.04, matBtn, 0.3 - i * 0.15, 0.80, 5.82, Dashboard, 0);
         }
 
-        dashPiece(0.015, 0.25, 0.015, matDark, 0.25, 0.9, 5.83, Dashboard, 0);            // cần gạt (montag lên mặt dash)
-        dashPieceSphere(0.025, matDark, 0.25, 1.055, 5.83, Dashboard);
+        // Cần gạt (gương theo trục)
+        dashPiece(0.015, 0.25, 0.015, matDark, -0.25, 0.9, 5.83, Dashboard, 0);
+        dashPieceSphere(0.025, matDark, -0.25, 1.055, 5.83, Dashboard);
+
+        // --- Cửa gió điều hòa (THACO Mobihome style: 2 cửa giữa, 2 cửa hai bên) ---
+        for (const gx of [-0.2, 0.2]) {
+            dashPiece(0.14, 0.05, 0.02, matDark, gx, 1.02, 5.815, Dashboard, 0);
+            for (let vi = 0; vi < 3; vi++) {
+                dashPiece(0.11, 0.008, 0.01, matDashboardPanel, gx, 1.0 + vi * 0.015, 5.808, Dashboard, 0);
+            }
+        }
+
+        // Cửa gió bên trái và phải (thêm cho THACO style)
+        for (const gx of [-1.0, 1.0]) {
+            dashPiece(0.12, 0.06, 0.02, matDark, gx, 1.05, 5.815, Dashboard, 0);
+            for (let vi = 0; vi < 2; vi++) {
+                dashPiece(0.09, 0.008, 0.01, matDashboardPanel, gx, 1.04 + vi * 0.02, 5.808, Dashboard, 0);
+            }
+        }
+
+        // Dải chrome ngang + LED trang trí
+        dashPiece(2.2, 0.01, 0.01, matDashboardPanel, 0, 1.09, 5.805, Dashboard, 0);
+        dashPiece(2.2, 0.006, 0.006, matLEDBlue, 0, 1.072, 5.806, Dashboard, 0);
+
+        // Nút bấm bổ sung (THACO style: công tắc đèn, điều hòa, kèn)
+        for (const [gx, gy, gz] of [[-0.8, 0.85, 5.82], [0.8, 0.85, 5.82], [-0.6, 0.78, 5.82], [0.6, 0.78, 5.82]]) {
+            dashPiece(0.03, 0.03, 0.03, matBtn, gx, gy, gz, Dashboard, 0);
+        }
+
+        // --- Bàn đạp (ga, phanh, côn — phía chân tài xế, RHD bên phải) ---
+        // RHD: bàn đạp bên phải (+0.65)
+        dashPiece(0.12, 0.08, 0.03, matDark, 0.58, 0.35, 5.70, DriverArea, 0);   // bàn ga
+        dashPiece(0.12, 0.06, 0.03, matDark, 0.42, 0.38, 5.72, DriverArea, 0);   // bàn phanh
+        dashPiece(0.10, 0.06, 0.03, matDark, 0.28, 0.38, 5.74, DriverArea, 0);   // bàn côn
+        dashPiece(0.25, 0.02, 0.15, matDark, 0.65, 0.12, 5.85, DriverArea, 0);   // tấm đệm chân
+
+        // --- Cần số (giữa hai ghế, bên phải tài xế RHD: x=+0.28) ---
+        dashPieceSphere(0.032, matDark, 0.28, 0.78, 4.90, DriverArea);            // tay nắm cần số
+        dashPiece(0.014, 0.22, 0.014, matDark, 0.28, 0.68, 4.90, DriverArea, 0); // thân cần số
+        dashPiece(0.06, 0.04, 0.06, matDashboard, 0.28, 0.60, 4.90, DriverArea, 0); // đế cần số
+
+        // --- Hộp đựng đồ + tủ lạnh nhỏ (THACO style) ---
+        dashPiece(0.35, 0.18, 0.18, matDashboard, -0.65, 0.75, 5.70, Dashboard, 0); // ngăn kéo (phía ghế phụ)
+        dashPiece(0.30, 0.12, 0.10, matDashboard, 0.85, 0.85, 5.75, Dashboard, 0);  // khoang nhỏ (phía lái)
+
+        // --- Sàn lái (thấp hơn khoang hành khách, có bậc chuyển tiếp) ---
+        // KHÔNG thò vào khoang hành lý: chỉ phủ buồng lái z ≥ CABIN_END_Z (4.8).
+        dashPiece(1.8, 0.02, 1.05, matDark, 0, 0.06, 5.325, DriverArea, 0);   // sàn vùng lái
+
+        // --- Ghế tài xế (nâng cấp: đệm, tựa lưng, tựa đầu, chân ghế) ---
+        // RHD: ghế lái bên PHẢI (+0.65)
+        // Đế và chân ghế
+        box(0.52, 0.10, 0.52, matDark, 0.65, 0.15, 4.50, DriverArea);            // đế trượt ghế
+        box(0.40, 0.06, 0.40, matDark, 0.65, 0.35, 4.50, DriverArea);            // khung ghế
+
+        // Đệm ngồi (dày hơn, có hỗ trợ thắt lưng)
+        box(0.50, 0.14, 0.50, matSeatCushion, 0.65, 0.48, 4.50, DriverArea);    // đệm ngồi chính
+        box(0.50, 0.06, 0.12, matSeatCushion, 0.65, 0.50, 4.75, DriverArea);     // hỗ trợ thắt lưng
+
+        // Tựa lưng (có độ nghiêng nhẹ)
+        box(0.50, 0.55, 0.08, matSeatCushion, 0.65, 0.80, 4.25, DriverArea);    // tựa lưng chính
+        box(0.42, 0.20, 0.06, matSeatCushion, 0.65, 0.98, 4.27, DriverArea);     // đệm tựa lưng trên
+
+        // Tựa đầu
+        box(0.30, 0.16, 0.06, matSeatCushion, 0.65, 1.14, 4.28, DriverArea);     // tựa đầu
+
+        // Tay vịn + cần điều chỉnh
+        box(0.03, 0.08, 0.30, matSeat, 0.92, 0.58, 4.50, DriverArea);            // tay vịn phải
+        box(0.03, 0.08, 0.30, matSeat, 0.38, 0.58, 4.50, DriverArea);            // tay vịn trái
+
+        // --- Ghế phụ (copilot, nâng cấp tương tự) — RHD: copilot bên TRÁI (-0.35) ---
+        box(0.45, 0.08, 0.45, matDark, -0.35, 0.14, 4.50, DriverArea);           // đế ghế phụ
+        box(0.06, 0.18, 0.06, matDark, -0.35, 0.28, 4.50, DriverArea);           // chân ghế phụ
+        box(0.45, 0.12, 0.45, matSeatCushion, -0.35, 0.46, 4.50, DriverArea);    // đệm ghế phụ
+        box(0.45, 0.45, 0.06, matSeatCushion, -0.35, 0.72, 4.30, DriverArea);    // tựa lưng ghế phụ
+        box(0.25, 0.12, 0.04, matSeatCushion, -0.35, 0.95, 4.31, DriverArea);    // tựa đầu ghế phụ
+
+        dashPiece(0.5, 0.2, 0.25, matDashboard, -0.85, 0.7, 5.1, Dashboard, 0);  // tủ đựng đồ phụ
+        dashPiece(0.4, 0.05, 0.2, matDashboardPanel, -0.85, 0.85, 5.15, Dashboard, 0); // mặt trên tủ
     }
 
     const steerGroup = new THREE.Group();
-    steerGroup.position.set(0.35, 1.1, 5.1);
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 8, 16), matSteeringWheel);
-    ring.rotation.x = Math.PI / 2 - 0.2;
+    steerGroup.name = "legacySteeringWheel";
+    steerGroup.position.set(-0.35, 1.1, 5.1);   // RHD: vô lăng gốc bên trái (bị ẩn runtime)
+    // Vô-lăng xe khách: dày hơn, tỷ lệ thực tế, đúng góc nghiêng
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.055, 12, 24), matSteeringWheel);
+    ring.rotation.x = Math.PI / 2 - 0.25;
+    ring.rotation.z = 0.05;
     steerGroup.add(ring);
-    for (let i = 0; i < 3; i++) {
-        const angle = (i / 3) * Math.PI * 2;
-        const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.025, 0.025), matSteeringWheel);
-        spoke.position.set(Math.sin(angle) * 0.12, 0, Math.cos(angle) * 0.12);
+    for (let i = 0; i < 4; i++) {
+        const angle = (i / 4) * Math.PI * 2;
+        const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.035, 0.035), matSteeringWheel);
+        spoke.position.set(Math.sin(angle) * 0.14, 0, Math.cos(angle) * 0.14);
         spoke.rotation.y = -angle;
         steerGroup.add(spoke);
     }
-    const column = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.3, 8), matDark);
-    column.position.set(0, -0.15, 0);
-    column.rotation.x = 0.2;
+    // Cột vô-lăng dày, nghiêng đúng
+    const column = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.45, 12), matDark);
+    column.position.set(0, -0.35, 0.05);
+    column.rotation.x = 0.35;
     steerGroup.add(column);
     DriverArea.add(steerGroup);
 
-    box(0.5, 0.08, 0.5, matDark, -0.35, 0.14, 4.5, DriverArea);
-    box(0.08, 0.2, 0.08, matDark, -0.35, 0.28, 4.5, DriverArea);
-    box(0.5, 0.12, 0.5, matSeatCushion, -0.35, 0.44, 4.5, DriverArea);
-    box(0.5, 0.55, 0.08, matSeatCushion, -0.35, 0.75, 4.25, DriverArea);
-    box(0.3, 0.15, 0.06, matSeatCushion, -0.35, 1.05, 4.25, DriverArea);
-    box(0.03, 0.08, 0.3, matSeat, -0.6, 0.5, 4.45, DriverArea);
-    box(0.03, 0.08, 0.3, matSeat, -0.1, 0.5, 4.45, DriverArea);
+    // RHD: ghế tài xế bên PHẢI (+0.65)
+    box(0.5, 0.08, 0.5, matDark, 0.65, 0.14, 4.5, DriverArea);
+    box(0.08, 0.2, 0.08, matDark, 0.65, 0.28, 4.5, DriverArea);
+    box(0.5, 0.12, 0.5, matSeatCushion, 0.65, 0.44, 4.5, DriverArea);
+    box(0.5, 0.55, 0.08, matSeatCushion, 0.65, 0.75, 4.25, DriverArea);
+    box(0.3, 0.15, 0.06, matSeatCushion, 0.65, 1.05, 4.25, DriverArea);
+    box(0.03, 0.08, 0.3, matSeat, 0.9, 0.5, 4.45, DriverArea);
+    box(0.03, 0.08, 0.3, matSeat, 0.4, 0.5, 4.45, DriverArea);
 
-    box(0.45, 0.06, 0.45, matDark, 0.65, 0.13, 4.5, DriverArea);
-    box(0.06, 0.18, 0.06, matDark, 0.65, 0.25, 4.5, DriverArea);
-    box(0.45, 0.1, 0.45, matSeatCushion, 0.65, 0.4, 4.5, DriverArea);
-    box(0.45, 0.45, 0.06, matSeatCushion, 0.65, 0.65, 4.3, DriverArea);
-    box(0.25, 0.12, 0.04, matSeatCushion, 0.65, 0.9, 4.3, DriverArea);
-    box(0.5, 0.2, 0.25, matDashboard, 0.85, 0.7, 5.1, Dashboard);
-    box(0.4, 0.05, 0.2, matDashboardPanel, 0.85, 0.85, 5.15, Dashboard);
+    // RHD: ghế phụ bên TRÁI (-0.35)
+    box(0.45, 0.06, 0.45, matDark, -0.35, 0.13, 4.5, DriverArea);
+    box(0.06, 0.18, 0.06, matDark, -0.35, 0.25, 4.5, DriverArea);
+    box(0.45, 0.1, 0.45, matSeatCushion, -0.35, 0.4, 4.5, DriverArea);
+    box(0.45, 0.45, 0.06, matSeatCushion, -0.35, 0.65, 4.3, DriverArea);
+    box(0.25, 0.12, 0.04, matSeatCushion, -0.35, 0.9, 4.3, DriverArea);
+    box(0.5, 0.2, 0.25, matDashboard, -0.85, 0.7, 5.1, Dashboard);
+    box(0.4, 0.05, 0.2, matDashboardPanel, -0.85, 0.85, 5.15, Dashboard);
+}
+
+function buildEntryStaircase(Aisle) {
+    const PASSENGER_FLOOR_Y = FLOOR_Y;
+    if (!_welcomePlateShared.tex) {
+        const cv = document.createElement('canvas');
+        cv.width = 512; cv.height = 128;
+        const cctx = cv.getContext('2d');
+        cctx.fillStyle = '#001318';
+        cctx.fillRect(0, 0, 512, 128);
+        cctx.shadowColor = '#2fb6ff';
+        cctx.shadowBlur = 18;
+        cctx.fillStyle = '#7fe0ff';
+        cctx.font = 'bold 64px sans-serif';
+        cctx.textAlign = 'center';
+        cctx.textBaseline = 'middle';
+        cctx.fillText('WELCOME', 256, 68);
+        _welcomePlateShared.tex = new THREE.CanvasTexture(cv);
+        _welcomePlateShared.tex.colorSpace = THREE.SRGBColorSpace;
+    }
+    const welcomeMat = new THREE.MeshBasicMaterial({
+        map: _welcomePlateShared.tex, transparent: true, opacity: 0.95,
+        side: THREE.DoubleSide, depthWrite: false
+    });
+    const welcomeGeo = new THREE.PlaneGeometry(0.52, 0.12);
+    // Căn sát cửa -x: stairX lệch về -x, z trải từ mép cabin ra giữa khoang cửa
+    const stairW = 0.62, stairX = -0.76, treadDepth = 0.19;
+    const zBase = CABIN_END_Z; // bậc cao nhất sát mép cabin
+    const stepTops = [0.81, 0.625, 0.44, 0.25];   // từ trên xuống dưới
+    const riserLow = [0.625, 0.44, 0.25, 0.06];
+    for (let i = 0; i < stepTops.length; i++) {
+        const yTop = stepTops[i];
+        const zNear = zBase + treadDepth * i;
+        const zFar  = zNear + treadDepth; // +z ra phía cửa/buồng lái
+        box(stairW, yTop, treadDepth, matShell, stairX, yTop / 2, (zNear + zFar) / 2, Aisle);
+        const plateY = (riserLow[i] + yTop) / 2;
+        const plate = new THREE.Mesh(welcomeGeo, welcomeMat);
+        // WELCOME trên mặt đứng riser — hướng +z (về phía người bước lên từ ngoài cửa)
+        plate.position.set(stairX, plateY, zFar + 0.002);
+        Aisle.add(plate);
+        const lamp = new THREE.Mesh(new THREE.BoxGeometry(stairW - 0.06, 0.02, 0.02), matLEDBlue);
+        lamp.position.set(stairX, yTop - 0.015, zFar - 0.01);
+        Aisle.add(lamp);
+    }
+    // Bậc chuyển tiếp nối mặt trên cầu thang với sàn cabin.
+    box(stairW, 0.06, 0.26, matAisle, stairX, PASSENGER_FLOOR_Y - 0.03, CABIN_END_Z - 0.13, Aisle);
+    box(stairW, PASSENGER_FLOOR_Y, 0.12, matShell, stairX, PASSENGER_FLOOR_Y / 2, CABIN_END_Z - 0.06, Aisle);
 }
 
 function buildPassengerCabin(groups) {
     const { Beds, Floor, Ceiling, Curtains, Windows, Cabins, Aisle, Led, BodyShell, Lights } = groups;
 
-    // ---------- BẬC LÊN CABIN ----------
-    const PASSENGER_FLOOR_OFFSET = 0.3;
-    const PASSENGER_FLOOR_Y = FLOOR_Y + PASSENGER_FLOOR_OFFSET;
-    const stepWidth = 1.2;
-    const stepDepth = 0.4;
-    const stepHeight = PASSENGER_FLOOR_OFFSET;
-    box(stepWidth, stepHeight, stepDepth, matShell, -0.7, stepHeight/2, CABIN_END_Z + 0.2, Aisle);
-    box(stepWidth, stepHeight, stepDepth, matShell, 0.7, stepHeight/2, CABIN_END_Z + 0.2, Aisle);
-    box(0.8, stepHeight, stepDepth, matShell, 0, stepHeight/2, CABIN_END_Z + 0.2, Aisle);
+    // ---------- SÀN KHOANG HÀNH KHÁCH (NÂNG LÊN ~1.0m) ----------
+    // Sàn cabin cao 1.00m, CHỈ phủ khoang hành khách (z < CABIN_END_Z = 4.8).
+    // Buồng lái GIỮ floor thấp (0.06) như cũ — ghế lái/pedals không bị chôn.
+    // Khoang hành lý = khoảng trống 0.31 (BODY_BOTTOM) → 0.92 (đáy sàn),
+    // giữ trống hoàn toàn, không mesh interior nào nằm trong đó.
+    const PASSENGER_FLOOR_Y = FLOOR_Y;
+    // zFront = CABIN_END_Z = 4.8, zRear = -L/2 + 0.15 = -5.85
+    const zFront = CABIN_END_Z, zRear = -L / 2 + 0.15;
+    const floorSpan = zFront - zRear;
+    const floorCz = (zFront + zRear) / 2;
+    box(W - 0.1, 0.08, floorSpan, matFloorPax, 0, PASSENGER_FLOOR_Y - 0.04, floorCz, Floor);
+    // Mặt bịt khoang hành lý phía trước — CHỪA LỐI CẦU THANG căn theo cửa -x.
+    // Staircase (buildEntryStaircase): stairX=-0.76, stairW=0.62 => x -1.07..-0.45.
+    // Mở lỗ x -1.12..-0.40, y 0.28..FLOOR_Y để bậc thang đi lên không bị bịt.
+    const sealH = PASSENGER_FLOOR_Y - 0.28;
+    const sealY = (PASSENGER_FLOOR_Y + 0.28) / 2;
+    const stOpenL = -1.12, stOpenR = -0.40;
+    const bodyHalf = (W - 0.1) / 2; // 1.15
+    // đoạn phải: từ stOpenR tới +bodyHalf
+    box(bodyHalf - stOpenR, sealH, 0.06, matShell, (stOpenR + bodyHalf) / 2, sealY, CABIN_END_Z - 0.03, Floor);
+    // đoạn trái xa: từ -bodyHalf tới stOpenL
+    box(stOpenL - (-bodyHalf), sealH, 0.06, matShell, (-bodyHalf + stOpenL) / 2, sealY, CABIN_END_Z - 0.03, Floor);
+    // Vách dưới (toàn thân y 0..0.28) — bịt kín đáy, không nhìn xuyên gầm.
+    // Vách dưới (y 0..0.28) — bịt kín đáy, CHỪA LỖ CẦU THANG bên -x (stair gap x -1.12..-0.40)
+    box(bodyHalf - stOpenR, 0.28, 0.06, matShell, (stOpenR + bodyHalf) / 2, 0.14, CABIN_END_Z - 0.03, Floor);
+    box(stOpenL - (-bodyHalf), 0.28, 0.06, matShell, (-bodyHalf + stOpenL) / 2, 0.14, CABIN_END_Z - 0.03, Floor);
+    // Vòm bánh xe trong cabin: bánh trước (z 3.65) / bánh sau (z -2.59) có
+    // đỉnh y=1.05 > mặt sàn 1.00 — vòm che phần bánh thò (như xe giường nằm thật).
+    for (const [wz] of [[3.65], [-2.59]]) {
+        for (const side of [1, -1]) {
+            box(0.52, 0.18, 1.16, matShell, side * 1.02, 1.01, wz, Floor);
+        }
+    }
 
-    // ---------- SÀN KHOANG HÀNH KHÁCH ----------
-    box(W - 0.1, 0.08, L - 0.5, matFloorPax, 0, PASSENGER_FLOOR_Y - 0.04, 0, Floor);
+    // ---------- CẦU THANG LÊN CABIN (buồng lái → khoang hành khách) ----------
+    // 4 bậc + 1 riser cuối; chữ WELCOME trên từng mặt đứng riser (LED mũi bậc).
+    buildEntryStaircase(Aisle);
 
-    // ---------- HÀNH LANG ----------
+    // ---------- HÀNH LANG (chỉ trong khoang hành khách, z < CABIN_END_Z) ----------
     const aisleWidth = 0.8;
-    const aisleLength = L - 0.5;
-    const aisleCenterZ = 0.25;
+    const aisleLength = zFront - zRear;                        // khớp sàn cabin
+    const aisleCenterZ = (zFront + zRear) / 2;
     box(aisleWidth, 0.06, aisleLength, matAisle, 0, PASSENGER_FLOOR_Y + 0.02, aisleCenterZ, Aisle);
     for (const side of [1, -1]) {
         box(0.035, 0.035, aisleLength, matLEDBlue, side * (aisleWidth / 2 - 0.025), PASSENGER_FLOOR_Y + 0.07, aisleCenterZ, Aisle);
         box(0.045, 0.05, aisleLength, matDivider, side * (aisleWidth / 2), PASSENGER_FLOOR_Y + 0.04, aisleCenterZ, Aisle);
-    }
-    const cabinAisleLength = 1.2;
-    box(aisleWidth, 0.06, cabinAisleLength, matAisle, 0, PASSENGER_FLOOR_Y + 0.02, CABIN_END_Z + cabinAisleLength / 2, Aisle);
-    for (const side of [1, -1]) {
-        box(0.035, 0.035, cabinAisleLength, matLEDBlue, side * (aisleWidth / 2 - 0.025), PASSENGER_FLOOR_Y + 0.07, CABIN_END_Z + cabinAisleLength / 2, Aisle);
     }
 
     // ---------- TRẦN & 3 DẢI LED ----------
@@ -309,27 +526,53 @@ function buildPassengerCabin(groups) {
 
     // ---------- THÂN XE ----------
     const shellLen = L - 0.6;
+    const doorCut = { z0: 5.139, z1: 6.189, y0: 0.307, y1: 2.749 };
     for (const side of [1, -1]) {
-        box(0.04, WIN_LO_BOT - PASSENGER_FLOOR_Y, shellLen, matShell, side * WALL_X, (PASSENGER_FLOOR_Y + WIN_LO_BOT) / 2, 0, BodyShell);
-        box(0.04, WIN_HI_BOT - WIN_LO_TOP, shellLen, matShell, side * WALL_X, (WIN_LO_TOP + WIN_HI_BOT) / 2, 0, BodyShell);
+        wallBoxSide(0.04, WIN_LO_BOT - PASSENGER_FLOOR_Y, shellLen, matShell, side * WALL_X, (PASSENGER_FLOOR_Y + WIN_LO_BOT) / 2, 0, BodyShell, side, doorCut);
+        wallBoxSide(0.04, WIN_HI_BOT - WIN_LO_TOP, shellLen, matShell, side * WALL_X, (WIN_LO_TOP + WIN_HI_BOT) / 2, 0, BodyShell, side, doorCut);
         box(0.04, CEILING_Y - WIN_HI_TOP, shellLen, matShell, side * WALL_X, (WIN_HI_TOP + CEILING_Y) / 2, 0, BodyShell);
     }
 
     // ---------- SÀN TẦNG TRÊN ----------
-    const upperFloorY = UPPER_BED_Y - 0.05;
+    const upperFloorY = UPPER_FLOOR_Y;
     const floorThick = 0.08;
+    const xPosAbs = 0.75;
+    const deckRearZ = Math.min(...BED_Z_POSITIONS) - BED_LENGTH / 2;
+    const deckFrontZ = Math.max(...BED_Z_POSITIONS) + BED_LENGTH / 2;
+    const upperDeckGeos = [];
     for (const side of [1, -1]) {
-        const xFloor = side * (WALL_X - 0.1);
-        box(0.02, floorThick, shellLen, matUpperFloor, xFloor, upperFloorY, 0, BodyShell);
+        const deck = new THREE.BoxGeometry(
+            BED_WIDTH + 0.06, floorThick, deckFrontZ - deckRearZ
+        );
+        deck.translate(side * xPosAbs, upperFloorY, (deckFrontZ + deckRearZ) / 2);
+        upperDeckGeos.push(deck);
+    }
+    const upperDeckGeo = mergeBoxes(upperDeckGeos);
+    if (upperDeckGeo) {
+        const upperDeck = new THREE.Mesh(upperDeckGeo, matUpperFloor);
+        upperDeck.name = "upperDeck20";
+        upperDeck.updateMatrix();
+        upperDeck.matrixAutoUpdate = false;
+        Floor.add(upperDeck);
     }
 
     // ---------- GIƯỜNG 24 CÁI ----------
-    const xPosAbs = 0.75;
     const pillowOffset = BED_LENGTH / 2 - 0.25;
-    const dividerHeight = CEILING_Y - PASSENGER_FLOOR_Y;
-    const dividerY = (PASSENGER_FLOOR_Y + CEILING_Y) / 2;
     const dividerThick = 0.02;
     const dividerWidth = BED_WIDTH + 0.04;
+    const deckBottom = upperFloorY - floorThick / 2;
+    const deckTop = upperFloorY + floorThick / 2;
+    const partitionGeos = [];
+    const addPartition = (x, z) => {
+        const lowerHeight = deckBottom - PASSENGER_FLOOR_Y;
+        const upperHeight = CEILING_Y - deckTop;
+        const lower = new THREE.BoxGeometry(dividerWidth, lowerHeight, dividerThick);
+        lower.translate(x, PASSENGER_FLOOR_Y + lowerHeight / 2, z);
+        partitionGeos.push(lower);
+        const upper = new THREE.BoxGeometry(dividerWidth, upperHeight, dividerThick);
+        upper.translate(x, deckTop + upperHeight / 2, z);
+        partitionGeos.push(upper);
+    };
 
     for (const side of [1, -1]) {
         const xPos = side * xPosAbs;
@@ -378,30 +621,22 @@ function buildPassengerCabin(groups) {
             blanketUp.matrixAutoUpdate = false;
             Beds.add(blanketUp);
 
-            const wallFront = new THREE.Mesh(new THREE.BoxGeometry(dividerWidth, dividerHeight, dividerThick), matDivider);
-            wallFront.position.set(xPos, dividerY, z + BED_LENGTH / 2);
-            wallFront.updateMatrix();
-            wallFront.matrixAutoUpdate = false;
-            Cabins.add(wallFront);
-            const wallBack = new THREE.Mesh(new THREE.BoxGeometry(dividerWidth, dividerHeight, dividerThick), matDivider);
-            wallBack.position.set(xPos, dividerY, z - BED_LENGTH / 2);
-            wallBack.updateMatrix();
-            wallBack.matrixAutoUpdate = false;
-            Cabins.add(wallBack);
+            addPartition(xPos, z + BED_LENGTH / 2);
+            addPartition(xPos, z - BED_LENGTH / 2);
         }
     }
 
     const rearZ = BED_Z_POSITIONS[BED_Z_POSITIONS.length - 1] - BED_LENGTH / 2;
-    const wallRearLeft = new THREE.Mesh(new THREE.BoxGeometry(dividerWidth, dividerHeight, dividerThick), matDivider);
-    wallRearLeft.position.set(-xPosAbs, dividerY, rearZ);
-    wallRearLeft.updateMatrix();
-    wallRearLeft.matrixAutoUpdate = false;
-    Cabins.add(wallRearLeft);
-    const wallRearRight = new THREE.Mesh(new THREE.BoxGeometry(dividerWidth, dividerHeight, dividerThick), matDivider);
-    wallRearRight.position.set(xPosAbs, dividerY, rearZ);
-    wallRearRight.updateMatrix();
-    wallRearRight.matrixAutoUpdate = false;
-    Cabins.add(wallRearRight);
+    addPartition(-xPosAbs, rearZ);
+    addPartition(xPosAbs, rearZ);
+    const partitionGeo = mergeBoxes(partitionGeos);
+    if (partitionGeo) {
+        const partitions = new THREE.Mesh(partitionGeo, matDivider);
+        partitions.name = "cabinPartitions20";
+        partitions.updateMatrix();
+        partitions.matrixAutoUpdate = false;
+        Cabins.add(partitions);
+    }
 
     // ---------- CỬA SỔ 2 TẦNG ----------
     for (const side of [1, -1]) {
@@ -439,38 +674,44 @@ function buildPassengerCabin(groups) {
             curtainUp.matrixAutoUpdate = false;
             Curtains.add(curtainUp);
             const aisleCurtainLow = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.85, 0.35), matFabric);
-            aisleCurtainLow.position.set(xAisle, 1.90, z + BED_LENGTH / 2 - 0.35);
+            aisleCurtainLow.position.set(xAisle, LOWER_BED_Y + 0.02, z + BED_LENGTH / 2 - 0.35);
             aisleCurtainLow.updateMatrix();
             aisleCurtainLow.matrixAutoUpdate = false;
             Curtains.add(aisleCurtainLow);
             const aisleCurtainUp = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.75, 0.35), matFabricDark);
-            aisleCurtainUp.position.set(xAisle, 3.00, z + BED_LENGTH / 2 - 0.35);
+            aisleCurtainUp.position.set(xAisle, UPPER_BED_Y + 0.02, z + BED_LENGTH / 2 - 0.35);
             aisleCurtainUp.updateMatrix();
             aisleCurtainUp.matrixAutoUpdate = false;
             Curtains.add(aisleCurtainUp);
+            // Tay vịn mép giường hướng lối đi (ngang tầm nệm)
             const rod1 = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.015, BED_LENGTH - 0.1), matDark);
-            rod1.position.set(xAisle, 0.58, z);
+            rod1.position.set(xAisle, LOWER_BED_Y - 0.09, z);
             rod1.updateMatrix();
             rod1.matrixAutoUpdate = false;
             Curtains.add(rod1);
             const rod2 = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.015, BED_LENGTH - 0.1), matDark);
-            rod2.position.set(xAisle, 1.58, z);
+            rod2.position.set(xAisle, UPPER_BED_Y - 0.09, z);
+            rod2.updateMatrix();
+            rod2.matrixAutoUpdate = false;
+            Curtains.add(rod2);
             rod2.updateMatrix();
             rod2.matrixAutoUpdate = false;
             Curtains.add(rod2);
         }
     }
 
-    // ---------- LED DỌC TẦNG ----------
+    // ---------- LED DỌC TẦNG (cắt ngắn, không thò qua cửa buồng lái) ----------
+    // z từ 4.8 (vách cabin) lùi về -5.0; đoạn 5.0..6.0 = buồng lái/cửa ra vào
+    const xLedType = [L - 7.2, -0.1];   // [độ dài, tâm z]
     for (const side of [1, -1]) {
         const xLed = side * (WALL_X - 0.02);
-        const ledLow = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, L - 1.0), matLEDBlue);
-        ledLow.position.set(xLed, 2.37, 0.5);
+        const ledLow = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, xLedType[0]), matLEDBlue);
+        ledLow.position.set(xLed, 2.37, xLedType[1]);
         ledLow.updateMatrix();
         ledLow.matrixAutoUpdate = false;
         Led.add(ledLow);
-        const ledUp = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, L - 1.0), matLEDBlue);
-        ledUp.position.set(xLed, 3.40, 0.5);
+        const ledUp = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, xLedType[0]), matLEDBlue);
+        ledUp.position.set(xLed, 3.40, xLedType[1]);
         ledUp.updateMatrix();
         ledUp.matrixAutoUpdate = false;
         Led.add(ledUp);
@@ -501,11 +742,11 @@ export function createBusInterior() {
         groups.Lights.add(pl);
         lights.push(pl);
     };
-    mkLight(0, 3.25, 2.0, 1.0);
-    mkLight(0, 3.25, -3.0, 1.0);
-    mkLight(0, 2.0, 2.0, 0.8);
-    mkLight(0, 2.0, -3.0, 0.8);
-    mkLight(0, 2.6, 5.0, 0.6);
+    mkLight(0, CEILING_Y - 0.15, 2.0, 1.0);
+    mkLight(0, CEILING_Y - 0.15, -3.0, 1.0);
+    mkLight(0, 2.2, 2.0, 0.8);
+    mkLight(0, 2.2, -3.0, 0.8);
+    mkLight(0, 3.0, 5.0, 1.8);
 
     function setInteriorLed(on) {
         // Emissive materials cho dải LED mesh
@@ -661,9 +902,9 @@ function mergeBoxes(geos) {
 }
 
 const CFG34 = {
-    FLOOR_Y: 0.30,          // sàn khoang hành khách
-    LOWER_Y: 0.67,          // mặt nệm tầng dưới
-    UPPER_Y: 1.67,          // mặt nệm tầng trên
+    FLOOR_Y: 1.00,          // sàn khoang hành khách (nâng lên — gầm để trống khoang hành lý)
+    LOWER_Y: 1.62,          // mặt nệm tầng dưới
+    UPPER_Y: 2.69,          // mặt nệm tầng trên
     SIDE_BED_W: 0.52,       // bề rộng giường 2 dãy bên
     CENTER_BED_W: 0.54,     // bề rộng giường dãy giữa
     SIDE_BED_L: 1.70,       // chiều dài giường bên
@@ -684,12 +925,33 @@ function buildPassengerCabin34(groups) {
     const { Beds, Floor, Ceiling, Curtains, Windows, Cabins, Aisle, Led, BodyShell, Lights } = groups;
     const C = CFG34;
     const half = C.AISLE_W * 0.5;
-    const aisleZ0 = C.FRONT_Z, aisleZ1 = C.REAR_Z;
+    const aisleZ1Clamp = Math.max(C.REAR_Z, -L / 2 + 0.15);   // kẹp trong mặt sàn
+    const aisleZ0Clamp = Math.min(C.FRONT_Z, CABIN_END_Z);
+    const aisleZ0 = aisleZ0Clamp, aisleZ1 = aisleZ1Clamp;
     const aisleLen = aisleZ0 - aisleZ1;
     const aisleCz = (aisleZ0 + aisleZ1) * 0.5;
 
-    // ---------- SÀN KHOANG HÀNG KHÁCH ----------
-    box(W - 0.1, 0.08, L - 0.5, matFloorPax, 0, C.FLOOR_Y - 0.04, 0, Floor);
+    // ---------- SÀN KHOANG HÀNG KHÁCH (NÂNG LÊN 1.0m) ----------
+    // Chỉ phủ khoang hành khách (z ≤ CABIN_END_Z), khớp cấu hình 20 phòng.
+    // Buồng lái GIỮ sàn thấp (0.06). Khoang hành lý = khoảng trống gầm xe.
+    const zFront = CABIN_END_Z, zRear = -L / 2 + 0.15;
+    box(W - 0.1, 0.08, zFront - zRear, matFloorPax, 0, C.FLOOR_Y - 0.04, (zFront + zRear) / 2, Floor);
+    // Mặt bịt khoang hành lý phía trước — CHỪA LỐI CẦU THANG căn theo cửa -x.
+    const sealH = C.FLOOR_Y - 0.28;
+    const sealY = (C.FLOOR_Y + 0.28) / 2;
+    const stOpenL = -1.12, stOpenR = -0.40;
+    const bodyHalf = (W - 0.1) / 2;
+    box(bodyHalf - stOpenR, sealH, 0.06, matShell, (stOpenR + bodyHalf) / 2, sealY, CABIN_END_Z - 0.03, Floor);
+    box(stOpenL - (-bodyHalf), sealH, 0.06, matShell, (-bodyHalf + stOpenL) / 2, sealY, CABIN_END_Z - 0.03, Floor);
+    // Vách dưới (y 0..0.28) — bịt kín đáy, CHỪA LỖ CẦU THANG bên -x (stair gap x -1.12..-0.40)
+    box(bodyHalf - stOpenR, 0.28, 0.06, matShell, (stOpenR + bodyHalf) / 2, 0.14, CABIN_END_Z - 0.03, Floor);
+    box(stOpenL - (-bodyHalf), 0.28, 0.06, matShell, (-bodyHalf + stOpenL) / 2, 0.14, CABIN_END_Z - 0.03, Floor);
+    // Vòm bánh xe (khớp cấu hình 20 phòng)
+    for (const [wz] of [[3.65], [-2.59]]) {
+        for (const side of [1, -1]) {
+            box(0.52, 0.18, 1.16, matShell, side * 1.02, 1.01, wz, Floor);
+        }
+    }
 
     // ---------- 2 LỐI ĐI (2 dãy) ----------
     for (const side of [1, -1]) {
@@ -702,9 +964,8 @@ function buildPassengerCabin34(groups) {
         }
     }
 
-    // ---------- BẬC LÊN CABIN (đặt ở lối đi phải, trước khoang hành khách) ----------
-    const stepHeight = C.FLOOR_Y;
-    box(C.AISLE_W, stepHeight, 0.40, matShell, C.AISLE_X, stepHeight / 2, C.FRONT_Z + 0.20, Aisle);
+    // ---------- CẦU THANG LÊN CABIN (dùng chung với cấu hình 20 phòng) ----------
+    buildEntryStaircase(Aisle);
 
     // ---------- TRẦN + 2 DẢI LED NẰM TRẦN (trên 2 lối đi) ----------
     box(W - 0.06, 0.04, L - 0.5, matCream, 0, CEILING_Y + 0.02, 0, Ceiling);
@@ -717,18 +978,23 @@ function buildPassengerCabin34(groups) {
         for (let z = C.FRONT_Z - 0.3; z > C.REAR_Z + 0.2; z -= 0.45) {
             box(C.AISLE_W - 0.04, 0.015, 0.06, matLEDRib, ax, CEILING_Y - 0.005, z, Led);
         }
-        // dải LED dọc sát vỏ xe (giữ nguyên ngôn ngữ hình ảnh cấu hình cũ)
-        box(0.02, 0.03, L - 0.8, matLEDBlue, side * (WALL_X - 0.02), CEILING_Y - 0.04, 0.5, Led);
+        // dải LED dọc sát vỏ xe — cắt tại vách cabin (z=4.8), không thò qua cửa
+        box(0.02, 0.03, 9.9, matLEDBlue, side * (WALL_X - 0.02), CEILING_Y - 0.04, -0.1, Led);
     }
 
     // ---------- THÂN XE (2 bên) + sàn tầng trên ----------
     const shellLen = L - 0.6;
+    const doorCut = { z0: 5.139, z1: 6.189, y0: 0.307, y1: 2.749 };
+    const upperDeckGeos = [];
     for (const side of [1, -1]) {
-        box(0.04, WIN_LO_BOT - C.FLOOR_Y, shellLen, matShell, side * WALL_X, (C.FLOOR_Y + WIN_LO_BOT) / 2, 0, BodyShell);
-        box(0.04, WIN_HI_BOT - WIN_LO_TOP, shellLen, matShell, side * WALL_X, (WIN_LO_TOP + WIN_HI_BOT) / 2, 0, BodyShell);
+        const deck = new THREE.BoxGeometry(
+            C.SIDE_BED_W + 0.04, 0.08, zFront - zRear
+        );
+        deck.translate(side * C.SIDE_X, UPPER_FLOOR_Y, (zFront + zRear) / 2);
+        upperDeckGeos.push(deck);
+        wallBoxSide(0.04, WIN_LO_BOT - C.FLOOR_Y, shellLen, matShell, side * WALL_X, (C.FLOOR_Y + WIN_LO_BOT) / 2, 0, BodyShell, side, doorCut);
+        wallBoxSide(0.04, WIN_HI_BOT - WIN_LO_TOP, shellLen, matShell, side * WALL_X, (WIN_LO_TOP + WIN_HI_BOT) / 2, 0, BodyShell, side, doorCut);
         box(0.04, CEILING_Y - WIN_HI_TOP, shellLen, matShell, side * WALL_X, (WIN_HI_TOP + CEILING_Y) / 2, 0, BodyShell);
-        // sàn tầng trên (giữa 2 tầng giường)
-        box(0.02, 0.08, shellLen, matUpperFloor, side * (WALL_X - 0.1), C.UPPER_Y - 0.05, 0, BodyShell);
     }
 
     // ---------- DỰNG GIƯỜNG ----------
@@ -755,31 +1021,12 @@ function buildPassengerCabin34(groups) {
     };
 
     // 2 dãy bên: 5 giường mỗi bên, mỗi tầng (tổng 10 + 10)
-    // VÁCH NGĂN KHOANG 2 DÃY BÊN — đo lại hình học, sửa 5 chỗ xuyên lấn:
-    //   (a) Tâm vách cũ = ±BED_L/2 (0.85) nằm TRONG khung giường (khung
-    //       +0.04 dài tới ±0.87) và nệm (±0.85) -> vách CẮT 2cm khung,
-    //       1cm nệm và 1cm rèm của chính khoang đó. Nay dời ±0.88: vách
-    //       nằm trong khe 0.30m giữa 2 khoang, 2 mặt TIẾP XÚC mép khung
-    //       0.87 (0 lấn).
-    //   (b) Rộng cũ BED_W+0.04 (0.56, x .59..1.15) ăn 2cm vào vỏ xe
-    //       (x 1.13..1.17), 2.25cm vào viền lối đi (.5675...6125) và 2cm
-    //       vào dải LED sát trần (.12...1.4). Nay rộng BED_W−0.02 = 0.50
-    //       (x .62..1.12): TRÁNH CẢ BA (chỉ tiếp mặt), lối đi đi lại
-    //       (.2925..5675) thông thoáng tuyệt đối.
-    //   (c) "Sàn tầng trên" (BodyShell, y 1.58..1.66, x 1.04..1.06) chạy
-    //       xuyên suốt xe -> vách chừa khe 2cm đúng mép sàn để sàn đi
-    //       xuyên qua vách (đúng cách lắp thật), KHÔNG cắt sàn.
-    //   -> 20 vách x 4 đoạn = 80 box gộp thành 1 mesh (trước 20 mesh):
-    //       hình ảnh y hệt nhưng bớt 19 draw call (lợi cho iGPU N5000).
-    const ledgeY0 = (C.UPPER_Y - 0.05) - 0.04;   // mép dưới sàn tầng trên 1.58
-    const ledgeY1 = (C.UPPER_Y - 0.05) + 0.04;    // mép trên               1.66
-    const ledgeX0 = (WALL_X - 0.1) - 0.01;        // mép trong sàn theo x  1.04
-    const ledgeX1 = (WALL_X - 0.1) + 0.01;        // mép ngoài sàn theo x  1.06
+    // Chừa khe đúng bề dày sàn tầng trên để các vách không cắt xuyên mặt sàn.
+    const ledgeY0 = UPPER_FLOOR_Y - 0.04;          // mép dưới sàn tầng trên 2.45
+    const ledgeY1 = UPPER_FLOOR_Y + 0.04;          // mép trên               2.53
     const wallW = C.SIDE_BED_W - 0.02;            // 0.50
     const wallThick = 0.02;
     const wallZ = C.SIDE_BED_L / 2 + 0.03;        // 0.88 — trong khe 0.30
-    const wallInX = C.SIDE_X - wallW / 2;         // 0.62
-    const wallOutX = C.SIDE_X + wallW / 2;        // 1.12
     const sideWallGeos = [];
     const swPush = (w, h, d, x, y, z) => {
         const g = new THREE.BoxGeometry(w, h, d);
@@ -795,10 +1042,8 @@ function buildPassengerCabin34(groups) {
             }
             for (const dz of [1, -1]) {
                 const wz = z + dz * wallZ;
-                // 4 đoạn cùng một vách (sàn -> trần), chừa khe sàn tầng trên:
+                // Hai đoạn vách gặp sàn tầng trên ở y=2.45 và y=2.53.
                 swPush(wallW, ledgeY0 - C.FLOOR_Y, wallThick, x, (C.FLOOR_Y + ledgeY0) / 2, wz);
-                swPush(ledgeX0 - wallInX, ledgeY1 - ledgeY0, wallThick, side * (wallInX + (ledgeX0 - wallInX) / 2), (ledgeY0 + ledgeY1) / 2, wz);
-                swPush(wallOutX - ledgeX1, ledgeY1 - ledgeY0, wallThick, side * (ledgeX1 + (wallOutX - ledgeX1) / 2), (ledgeY0 + ledgeY1) / 2, wz);
                 swPush(wallW, CEILING_Y - ledgeY1, wallThick, x, (ledgeY1 + CEILING_Y) / 2, wz);
             }
         }
@@ -819,6 +1064,13 @@ function buildPassengerCabin34(groups) {
     for (let i = 0; i < 7; i++) {
         const z = C.Z_CENTER_FIRST - i * C.Z_CENTER_STEP;
         for (const y of [C.LOWER_Y, C.UPPER_Y]) {
+            if (y === C.UPPER_Y) {
+                const deck = new THREE.BoxGeometry(
+                    C.CENTER_BED_W + 0.04, 0.08, C.CENTER_BED_L
+                );
+                deck.translate(C.CENTER_X, UPPER_FLOOR_Y, z);
+                upperDeckGeos.push(deck);
+            }
             buildBed(C.CENTER_X, z, y, C.CENTER_BED_L, C.CENTER_BED_W, 0);
         }
     }
@@ -830,6 +1082,14 @@ function buildPassengerCabin34(groups) {
     // ngôn ngữ thiết kế của 2 dãy bên (xem buildCenterRowPartitions34 ở cuối
     // file — khai báo hàm ở cuối để không đụng code cũ).
     buildCenterRowPartitions34(groups);
+    const upperDeckGeo = mergeBoxes(upperDeckGeos);
+    if (upperDeckGeo) {
+        const upperDeck = new THREE.Mesh(upperDeckGeo, matUpperFloor);
+        upperDeck.name = "upperDeck34";
+        upperDeck.updateMatrix();
+        upperDeck.matrixAutoUpdate = false;
+        Floor.add(upperDeck);
+    }
 
     // ---------- CỬA SỔ + RÈM (2 dãy bên, 2 tầng) ----------
     for (const side of [1, -1]) {
@@ -980,7 +1240,7 @@ export function optimizeInteriorLights(root) {
 
     // Giữ 4 đèn đại diện, dời dọc lối đi (trục z), tăng công suất + tầm với.
     const kept = extra.slice(0, 4);
-    const pos = [[0, 3.05, 3.6], [0, 3.05, 0.9], [0, 3.05, -1.9], [0, 3.05, -4.6]];
+    const pos = [[0, 3.45, 3.6], [0, 3.45, 0.9], [0, 3.45, -1.9], [0, 3.45, -4.6]];
     for (let i = 0; i < kept.length; i++) {
         const l = kept[i];
         l.position.set(pos[i][0], pos[i][1], pos[i][2]);
@@ -1023,7 +1283,7 @@ export function migrateInteriorCockpit(oldRoot, newRoot) {
 // =====================================================================
 // ===== VÁCH NGĂN KHOANG GIƯỜNG — DÃY GIỮA (CẤU HÌNH 34 GIƯỜNG) =====
 // BỔ SUNG Ở CUỐI FILE (yêu cầu nhiệm vụ: chỉ thêm code mới ở cuối
-// js/interior.js — KHÔNG sửa/xóa/di chuyển bất kỳ dòng nào của cấu hình
+// — KHÔNG sửa/xóa/di chuyển bất kỳ dòng nào của cấu hình
 // 20 phòng ở trên; hàm này chỉ được buildPassengerCabin34 gọi tới).
 //
 // NGUYÊN NHÂN DÃY GIỮA THIẾU VÁCH:

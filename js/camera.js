@@ -2,12 +2,16 @@
 import * as THREE from "three";
 
 const BED_Z_POSITIONS = [1.85, 2.05, 0.25, -1.85, -3.5, -5.15];
-const BED_Y_TIERS = [0.67, 1.67];
+const BED_Y_TIERS = [1.62, 2.70];   // khớp LOWER_BED_Y/UPPER_BED_Y của interior.js
 const BED_LENGTH = 1.7;
 const BED_WIDTH = 0.7;
 const X_OFFSET = 0.75;
 const FRONT_VIEW_Z = 6.6;
 const TWO_PI = Math.PI * 2;
+
+// Offset camera theo chuyển động thân xe (PHẦN 10.5) — dùng chung, không
+// cấp phát trong update() mỗi frame.
+const _attachT1 = new THREE.Vector3();
 
 function wrapAngle(angle) {
   return ((angle + Math.PI) % TWO_PI + TWO_PI) % TWO_PI - Math.PI;
@@ -53,7 +57,7 @@ for (let row = 0; row < BED_Z_POSITIONS.length; row++) {
 export const PASSENGER_SEATS_34 = [];
 {
   let id = 1;
-  const TIERS34 = [0.67, 1.67];
+  const TIERS34 = [1.62, 2.70];   // khớp CFG34 LOWER_Y/UPPER_Y của interior.js
   const SIDE_Z34 = [3.00, 1.00, -1.00, -3.00, -5.00];
   const CENTER_Z34 = [3.30, 1.88, 0.46, -0.96, -2.38, -3.80, -5.22];
   const addSeat = (x, z, side, row) => {
@@ -112,6 +116,9 @@ export class CameraSystem {
 
     this.currentPos = new THREE.Vector3();
     this.currentLook = new THREE.Vector3();
+    // Nguồn vật lý cảm giác (PHYSICS_STATE từ physics_step.js) — set 1 lần
+    // từ main.js qua setMotionSource(). null = camera tĩnh như cũ.
+    this.motionSource = null;
 
     this._onMouseDown = (e) => {
       if (e.button === 0) {
@@ -137,7 +144,80 @@ export class CameraSystem {
     this.setMode(this.modes[0]);
   }
 
-    onMouseMove(e) {
+    /**
+   * Nối camera vào trạng thái vật lý thân xe (PHẦN 10.5).
+   * Camera nội thất/giường dán CỨNG theo cabin: pitch/roll/heave tạo offset
+   * local cứng (rigid delta), rung động chỉ tồn khi có NGUỒN thật (va chạm,
+   * load máy). Không random, không jitter vô hạn.
+   */
+  setMotionSource(ps) {
+    this.motionSource = ps || null;
+    // Apply to all cameras
+  }
+
+  // Δy = −z·pitch − x·roll (nghiêng rigid về tâm xe z=0), cộng heave/sway.
+  // Áp cho cả vị trí ĐIỂM NHÌN để khung hình xoay SOLID theo thân (không fisheye).
+  // PHASE 4 (Original): Positional vibration — driver seat vs middle vs rear
+  // have different vibration profiles based on suspension geometry.
+  _applyMotionAttach(p, look) {
+    const ps = this.motionSource;
+    if (!ps) return;
+    const pitch = Number.isFinite(ps.pitch) ? ps.pitch : 0;
+    const roll = Number.isFinite(ps.roll) ? ps.roll : 0;
+    const heave = Number.isFinite(ps.heave) ? ps.heave : 0;
+    const sway = Number.isFinite(ps.sway) ? ps.sway : 0;
+    const adjust = (v) => {
+      v.y += -v.z * pitch - v.x * roll - heave;
+    };
+    adjust(p);
+    if (look) adjust(look);
+
+    // Rung động có nguyên nhân thật, TÁCH NGUỒN rõ: engine / road / impact.
+    // Động cơ: tồn khi máy nổ (idle cũng rung — xe khách diesel); RPM → 0
+    // (tắt máy) thì rung động cơ tắt theo đúng spec. Road/impact: chỉ khi xe
+    // lăn bánh / va chạm thật (va chạm được giữ kể cả đứng yên — cú tông khi
+    // đỗ xe vẫn giật). Không random — phase theo quãng đường.
+    const speedKmh = Number.isFinite(ps.speedKmh) ? ps.speedKmh : 0;
+    const isMoving = Math.abs(speedKmh) > 1.0;
+    const impact = Number.isFinite(ps.impactIntensity) ? ps.impactIntensity : 0;
+    const eng = Number.isFinite(ps.engineLoad) ? ps.engineLoad : 0;
+    const rough = Number.isFinite(ps.surfaceRoughness) ? ps.surfaceRoughness : 0;
+    const rpm = Number.isFinite(ps.engineRPM) ? ps.engineRPM : 0;
+    const roughPhase = Number.isFinite(ps.roughPhase) ? ps.roughPhase : 0;
+
+    // Rung động cơ: load thật (0.004) + rò rỉ idle (0.0012 × tỉ lệ RPM/800).
+    // RPM = 0 (tắt máy) ⇒ rung động cơ = 0 — đúng yêu cầu "tắt máy thì dừng".
+    const idleNorm = Math.max(0, Math.min(1, (rpm - 700) / 800));
+    const engVib = eng * 0.004 + 0.0012 * idleNorm;
+    const roadVib = isMoving ? rough * 0.003 : 0;   // đứng yên: không rung đường
+    const impactVib = impact * 0.08;                 // va chạm: mọi trạng thái
+
+    // PHASE 4: Positional vibration scaling based on camera position
+    // Driver seat (front, z~4.5): more pitch vibration, less heave
+    // Middle (z~0): balanced
+    // Rear (z~-4.5): more heave/sway, less pitch
+    // Upper deck (y~2.5): amplified roll vibration
+    const camZ = p.z || 0;
+    const camY = p.y || 0;
+    const frontFactor = Math.max(0, camZ / 5.0);   // 0 at center, 1 at front (driver)
+    const rearFactor = Math.max(0, -camZ / 5.0);   // 0 at center, 1 at rear
+    const upperDeckFactor = Math.max(0, (camY - 1.5) / 1.5);  // 0 below, 1 at upper deck
+
+    // Vibration components with positional weights
+    const pitchVib = 1.0 + frontFactor * 0.5;           // Front: more pitch from engine/road
+    const heaveVib = 1.0 + rearFactor * 0.6;            // Rear: more heave from suspension
+    const swayVib = 1.0 + rearFactor * 0.4 + upperDeckFactor * 0.3;  // Rear/upper: more sway
+    const rollVib = 1.0 + upperDeckFactor * 0.8;        // Upper deck: amplified roll
+
+    _attachT1.set(
+      (sway * 0.6 + roadVib * Math.sin(roughPhase * 80)) * swayVib,
+      (impactVib * Math.sin(roughPhase * 55) + engVib * Math.sin(roughPhase * 47) + roadVib * Math.sin(roughPhase * 65)) * heaveVib * rollVib,
+      roadVib * Math.cos(roughPhase * 72) * pitchVib
+    );
+    p.add(_attachT1);
+  }
+
+  onMouseMove(e) {
         if (!this.isMouseDown) return;
         const mode = this.modes[this.currentIndex];
         const moveX = Math.max(-100, Math.min(100, e.movementX || 0));
@@ -184,21 +264,15 @@ export class CameraSystem {
     this.orbitYaw = Math.PI;
     this.orbitPitch = 0.2;
 
-    // MẮT NGƯỜI THẬT theo interior.js: ghế tài xế x=-0.35 z=4.5 (cushion
-    // y=0.44); vô lăng x=-0.35 (đã dời runtime) z=5.1 r0.22 (viền trên y1.32);
-    // dashboard z5.3-5.6, cluster center y~1.05.
-    // CAO HƠN (y 1.28 -> 1.42): mắt tài xế ngồi trên ghế xe khách cao cổ
-    // thực tế ở ~1.40-1.45m; ở 1.28 nhìn xuống vô-lăng quá nhiều (báo cáo
-    // "góc nhìn hơi thấp"). z 4.75 -> 4.88 để giữ nguyên góc nhìn về
-    // đường/kính trước khi nâng cao.
-    // TAY LÁI LHD (Việt Nam): ghế tài xế + vô-lăng ở x=-0.35 (interior.js),
-    // ghế phụ ở x=+0.65. Bản trước đặt driver ở +0.65 (ĐỨNG TRƯỚC GHẾ PHỤ)
-    // nên không nhìn thấy vô-lăng/cụm đồng hồ — trái với Mục G.
-    // z 4.62 = mắt ngồi trên ghế (cushion z4.5) và LÙI sau vô-lăng (z5.1)
-    // ~0.48m đúng tỷ lệ buồng lái thật.
-    if (mode === 'driver') this.targetPos = new THREE.Vector3(-0.35, 1.45, 4.42);
-    // copilot: mắt (0.65, 1.45, 4.42) — ghế bên kia dash.
-    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(0.65, 1.45, 4.42);
+    // MẮT NGƯỜI THẬT theo interior.js: RHD — ghế tài xế x=+0.65 z=4.5
+    // (cushion y=0.44); vô lăng runtime x=+0.65 z=5.02 r0.22; cluster bên
+    // PHẢI (+0.45), dashboard z5.3-5.6.
+    // TAY LÁI PHẢI (RHD): tài xế + vô-lăng bên PHẢI,
+    // ghế phụ bên TRÁI (-0.35). z 4.42 = mắt ngồi trên ghế, lùi sau vô-lăng
+    // ~0.5m đúng tỷ lệ buồng lái.
+    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 1.48, 4.38);
+    // copilot: mắt (-0.35, 1.45, 4.42) — ghế bên kia dash.
+    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 1.48, 4.38);
     else if (mode === 'cabin') this.targetPos = new THREE.Vector3(0, 1.5, 3.2);
     else if (mode === 'outside') { /* nhanh orbit: update() dung orbitYaw/Pitch/Distance, khong dung targetPos */ }
     else if (mode.startsWith('seat_')) {
@@ -300,8 +374,24 @@ export class CameraSystem {
         localCamPos.y + lookDistance * Math.sin(this.bedLookPitch),
         localCamPos.z + lookDistance * Math.cos(this.bedLookPitch) * Math.cos(this.bedLookYaw)
       );
+      // D-01: trước đây gọi _applyMotionAttach(p, look) với biến KHÔNG tồn tại
+      // -> ReferenceError mỗi frame ở mọi mode seat_* (khiến updateWorld ném
+      // lỗi trước map.updateChunks/npc/traffic/passenger/HUD). Ghế ngồi dùng
+      // đúng cặp vector local vừa tính ở trên, giống nhánh cabin bên dưới.
+      this._applyMotionAttach(localCamPos, localLookAt);
       this.camera.position.copy(localCamPos.applyMatrix4(busWorldMatrix));
       this.camera.lookAt(localLookAt.applyMatrix4(busWorldMatrix));
+      if (this.motionSource) {
+        const mRoll = Number.isFinite(this.motionSource.roll) ? this.motionSource.roll : 0;
+        const mPitch = Number.isFinite(this.motionSource.pitch) ? this.motionSource.pitch : 0;
+        const impactSeat = Number.isFinite(this.motionSource.impactIntensity) ? this.motionSource.impactIntensity : 0;
+        // Không gate theo tốc độ: trên dốc đứng yên vẫn phải nghiêng đúng, cú
+        // tông khi đỗ xe vẫn giật. Pitch/roll tại standstill = 0 trên đường
+        // phẳng nên hành vi cũ không đổi.
+        this.camera.rotateZ(-mRoll * 0.6);
+        this.camera.rotateX(mPitch * 0.3);
+        this.camera.position.y += impactSeat * 0.006 * Math.sin((Number.isFinite(this.motionSource.roughPhase) ? this.motionSource.roughPhase : 0) * 58);
+      }
     } else {
       const lookDistance = 11;
       const localCamPos = this.targetPos.clone();
@@ -310,8 +400,21 @@ export class CameraSystem {
         localCamPos.y + lookDistance * Math.sin(this.cabinPitch),
         localCamPos.z + lookDistance * Math.cos(this.cabinYaw) * Math.cos(this.cabinPitch)
       );
+      this._applyMotionAttach(localCamPos, localLookAt);
       this.camera.position.copy(localCamPos.applyMatrix4(busWorldMatrix));
       this.camera.lookAt(localLookAt.applyMatrix4(busWorldMatrix));
+      if (this.motionSource) {
+        const mRoll2 = Number.isFinite(this.motionSource.roll) ? this.motionSource.roll : 0;
+        const mPitch2 = Number.isFinite(this.motionSource.pitch) ? this.motionSource.pitch : 0;
+        const impact = Number.isFinite(this.motionSource.impactIntensity) ? this.motionSource.impactIntensity : 0;
+        // Dùng roughPhase (quãng đường) — định tính. Không gate theo tốc độ:
+        // va chạm lúc đứng yên vẫn giật; đường phẳng lúc đứng yên thì pitch/roll = 0.
+        const roughPhase = Number.isFinite(this.motionSource.roughPhase) ? this.motionSource.roughPhase : 0;
+        this.camera.rotateZ(-mRoll2 * 0.5);
+        this.camera.rotateX(mPitch2 * 0.25);
+        this.camera.position.x += impact * 0.01 * Math.sin(roughPhase * 60);
+        this.camera.position.y += impact * 0.008 * Math.cos(roughPhase * 65);
+      }
     }
   }
 

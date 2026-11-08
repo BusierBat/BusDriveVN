@@ -78,19 +78,29 @@ export function createAudioSystem() {
         }
     }
 
-    /** Bám tốc độ xe (km/h) -> tần số + âm lượng tiếng máy. */
-    function setSpeed(kmh) {
+    /**
+     * Bám tốc độ xe (km/h) -> tần số + âm lượng tiếng máy.
+     * rpm/load (optional, từ physics_step.js — đọc PHYSICS_STATE): nếu có
+     * tiếng máy bám TUA THẬT + tải động cơ thay vì nội suy từ tốc độ.
+     * Không truyền -> giữ hành vi nội suy theo tốc độ như cũ (an toàn cho
+     * mọi caller cũ).
+     */
+    function setSpeed(kmh, rpm = null, load = null) {
         if (!started || !ctx) return;
         const s = Math.max(0, Math.min(160, kmh || 0));
         lastSpeed = s;
         const t = s / 160;
-        const base = 38 + t * 92;              // 38..130 Hz
+        const fromRpm = Number.isFinite(rpm) && rpm > 0;
+        const base = fromRpm
+            ? 30 + Math.max(0, Math.min(1, (rpm - 800) / 3700)) * 100   // 30..130 Hz theo tua máy thật
+            : 38 + t * 92;                                            // 38..130 Hz theo tốc độ
+        const engLoad = Number.isFinite(load) ? Math.max(0, Math.min(1, load)) : 0;
         const now = ctx.currentTime;
         if (oscA) oscA.frequency.setTargetAtTime(base, now, 0.12);
         if (oscB) oscB.frequency.setTargetAtTime(base * 1.04, now, 0.12);
-        if (engineFilter) engineFilter.frequency.setTargetAtTime(260 + t * 1500, now, 0.15);
-        // Đứng yên -> gần như im; chạy -> to dần (không chói tai).
-        if (engineGain) engineGain.gain.setTargetAtTime(0.035 + t * 0.11, now, 0.15);
+        if (engineFilter) engineFilter.frequency.setTargetAtTime(260 + t * 1500 + engLoad * 120, now, 0.15);
+        // Đứng yên -> gần như im; chạy -> to dần; load máy cao (ga sâu/gốc dốc) -> thêm gằn nhẹ
+        if (engineGain) engineGain.gain.setTargetAtTime(0.035 + t * 0.11 + engLoad * 0.04, now, 0.15);
     }
 
     /** Còi xe (phím H). */

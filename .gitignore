@@ -19,3 +19,8 @@ Thumbs.db
 
 # Agent tool state (khong phai cong viec du an)
 .opencode/
+# npm workbench (cai dat cay thu vien ba phu — khong track)
+node_modules/
+# Trang thai cong cu agent (khoi phat sinh luc lam viec)
+.cloud-attachments/
+.kilo/

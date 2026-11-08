@@ -31,7 +31,8 @@ export const NPC_VEHICLE_KIND = {
     CAR: "CAR",
     VAN16: "VAN16",
     TRUCK: "TRUCK",
-    SEMI: "SEMI"
+    SEMI: "SEMI",
+    BUS: "BUS"   // trước đây thiếu → mọi dòng chạy qua coercion undefined (fragile)
 };
 
 // Kích thước thật (m) — dùng cho va chạm OBB, khoảng cách giữ xe, bán kính
@@ -101,12 +102,26 @@ function cyl(r, h, x, y, z, hex, axis = "x", seg = 12) {
     return paint(g, hex);
 }
 
-// Bánh xe: lốp + mâm, trục ngang (theo X)
-function wheel(r, w, x, y, z) {
-    return [
-        cyl(r, w, x, y, z, C_TIRE, "x", 12),
-        cyl(r * 0.55, w + 0.02, x, y, z, C_RIM, "x", 10)
-    ];
+// Bánh xe GỘP THEO TRỤC: mỗi trục = 1 mesh (2 bánh lốp+mâm gộp) để xoay được
+// theo vòng tua động cơ — draw call thấp (2-5/xe) vẫn có chuyển động bánh thật.
+const WHEEL_MAT = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.85, metalness: 0.15 });
+function wheelHalf(r, w, side, xAbs) {
+    const t = new THREE.CylinderGeometry(r, r, w, 12);
+    t.rotateZ(Math.PI / 2);
+    t.translate(side * xAbs, 0, 0);
+    const rim = new THREE.CylinderGeometry(r * 0.55, r * 0.55, w + 0.02, 10);
+    rim.rotateZ(Math.PI / 2);
+    rim.translate(side * xAbs, 0, 0);
+    return [t, rim];
+}
+function buildAxleWheel(r, w, axleZ, xAbs) {
+    const parts = [...wheelHalf(r, w, -1, xAbs), ...wheelHalf(r, w, 1, xAbs)];
+    const g = mergeGeometries(parts, false);
+    parts.forEach((p) => p.dispose());
+    const m = new THREE.Mesh(g, WHEEL_MAT);
+    m.position.set(0, r, axleZ);
+    m.castShadow = false;
+    return m;
 }
 
 // Gộp nhiều geometry thành 1 (cùng vật liệu) -> 1 draw call
@@ -152,13 +167,13 @@ function buildCar(colorHex) {
     head.push(bx(0.260, 0.11, 0.07, 0.56, 0.80, 2.16, 0xfff3cf));
     tail.push(bx(0.280, 0.12, 0.06, -0.60, 0.86, -2.16, 0xd01c1c));
     tail.push(bx(0.280, 0.12, 0.06, 0.60, 0.86, -2.16, 0xd01c1c));
-    // bánh + vòm bánh
+    // bánh + vòm bánh — giữ trục để dựng mesh rời ở createNpcVehicle
     const r = 0.305, w = 0.200;
+    const axles = [{ z: 1.34, r, w, x: 0.76 }, { z: -1.34, r, w, x: 0.76 }];
     for (const sx of [-1, 1]) for (const sz of [1.34, -1.34]) {
-        wheel(r, w, sx * 0.76, r, sz).forEach((g) => body.push(g));
         body.push(bx(0.620, 0.10, 0.06, sx * 0.86, r + 0.16, sz, C_TRIM));
     }
-    return { body: merge(body), glass: merge(glass), head: merge(head), tail: merge(tail) };
+    return { body: merge(body), glass: merge(glass), head: merge(head), tail: merge(tail), axles };
 }
 
 // ---------------------------------------------------------------- VAN16
@@ -194,13 +209,13 @@ function buildVan(colorHex) {
     tail.push(bx(0.340, 0.16, 0.07, 0.86, 1.20, -2.88, 0xd01c1c));
     tail.push(bx(0.300, 0.10, 0.06, -0.80, 0.62, -2.90, 0xd01c1c));
     tail.push(bx(0.300, 0.10, 0.06, 0.80, 0.62, -2.90, 0xd01c1c));
-    // bánh + vòm
+    // bánh + vòm — giữ trục để dựng mesh rời ở createNpcVehicle
     const r = 0.350, w = 0.220;
+    const axles = [{ z: 1.95, r, w, x: 0.90 }, { z: -1.90, r, w, x: 0.90 }];
     for (const sx of [-1, 1]) for (const sz of [1.95, -1.90]) {
-        wheel(r, w, sx * 0.90, r, sz).forEach((g) => body.push(g));
         body.push(bx(0.760, 0.34, 0.05, sx * 1.00, r + 0.10, sz, C_TRIM));
     }
-    return { body: merge(body), glass: merge(glass), head: merge(head), tail: merge(tail) };
+    return { body: merge(body), glass: merge(glass), head: merge(head), tail: merge(tail), axles };
 }
 
 // ---------------------------------------------------------------- TRUCK
@@ -251,15 +266,13 @@ function buildTruck(cabHex, boxHex) {
     tail.push(bx(0.060, 0.14, 0.18, 1.02, 1.30, -6.00, 0xd01c1c));
     // bánh: 1 trước + 2 cụm đôi sau (bánh đôi nằm TRONG bề rộng thân 2.485m)
     const r = 0.525, w = 0.300;
+    const axles = [{ z: 4.20, r, w, x: 0.95 }, { z: -2.60, r, w, x: 0.95 }, { z: -3.90, r, w, x: 0.95 }];
     for (const sx of [-1, 1]) {
-        wheel(r, w, sx * 0.95, r, 4.20).forEach((g) => body.push(g));
         for (const sz of [-2.60, -3.90]) {
-            wheel(r, w, sx * 0.78, r, sz).forEach((g) => body.push(g));
-            wheel(r, w, sx * 1.06, r, sz).forEach((g) => body.push(g));
             body.push(bx(1.30, 0.40, 0.06, sx * 1.06, r + 0.16, sz, C_TRIM));
         }
     }
-    return { body: merge(body), glass: merge(glass), head: merge(head), tail: merge(tail) };
+    return { body: merge(body), glass: merge(glass), head: merge(head), tail: merge(tail), axles };
 }
 
 // ----------------------------------------------------------------- SEMI
@@ -315,20 +328,16 @@ function buildSemi(cabHex, boxHex) {
     // bánh đầu kéo: 1 trước + 1 cụm đôi sau (trong bề rộng thân 2.5m)
     const r = 0.525, w = 0.300;
     for (const sx of [-1, 1]) {
-        wheel(r, w, sx * 0.95, r, 7.00).forEach((g) => body.push(g));
-        wheel(r, w, sx * 0.78, r, 5.00).forEach((g) => body.push(g));
-        wheel(r, w, sx * 1.06, r, 5.00).forEach((g) => body.push(g));
+        for (const sz of [-4.50, -6.00, -7.20]) {
+            body.push(bx(1.30, 0.40, 0.06, sx * 1.06, r + 0.16, sz, C_TRIM));
+        }
     }
-    // bánh rơ: 3 cụm đôi
-    for (const sx of [-1, 1]) for (const sz of [-4.50, -6.00, -7.20]) {
-        wheel(r, w, sx * 0.78, r, sz).forEach((g) => body.push(g));
-        wheel(r, w, sx * 1.06, r, sz).forEach((g) => body.push(g));
-    }
+    const axles = [{ z: 7.00, r, w, x: 0.95 }, { z: 5.00, r, w, x: 0.95 }, { z: -4.50, r, w, x: 0.95 }, { z: -6.00, r, w, x: 0.95 }, { z: -7.20, r, w, x: 0.95 }];
     // đèn hậu rơ + cản
     tail.push(bx(0.060, 0.14, 0.16, -1.02, 1.10, -8.10, 0xd01c1c));
     tail.push(bx(0.060, 0.14, 0.16, 1.02, 1.10, -8.10, 0xd01c1c));
     body.push(bx(0.140, 0.24, 2.30, 0, 1.02, -8.12, C_TRIM));
-    return { body: merge(body), glass: merge(glass), head: merge(head), tail: merge(tail) };
+    return { body: merge(body), glass: merge(glass), head: merge(head), tail: merge(tail), axles };
 }
 
 // ---------------------------------------------------------------- template
@@ -353,7 +362,7 @@ export function getVehicleTemplate(kind, colorIndex) {
 
     tpl = {
         kind, colorIndex, paintHex, boxHex,
-        body: parts.body, glass: parts.glass, head: parts.head, tail: parts.tail
+        body: parts.body, glass: parts.glass, head: parts.head, tail: parts.tail, axles: parts.axles || []
     };
     TEMPLATE_CACHE.set(key, tpl);
     return tpl;
@@ -410,6 +419,14 @@ export function createNpcVehicle(kind, colorIndex = 0) {
     const headMesh = mk(tpl.head, MAT_HEAD, false);
     const tailMesh = mk(tpl.tail, MAT_TAIL, false);
 
+    // Bánh rời — xoay được theo vòng tua (buildAxleWheel: 2-5 mesh/xe)
+    const wheelMeshes = [];
+    for (const ax of tpl.axles || []) {
+        const wm = buildAxleWheel(ax.r, ax.w, ax.z, ax.x);
+        root.add(wm);
+        wheelMeshes.push(wm);
+    }
+
     return {
         group: root,
         kind,
@@ -419,14 +436,21 @@ export function createNpcVehicle(kind, colorIndex = 0) {
         // API tương thích createNpcBus (traffic chưa dùng tới nhưng giữ cho
         // tương thích nếu sau này bật bánh/vô-lăng cho NPC).
         setSteering: () => { },
-        setWheelRotation: () => { },
+        setWheelRotation: (angle) => {
+            if (wheelMeshes.length) {
+                for (let i = 0; i < wheelMeshes.length; i++) wheelMeshes[i].rotation.x = angle;
+            }
+        },
         setDoor: () => { },
         setHeadlights: (on) => { if (headMesh) headMesh.visible = on !== false; },
         setTaillights: (on) => { if (tailMesh) tailMesh.visible = on !== false; },
         setInteriorLed: () => { },
         setSkin: () => { },
         skinPath: null,
-        bodyMesh
+        bodyMesh,
+        // userData luôn có sẵn (interface-parity createNpcBus bus.js) — consumer
+        // đăng ký collision colId ghi vào đây, không được để undefined.
+        userData: {}
     };
 }
 

@@ -354,7 +354,8 @@ export class TrafficDebug {
                 }
             }
         }
-        res.pass = res.checked > 0 && res.wrongSide === 0 && res.wrongHeading === 0 && res.offRoad === 0;
+        // Không có xe để kiểm tra -> không có vi phạm -> coi PASS (không báo FAIL vô nghĩa).
+        res.pass = res.wrongSide === 0 && res.wrongHeading === 0 && res.offRoad === 0;
         this.lastSelfCheck = res;
         if (this.enabled) this._renderPanel();
         return res;

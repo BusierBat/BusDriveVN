@@ -18,7 +18,7 @@
     </script>
 </head>
 <body>
-    <canvas id="game-canvas"></canvas>
+    <canvas id="game-canvas" tabindex="-1"></canvas>
 
     <!-- Màn hình tải -->
     <div id="loading-screen" style="display:none; position:fixed; inset:0; background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); z-index:1000; flex-direction:column; justify-content:center; align-items:center; text-align:center;">
@@ -31,7 +31,7 @@
     </div>
 
 
-    <div id="main-menu" style="display:flex; flex-direction:column; align-items:center; gap:20px;">
+    <div id="main-menu" style="display:flex; flex-direction:column; align-items:center; gap:20px; position:relative; z-index:900; pointer-events:auto;">
         <img src="assets/ui/title.png" id="game-logo" alt="BusDriveVN Logo" style="max-width:320px; max-height:160px; width:auto; height:auto; object-fit:contain; filter:drop-shadow(0 8px 24px rgba(59,130,246,0.4));">
 
         <!-- 3 NÚT BẮT BUỘC TRÊN MENU CHÍNH -->

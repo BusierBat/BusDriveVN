@@ -257,6 +257,9 @@ export class TravelClock {
             stepM = hypot2(x - this._last.x, z - this._last.z);
             // rung tay ga/số lùi làm bước nhỏ -> coi như đứng yên
             if (stepM < 0.02) stepM = 0;
+            // Teleport (Cứu hộ R / setPlayerPosition / spawn): bước xa hơn khả
+            // năng vật lý trong 1 bước cố định -> bỏ qua, không ăn vào odometer
+            else if (stepM > 60) stepM = 0;
             this.distanceM += stepM;
         }
         this._last = { x, z, y };
