@@ -158,6 +158,7 @@ export class TrafficAI {
         this.laneOffset = 0;         // khoảng cách từ tâm đường về PHẢI hướng đi (m)
         this.targetLaneOffset = 0;
         this.lane = 0;               // chỉ số làn (0 = ngoài cùng bên phải)
+        this._inJunction = false;   // PHASE: đang trong vùng ngã tư (reservation)
         this.currentSegmentId = null;
         this.direction = 0;
         this.progress = 0;
@@ -589,6 +590,9 @@ export class TrafficAI {
             v0 *= 0.35;                              // ôm cua / rẽ
         } else if (f) {
             const remain = f.len - this.progress * f.len;
+            // PHASE (junction reservation): còn <40m tới node cuối đoạn (đi
+            // qua ngã) -> xe đang ở vùng ngã tư. Dùng để chặn mở làn/vượt.
+            this._inJunction = this._endNodeDegree() >= 3 && remain < 40;
             if (remain < 25 && this._endNodeDegree() >= 3) {
                 v0 *= 0.55 + 0.45 * clamp(remain / 25, 0, 1);   // chậm lại trước ngã
             }
@@ -746,6 +750,10 @@ export class TrafficAI {
         // Không đổi làn khi còn <30m là tới hai đầu đoạn (gần ngã/ramp)
         const myT = this.progress * f.len, remain = f.len - myT;
         if (myT < 30 || remain < 30) return;
+        // PHASE (junction reservation): không mở làn/vượt khi xe đang đi
+        // vào/qua vùng ngã tư (xe đang rẽ/vượt trong hộp ngã không được mở
+        // làn mới — hai xe cùng node phải luân bằng qua cơ chế hold node).
+        if (this._inJunction) return;
 
         const p = this.profile;
 
