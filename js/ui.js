@@ -1,5 +1,6 @@
 // js/ui.js - SMART HUD, CONSOLE & RESTORED MENUS
-import { formatTime } from "./utils.js";
+import { formatTime, formatMoney } from "./utils.js";
+import { FUEL_CAPACITY } from "./economy.js";
 
 export function createUI({ map = null, callbacks = {} } = {}) {
     let minimapCtx = null, speedoCtx = null;
@@ -7,9 +8,13 @@ export function createUI({ map = null, callbacks = {} } = {}) {
     let minimapMap = null;
     let mainMenuAnimation = null;
     let _lastMinimapX = Infinity, _lastMinimapZ = Infinity, _lastHeading = Infinity;
+    let _lastMoney = NaN;
+    let _lastFuel = NaN;
     const els = {
         hud: document.getElementById('hud'),
         fps: document.getElementById('hud-fps'),
+        money: document.getElementById('hud-money-value'),
+        mainMoney: document.getElementById('main-money-value'),
         passengers: document.getElementById('hud-passengers'),
         time: document.getElementById('hud-time'),
         trip: document.getElementById('hud-trip'),
@@ -20,6 +25,8 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         speedometer: document.getElementById('hud-speedometer'),
         warning: document.getElementById('hud-warning'),
         notification: document.getElementById('hud-notification'),
+        fuelText: document.getElementById('hud-fuel-text'),
+        fuelBar: document.getElementById('hud-fuel-bar'),
         loadingScreen: document.getElementById('loading-screen'),
         mainMenu: document.getElementById('main-menu'),
         console: document.getElementById('command-console'),
@@ -333,8 +340,43 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         toastTimer = setTimeout(() => { els.notification.style.display = 'none'; }, 3000);
     }
 
+    // HUD tiền: MỘT nguồn định dạng duy nhất là formatMoney() (js/utils.js).
+    // Cache giá trị để không ghi DOM 10 lần/giây khi số dư không đổi.
+    function setMoneyDisplay(value) {
+        if (!Number.isFinite(value)) return;
+        const v = Math.round(value);
+        if (v === _lastMoney) return;
+        _lastMoney = v;
+        const text = formatMoney(v);
+        if (els.money) els.money.textContent = text;
+        if (els.mainMoney) els.mainMoney.textContent = text;
+    }
+
+    // HUD nhiên liệu: mức lít hiện tại / bình đầy. Cache để không vẽ 10 lần/giây
+    // khi mức không đổi. Màu: xanh >50% · vàng 20-50% · đỏ <20% (sắp hết).
+    function setFuelDisplay(value) {
+        const v = Number(value);
+        if (!Number.isFinite(v)) return;
+        const rounded = Math.round(v * 10) / 10;
+        if (rounded === _lastFuel) return;
+        _lastFuel = rounded;
+        const pct = Math.max(0, Math.min(100, (v / FUEL_CAPACITY) * 100));
+        const text = `${Math.floor(v)}/${FUEL_CAPACITY}L`;
+        if (els.fuelText) els.fuelText.textContent = text;
+        if (els.fuelBar) {
+            els.fuelBar.style.width = `${Math.max(0, pct).toFixed(1)}%`;
+            els.fuelBar.style.background = pct > 50
+                ? 'linear-gradient(90deg, #10b981, #34d399)'
+                : pct > 20
+                    ? 'linear-gradient(90deg, #f59e0b, #fbbf24)'
+                    : 'linear-gradient(90deg, #ef4444, #f87171)';
+        }
+    }
+
     function update(state = {}) {
         if (els.fps) els.fps.textContent = Math.round(state.fps || 0);
+        setMoneyDisplay(state.money);
+        setFuelDisplay(state.fuel);
         if (els.passengers) els.passengers.textContent = `${state.passengers ?? 0}/${state.passengerCapacity ?? 24}`;
         if (els.time) els.time.textContent = formatTime(state.timeMinutes || 0);
         if (els.trip && state.trip) {
@@ -372,7 +414,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
     }
 
     return { 
-        els, setupMinimap, update, toast,
+        els, setupMinimap, update, toast, setMoney: setMoneyDisplay, setFuel: setFuelDisplay,
         showMainMenu() { setMainMenuVisible(true); },
         hideMainMenu() { setMainMenuVisible(false); },
         showConsole() { if (els.console) { els.console.style.display = 'flex'; els.consoleInput.focus(); } },

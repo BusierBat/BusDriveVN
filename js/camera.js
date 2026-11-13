@@ -2,7 +2,7 @@
 import * as THREE from "three";
 
 const BED_Z_POSITIONS = [1.85, 2.05, 0.25, -1.85, -3.5, -5.15];
-const BED_Y_TIERS = [1.62, 2.70];   // khớp LOWER_BED_Y/UPPER_BED_Y của interior.js
+const BED_Y_TIERS = [1.76, 2.70];   // khớp LOWER_BED_Y/UPPER_BED_Y của interior.js
 const BED_LENGTH = 1.7;
 const BED_WIDTH = 0.7;
 const X_OFFSET = 0.75;
@@ -51,15 +51,17 @@ for (let row = 0; row < BED_Z_POSITIONS.length; row++) {
 // ===== BỘ GHẾ HÀNH KHÁCH CHO CẤU HÌNH 34 GIƯỜNG VIP =====
 // 3 dãy (trái 5 · giữa 7 · phải 5) x 2 tầng = 34 chỗ ngồi. Tọa độ lấy
 // đúng bố cục interior.js (CFG34): giường bên |x|=0.87 dài 1.70m, giường
-// giữa x=0 dài 1.40m (bước 1.42 — khe 0.02 đặt vách ngăn khoang). Dãy giữa
+// giữa x=0 dài 1.37m (bước 1.39 — khe 0.02 đặt vách ngăn khoang). Dãy giữa
 // có lối đi 2 BÊN nên camera nhìn được cả hai hướng (pivot rộng hơn, xen
 // kẽ trái/phải theo row) — KHÔNG dùng lại tọa độ của cấu hình 20 phòng.
 export const PASSENGER_SEATS_34 = [];
 {
   let id = 1;
-  const TIERS34 = [1.62, 2.70];   // khớp CFG34 LOWER_Y/UPPER_Y của interior.js
+  const TIERS34 = [1.76, 2.70];   // khớp CFG34 LOWER_Y/UPPER_Y của interior.js
   const SIDE_Z34 = [3.00, 1.00, -1.00, -3.00, -5.00];
-  const CENTER_Z34 = [3.30, 1.88, 0.46, -0.96, -2.38, -3.80, -5.22];
+  // PHẢI khớp CFG34 Z_CENTER_FIRST 3.11 / Z_CENTER_STEP 1.39 (và BED34_MID_Z
+  // trong passenger.js) — nếu lệch, camera ghế giữa sẽ nhìn lệch khỏi nệm.
+  const CENTER_Z34 = [3.11, 1.72, 0.33, -1.06, -2.45, -3.84, -5.23];
   const addSeat = (x, z, side, row) => {
     for (const bedY of TIERS34) {
       PASSENGER_SEATS_34.push({
@@ -264,16 +266,12 @@ export class CameraSystem {
     this.orbitYaw = Math.PI;
     this.orbitPitch = 0.2;
 
-    // MẮT NGƯỜI THẬT theo interior.js: RHD — ghế tài xế x=+0.65 z=4.5
-    // (cushion y=0.44); vô lăng runtime x=+0.65 z=5.02 r0.22; cluster bên
-    // PHẢI (+0.45), dashboard z5.3-5.6.
-    // TAY LÁI PHẢI (RHD): tài xế + vô-lăng bên PHẢI,
-    // ghế phụ bên TRÁI (-0.35). z 4.42 = mắt ngồi trên ghế, lùi sau vô-lăng
-    // ~0.5m đúng tỷ lệ buồng lái.
-    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 1.48, 4.38);
-    // copilot: mắt (-0.35, 1.45, 4.42) — ghế bên kia dash.
-    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 1.48, 4.38);
-    else if (mode === 'cabin') this.targetPos = new THREE.Vector3(0, 1.5, 3.2);
+    // MẮT NGƯỜI THẬT theo interior.js (cabin nâng +0.64m): RHD — ghế tài xế x=+0.65 z=4.5
+    // TAY LÁI PHẢI (RHD): tài xế + vô-lăng bên PHẢI, ghế phụ bên TRÁI (-0.35).
+    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 2.62, 4.38);
+    // copilot: mắt ghế phụ bên kia dash.
+    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 2.62, 4.38);
+    else if (mode === 'cabin') this.targetPos = new THREE.Vector3(0, 2.64, 3.2);
     else if (mode === 'outside') { /* nhanh orbit: update() dung orbitYaw/Pitch/Distance, khong dung targetPos */ }
     else if (mode.startsWith('seat_')) {
       const idx = parseInt(mode.split('_')[1]);

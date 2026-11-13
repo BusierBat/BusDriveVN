@@ -1,4 +1,4 @@
-﻿// js/map.js
+// js/map.js
 
 import * as THREE from "three";
 import { hypot2 } from "./utils.js";
@@ -1355,12 +1355,12 @@ export class MapLoader {
     // road graph hiện có (start/end XYZ, width, heading, elevation,
     // length). KHÔNG tạo road graph thứ hai, KHÔNG duplicate data:
     // box chỉ là VIEW vật lý của segment đang có.
-    // Box được index theo CHUNK (cùng công thức _indexSegmentsByChunk)
-    // để đăng ký/gỡ theo chunk streaming (load visual -> load
-    // collision; unload visual -> unload collision).
+    // `_surfaceBoxes` là view DÙNG CHUNG (height query + debug), dựng 1 lần cho
+    // toàn graph. Collision thật đăng ký 1 lần qua `_buildRoadCollisionBoxes()`
+    // (registry toàn cục `collisionSystem.roadBoxes`) — KHÔNG đăng ký/gỡ theo
+    // chunk, vì đường phải có collision cả khi chunk visual chưa dựng.
     _buildSurfaceBoxes() {
         this._surfaceBoxes = new Map();
-        this._surfaceBoxByChunk = new Map();
         if (!this.roadGraph) return;
         for (const seg of this.roadGraph.segments) {
             const p1 = this.roadGraph.getNode(seg.from);
@@ -1377,7 +1377,7 @@ export class MapLoader {
             const cy = (y1 + y2) * 0.5;
             // AABB bảo thủ (bao phủ rotation) — dùng để index chunk
             // và debug bounds, KHÔNG dùng để check collision (check
-            // dùng oriented box trong CollisionSystem.registerBox).
+            // dùng oriented box trong CollisionSystem.registerRoadBox).
             const cos = Math.cos(heading), sin = Math.sin(heading);
             const ex = w * 0.5 * Math.abs(cos) + len * 0.5 * Math.abs(sin);
             const ez = w * 0.5 * Math.abs(sin) + len * 0.5 * Math.abs(cos);
@@ -1395,68 +1395,10 @@ export class MapLoader {
                 minX: cx - ex, maxX: cx + ex,
                 minZ: cz - ez, maxZ: cz + ez,
                 minY: Math.min(y1, y2) - ROAD_THICK,
-                maxY: Math.max(y1, y2),
-                collisionId: null
+                maxY: Math.max(y1, y2)
             };
             this._surfaceBoxes.set(seg.id, box);
-            const hw = (seg.width || 12) * 0.5 + 2;
-            const x0 = Math.floor((Math.min(p1.x, p2.x) - hw) / CHUNK_SIZE);
-            const x1 = Math.floor((Math.max(p1.x, p2.x) + hw) / CHUNK_SIZE);
-            const z0 = Math.floor((Math.min(p1.z, p2.z) - hw) / CHUNK_SIZE);
-            const z1 = Math.floor((Math.max(p1.z, p2.z) + hw) / CHUNK_SIZE);
-            for (let ccx = x0; ccx <= x1; ccx++) {
-                for (let ccz = z0; ccz <= z1; ccz++) {
-                    const k = ccx + "," + ccz;
-                    let a = this._surfaceBoxByChunk.get(k);
-                    if (!a) { a = []; this._surfaceBoxByChunk.set(k, a); }
-                    a.push(seg.id);
-                }
-            }
         }
-    }
-
-    // Đăng ký Box collision của 1 chunk VỪA dựng — tích hợp chunk
-    // streaming. Box dùng type "road": không nằm trong types mặc
-    // định của CollisionSystem.check() nên mặt đường KHÔNG bao
-    // giờ chặn chuyển động (nó là sàn, không phải vật cản).
-    _registerChunkSurfaces(entry) {
-        const cs = window.collisionSystem;
-        const sids = this._surfaceBoxByChunk
-            ? this._surfaceBoxByChunk.get(entry.cx + "," + entry.cz) : null;
-        if (!cs || !sids || !sids.length) return;
-        const ids = [];
-        for (const sid of sids) {
-            const box = this._surfaceBoxes.get(sid);
-            if (!box || box.collisionId !== null) continue;
-            box.collisionId = cs.registerBox(
-                box.cx, box.cy, box.cz,
-                box.width * 0.5, box.length * 0.5,
-                box.maxY - box.minY,
-                box.heading,
-                "road",
-                {
-                    segId: box.segId, roadId: box.roadId,
-                    roadType: box.roadType,
-                    start: box.start, end: box.end
-                }
-            );
-            ids.push(box.collisionId);
-        }
-        if (ids.length) entry.surfaceColIds = ids;
-    }
-
-    _unregisterChunkSurfaces(entry) {
-        const cs = window.collisionSystem;
-        if (!cs || !entry.surfaceColIds) return;
-        for (const id of entry.surfaceColIds) {
-            const c = cs.colliders.get(id);
-            if (c && c.data && c.data.segId) {
-                const box = this._surfaceBoxes.get(c.data.segId);
-                if (box) box.collisionId = null;
-            }
-            cs.remove(id);
-        }
-        entry.surfaceColIds = null;
     }
 
     // ------------------------------------------------------------ materials
@@ -1894,6 +1836,27 @@ export class MapLoader {
                 if (!moved) break;
             }
             if (!poly || poly.length < 3) continue;
+            // ⚠ HULL PHẢI KHỚP TRIM CUỐI. Vòng lặp trên tính hull từ trim cũ,
+            // RỒI mới cập nhật trim; nếu lần lặp cuối (it=5) vẫn `moved` thì
+            // hull đang là của trim CŨ. `trimByMouths` so khớp đỉnh hull với
+            // điểm miệng tính từ trim MỚI (EPS 0.06) ⇒ không khớp đỉnh nào
+            // (node nằm trong hull nên cũng không phải đỉnh) ⇒ trả null ⇒
+            // node >=3 nhánh MẤT sàn giao lộ + segment không bị trim ⇒ quad
+            // chồng nhau ở nút. Đo được: 1040/3192 nút rớt đúng cổng này.
+            // Dựng lại hull 1 lần từ trim cuối để miệng trùng khít đỉnh hull.
+            {
+                const pts = [[n.x, n.z, ny]];
+                for (const b of branches) {
+                    const nx = -b.dz, nz = b.dx;
+                    const yb = b.y0 + (b.y1 - b.y0) * (b.trim / b.len);
+                    for (const s of [-1, 1]) {
+                        pts.push([n.x + b.dx * b.trim + nx * b.hw * s,
+                                  n.z + b.dz * b.trim + nz * b.hw * s, yb]);
+                    }
+                }
+                const poly2 = convexHull3(pts);
+                if (poly2.length >= 3) poly = poly2;
+            }
 
             // san giao lo phai phong (khong lam nut giao toan bo mat duong bien)
             // -> lui hull vao trong mot chut cho cac canh khong co mieng duong
@@ -5196,11 +5159,17 @@ export class MapLoader {
         const s = this.getDriveableSurface(x, z, yHint);
         if (!s) return null;
         const b = s.box;
+        // Collision thật nằm ở registry toàn cục `collisionSystem.roadBoxes`
+        // với id `road_<segId>` (xem _buildRoadCollisionBoxes). `_surfaceBoxes`
+        // chỉ là view dùng chung, KHÔNG giữ id collision riêng.
+        const boxId = `road_${s.sid}`;
+        const cs = window.collisionSystem;
+        const collisionId = cs && cs.roadBoxes && cs.roadBoxes.has(boxId) ? boxId : null;
         return {
             segId: s.sid,
             roadId: b ? b.roadId : (s.seg.name || s.seg.id),
             roadType: s.seg.class,
-            collisionId: b ? b.collisionId : null,
+            collisionId,
             surfaceY: s.y,
             offsetFromCenter: s.dist,
             box: b ? {
@@ -5213,14 +5182,10 @@ export class MapLoader {
         };
     }
 
-    // Thống kê registry (perf audit): số box đã đăng ký / tổng box.
+    // Thống kê registry (perf audit): số box collision THẬT đã đăng ký / tổng box.
     getSurfaceStats() {
-        let registered = 0;
-        if (this._surfaceBoxes) {
-            for (const b of this._surfaceBoxes.values()) {
-                if (b.collisionId !== null) registered++;
-            }
-        }
+        const cs = window.collisionSystem;
+        const registered = cs && cs.roadBoxes ? cs.roadBoxes.size : 0;
         return {
             segments: this.roadGraph ? this.roadGraph.segments.length : 0,
             boxes: this._surfaceBoxes ? this._surfaceBoxes.size : 0,

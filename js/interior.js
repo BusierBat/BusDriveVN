@@ -27,7 +27,7 @@ const L = 12, W = 2.4, H = 3.3;
 // Sàn hành khách NÂNG LÊN ~1m → khoảng trống 0.307..0.92 để trống cho khoang
 // hành lý tương lai. Nội thất (giường/vách/kính nội thất/đèn) neo theo các dải
 // kính của vỏ xe, KHÔNG neo theo số cũ của cấu hình phòng 20/34.
-const FLOOR_Y = 1.00, CEILING_Y = 3.6;   // sàn khoang hành khách / trần
+const FLOOR_Y = 1.64, CEILING_Y = 3.6;   // sàn khoang hành khách / trần (nâng bằng mặt nệm tầng 1)
 const UPPER_FLOOR_Y = 2.49;              // sàn tầng trên (vách phân tầng) — mép y 2.45..2.53
 const WALL_X = 1.15;
 const CABIN_END_Z = 4.8;
@@ -38,8 +38,9 @@ let _welcomePlateShared = { tex: null };
 const BED_WIDTH = 0.7;
 const BED_LENGTH = 1.7;
 const BED_Z_POSITIONS = [1.85, 2.05, 0.25, -1.85, -3.5, -5.15];
-const LOWER_BED_Y = 1.62;
-const UPPER_BED_Y = 2.69;
+// Vị trí giường (trục Y) — tầng dưới đặt trên sàn mới (FLOOR_Y = mặt nệm tầng 1).
+const LOWER_BED_Y = 1.76;
+const UPPER_BED_Y = 2.70;
 
 // Kính nội thất PHẢI trùng dải kính vẽ trong texture vỏ xe (bus.js):
 const WIN_LO_BOT = 1.92;
@@ -133,8 +134,17 @@ function dashPieceSphere(r, mat, x, y, z, group) {
 function buildCabin(groups) {
     const { DriverArea, Dashboard, Windows, BodyShell } = groups;
 
+    // ===== MẶT TRƯỚC BUỒNG LÁI — NEO VÀO MŨI XE THẬT =====
+    // Nội thất dùng L = 12 (chiều dài khoang khách) nhưng thân xe trong bus.js
+    // dài 12.805 → mũi xe thật ở z = +6.4024. Trước đây kính/khung/sàn lái đều
+    // neo theo z = 6.0 (L/2 của nội thất) nên cả cụm buồng lái lùi ~0.4m và hở
+    // một khoảng nhìn xuyên ra ngoài ở đầu xe ("cabin không dính mặt trước").
+    const NOSE_Z = 6.4024;          // bus.js: L / 2 = 12.8049 / 2
+    const FRONT_Z = NOSE_Z - 0.032; // 6.3704 — mặt trong khung trước (khung dày 0.06)
+    const CABIN_Y = 1.20;           // sàn buồng lái (thấp hơn sàn khách FLOOR_Y)
+
     const windshield = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 1.4), matGlassClear);
-    windshield.position.set(0, 1.8, 6.0 + 0.01);
+    windshield.position.set(0, 2.94, FRONT_Z);
     windshield.updateMatrix();
     windshield.matrixAutoUpdate = false;
     Windows.add(windshield);
@@ -150,17 +160,18 @@ function buildCabin(groups) {
         if (side < 0) continue;   // cửa bên -x: không dựng kính/khung tĩnh
         const xGlass = side * (WALL_X + 0.01);
         const cabinWin = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 1.6), matGlassClear);
-        cabinWin.position.set(xGlass, 1.6, 5.5);
+        cabinWin.position.set(xGlass, 2.74, 5.5);
         cabinWin.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
         cabinWin.updateMatrix();
         cabinWin.matrixAutoUpdate = false;
         Windows.add(cabinWin);
-        box(0.04, 1.6, 0.04, matShell, side * WALL_X, 1.6, 5.5, BodyShell);
-        box(0.6, 0.04, 0.04, matShell, side * WALL_X, 0.8, 5.5, BodyShell);
-        box(0.6, 0.04, 0.04, matShell, side * WALL_X, 2.4, 5.5, BodyShell);
+        box(0.04, 1.6, 0.04, matShell, side * WALL_X, 2.74, 5.5, BodyShell);
+        box(0.6, 0.04, 0.04, matShell, side * WALL_X, 1.94, 5.5, BodyShell);
+        box(0.6, 0.04, 0.04, matShell, side * WALL_X, 3.54, 5.5, BodyShell);
     }
 
-    // Keep the front frame but leave the stair-width entry corridor clear.
+    // Khung ngang trên/dưới của kính trước + cột dọc hai bên: đặt sát mặt trong
+    // mũi xe. Chừa lối cầu thang bên -x (x -1.12..-0.40) như trước.
     const addFrontCrossbar = (y, h) => {
         const xMin = -1.05, xMax = 1.05;
         const entryMin = -1.12, entryMax = -0.40;
@@ -169,18 +180,44 @@ function buildCabin(groups) {
             [Math.max(xMin, entryMax), xMax]
         ];
         for (const [x0, x1] of segments) {
-            if (x1 > x0) box(x1 - x0, h, 0.06, matShell, (x0 + x1) / 2, y, 6.0, BodyShell);
+            if (x1 > x0) box(x1 - x0, h, 0.06, matShell, (x0 + x1) / 2, y, FRONT_Z, BodyShell);
         }
     };
-    addFrontCrossbar(2.5, 0.04);
-    addFrontCrossbar(1.1, 0.06);
-    // Khung trước: bên -x chừa không gian gần mép cửa (aperture tới z 6.189) — chỉ dựng đoạn an toàn
-    box(0.04, 1.5, 0.06, matShell, -1.05, 1.8, 5.00, BodyShell);
-    box(0.04, 1.5, 0.06, matShell, 1.05, 1.8, 6.0, BodyShell);
+    addFrontCrossbar(3.64, 0.04);
+    addFrontCrossbar(2.22, 0.06);
+    // Cột khung hai bên kính (rộng 0.16, phủ mép kính 2.0m để không hở khe dọc)
+    box(0.16, 1.5, 0.06, matShell, -1.07, 2.94, FRONT_Z, BodyShell);
+    box(0.16, 1.5, 0.06, matShell, 1.07, 2.94, FRONT_Z, BodyShell);
     // Cột tiền buồng lái: CHỈ bên +x. Bên -x (x = -WALL_X) tại z 5.8 nằm GIỮA
     // khoang cửa lên xe (aperture thân xe z 5.139..6.189, bus.js) — giữ cột này
     // sẽ chặn lối đi khi cửa mở. Bề mặt cửa do door mesh + bodyDoorWall quản lý.
-    box(0.06, 1.8, 0.06, matShell, WALL_X, 1.8, 5.8, BodyShell);
+    box(0.06, 1.8, 0.06, matShell, WALL_X, 2.94, 5.8, BodyShell);
+
+    // ===== VỎ BUỒNG LÁI NỐI LIỀN MŨI XE =====
+    // Vách khoang khách dừng ở z 5.7 (shellLen = L - 0.6), trần ở z 5.75
+    // (L - 0.5) nên phần đầu xe hở hai bên + trần. Bịt lại cho buồng lái kín.
+    // Trần đầu xe (z 5.75..6.40)
+    box(W - 0.06, 0.04, NOSE_Z - 5.75, matCream, 0, CEILING_Y + 0.02, (5.75 + NOSE_Z) / 2, BodyShell);
+    // Vách phải (phía ghế lái): dải sàn lái→đáy kính, tách mốc FLOOR_Y để KHÔNG
+    // chồng lên vách khoang khách cũ (1.64..1.92, z ≤ 5.7) gây z-fighting.
+    box(0.04, FLOOR_Y - CABIN_Y, 5.70 - CABIN_END_Z, matShell, WALL_X,
+        (CABIN_Y + FLOOR_Y) / 2, (CABIN_END_Z + 5.70) / 2, BodyShell);
+    box(0.04, WIN_LO_BOT - CABIN_Y, NOSE_Z - 5.70, matShell, WALL_X,
+        (CABIN_Y + WIN_LO_BOT) / 2, (5.70 + NOSE_Z) / 2, BodyShell);
+    // Vách kín trước cửa sổ ghế lái (ô kính 5.2..5.8, đỉnh 3.54)
+    box(0.04, CEILING_Y - WIN_LO_BOT, NOSE_Z - 5.80, matShell, WALL_X,
+        (WIN_LO_BOT + CEILING_Y) / 2, (5.80 + NOSE_Z) / 2, BodyShell);
+    box(0.04, CEILING_Y - 3.54, 5.80 - 5.70, matShell, WALL_X,
+        (3.54 + CEILING_Y) / 2, 5.75, BodyShell);
+    // Vách trái (cửa lên xe): dải dưới sau cửa + A-pillar + vách trên khoang cửa
+    box(0.04, FLOOR_Y - CABIN_Y, 5.139 - CABIN_END_Z, matShell, -WALL_X,
+        (CABIN_Y + FLOOR_Y) / 2, (CABIN_END_Z + 5.139) / 2, BodyShell);
+    box(0.04, CEILING_Y - CABIN_Y, NOSE_Z - 6.189, matShell, -WALL_X,
+        (CABIN_Y + CEILING_Y) / 2, (6.189 + NOSE_Z) / 2, BodyShell);
+    box(0.04, WIN_HI_TOP - 2.749, 5.70 - 5.139, matShell, -WALL_X,
+        (2.749 + WIN_HI_TOP) / 2, (5.139 + 5.70) / 2, BodyShell);
+    box(0.04, CEILING_Y - 2.749, 6.189 - 5.70, matShell, -WALL_X,
+        (2.749 + CEILING_Y) / 2, (5.70 + 6.189) / 2, BodyShell);
 
     // ===== TÁP-LÔ (PHASE 3 REBUILD — THACO Mobihome style) =====
     // Dashboard bao gồm 5 vùng chức năng:
@@ -195,117 +232,183 @@ function buildCabin(groups) {
     //   — giữ nguyên kích thước, chỉ cải tiến vị trí và chi tiết thêm.
     {
         // --- Mặt trên (có độ sâu 3D, cong nhẹ) ---
-        dashPiece(2.26, 0.055, 1.10, matDashboardPanel, 0, 1.175, 5.42, Dashboard, 0.08); // mặt trên nghiêng
-        // Thêm lớp đệm đường cong phía trước mặt trên
-        dashPiece(2.26, 0.025, 0.18, matDashboard, 0, 1.148, 5.88, Dashboard, 0.04);
+        // CHỪA LỐI LÊN XUỐNG bên cửa -x: tấm cũ phủ kín 2.26m (x -1.13..1.13,
+        // z 4.87..5.97) ở y 2.24..2.39 → khách đứng trên chiếu nghỉ (mặt 1.64,
+        // x -0.76..0.45) chỉ còn ~0.6m headroom, thân người (tới y ~3.34) xuyên
+        // qua tấm. Nay tách làm 2 khối, chừa hẳn vùng x < -0.45 / z 4.87..5.60
+        // phía trên lối vào cầu thang (không chồng nhau để tránh z-fighting).
+        // Raycast từ mắt tài xế (0.65, 2.62, 4.38) chứng minh tấm cũ y 2.244..2.386
+        // che TOÀN BỘ mặt đồng hồ (đỉnh 2.255): tia tới cluster (0.45,2.13,5.83)
+        // cắt tấm tại (0.55, 2.37, 5.13). Nay hạ mặt táp-lô xuống 2.05 và chỉ
+        // phủ khoang chân z 4.87..5.76 để mặt táp-lô đứng (z 5.76..5.81) lộ ra.
+        // KHÔNG phủ dải x -0.45..0.30: đó là lối khách từ đỉnh cầu thang
+        // (-0.30, 5.50) rẽ vào khe hai ghế (0.15, 4.62); tấm ở 2.05 sẽ chạm
+        // thân người đi (cao tới 3.24).
+        dashPiece(0.83, 0.055, 0.89, matDashboardPanel, 0.715, 2.05, 5.315, Dashboard, 0.08); // mặt trên khoang chân tài xế (x 0.30..1.13, z 4.87..5.76)
 
         // --- Cụm giải trí + đồng hồ (giữ kích thước cho bus.js) ---
-        dashPiece(2.26, 0.38, 0.05, matDashboard, 0, 0.926, 5.785, Dashboard, 0);           // mặt trước
-        dashPiece(2.26, 0.37, 0.05, matDashboard, 0, 0.551, 5.785, Dashboard, 0);           // kick panel
+        // LỖI CŨ: mặt táp-lô đứng ở z 5.76..5.81 nhưng TOÀN BỘ chi tiết hướng
+        // tài xế (đồng hồ z 5.805..5.855, màn hình, cửa gió 5.808, chrome 5.805,
+        // nút 5.82, panel công tắc bus.js 5.823) đều nằm SAU lưng tấm đó → nhìn
+        // từ mắt tài xế chỉ thấy lưng panel. Dời 2 tấm đứng ra sau 0.09 (z 5.85..5.90)
+        // để mọi chi tiết lộ ra trước mặt; firewall z 6.352 vẫn bịt khoang sau.
+        dashPiece(2.26, 0.38, 0.05, matDashboard, 0, 2.066, 5.875, Dashboard, 0);           // mặt trước
+        dashPiece(2.26, 0.37, 0.05, matDashboard, 0, 1.691, 5.875, Dashboard, 0);           // kick panel
         // KHÔNG dựng vách bên -x (cửa lên xe): tấm vách đứng y 0.51..1.24
         // z 4.84..5.76 sẽ bịt lối vào người đi lên cầu thang (panel che lối
         // vào → loại theo Mission 2). Chỉ giữ vách bên +x (ghế lái).
-        dashPiece(0.05, 0.72, 0.92, matDashboard, 1.115, 0.875, 5.30, Dashboard, 0);        // vách phải (ghế lái)
-        dashPiece(0.45, 0.25, 0.18, matDashboard, 0.65, 0.68, 5.65, Dashboard, 0);          // knee console ghế lái
+        dashPiece(0.05, 0.45, 0.89, matDashboard, 1.115, 1.855, 5.315, Dashboard, 0);        // vách phải (ghế lái) — hạ theo mặt táp-lô mới (đỉnh 2.08)
+        dashPiece(0.45, 0.25, 0.18, matDashboard, 0.65, 1.82, 5.65, Dashboard, 0);          // knee console ghế lái
 
 
         // THACO Mobihome style infotainment (giữ kích thước cho bus.js)
-        dashPiece(0.54, 0.29, 0.015, matDashboardPanel, 0, 0.94, 5.818, Dashboard, 0);      // viền màn hình
-        dashPiece(0.5, 0.25, 0.05, matScreen, 0, 0.94, 5.83, Dashboard, 0);                 // màn trung tâm
+        // KHÔNG còn tấm "viền màn hình": màn hình giờ nhô hẳn ra khỏi mặt táp-lô
+        // (z 5.805..5.855, mặt panel 5.850) nên một tấm 0.54×0.29 đặt trước mặt
+        // sẽ CHẮN kín màn; đặt sau thì nằm trong thân panel. Viền thật sẽ phải
+        // là 4 thanh rời và lại đụng cụm đồng hồ (x 0.316) — bỏ, màn hình gắn
+        // nổi trên táp-lô như màn tablet (đúng kiểu THACO Mobihome).
+        dashPiece(0.5, 0.25, 0.05, matScreen, 0, 2.08, 5.83, Dashboard, 0);                 // màn trung tâm
 
         // Cụm đồng hồ (RHD: trước tài xế bên PHẢI)
-        dashPiece(0.35, 0.2, 0.05, matCluster, 0.45, 0.99, 5.83, Dashboard, 0);             // cluster tốc độ
-        dashPiece(0.25, 0.15, 0.05, matCluster, -0.45, 0.98, 5.83, Dashboard, 0);           // gauge phụ (copilot)
+        // x 0.50 (không phải 0.45): màn hình scale runtime 1.2 → nửa rộng 0.30,
+        // cluster scale 1.05 → 0.316..0.684. Đặt 0.45 thì 2 mesh lồng nhau 47mm.
+        dashPiece(0.35, 0.2, 0.05, matCluster, 0.50, 2.13, 5.83, Dashboard, 0);             // cluster tốc độ
+        dashPiece(0.25, 0.15, 0.05, matCluster, -0.45, 2.12, 5.83, Dashboard, 0);           // gauge phụ (copilot)
 
-        // Nút bấm + công tắc (giữ kích thước 0.04 cho bus.js)
+        // Nút bấm + công tắc (giữ kích thước 0.04 cho bus.js) — gắn vào mặt đứng 5.85
+        // LỖI CŨ: 4 nút ở x 0.30..-0.15, y 1.94 bị MẶT TÁP-LÔ (khối 0.83×0.055 phủ
+        // x 0.30..1.13, z 4.87..5.76, đỉnh ~2.014 ở mép trước) che khuất: tia từ mắt
+        // tài xế (0.65,2.62,4.38) tới nút cắt mặt táp-lô tại (0.36,2.06,5.58).
+        // Nay dời sang dải trống bên phải cụm đồng hồ (x 0.75..0.975) và nâng lên
+        // y 2.05 để tia ngắm đi TRÊN mép mặt táp-lô (2.014 tại z 5.76).
         for (let i = 0; i < 4; i++) {
-            dashPiece(0.04, 0.04, 0.04, matBtn, 0.3 - i * 0.15, 0.80, 5.82, Dashboard, 0);
+            dashPiece(0.04, 0.04, 0.04, matBtn, 0.75 + i * 0.075, 2.05, 5.83, Dashboard, 0);
         }
 
         // Cần gạt (gương theo trục)
-        dashPiece(0.015, 0.25, 0.015, matDark, -0.25, 0.9, 5.83, Dashboard, 0);
-        dashPieceSphere(0.025, matDark, -0.25, 1.055, 5.83, Dashboard);
+        dashPiece(0.015, 0.25, 0.015, matDark, -0.25, 2.04, 5.83, Dashboard, 0);
+        dashPieceSphere(0.025, matDark, -0.25, 2.195, 5.83, Dashboard);
 
         // --- Cửa gió điều hòa (THACO Mobihome style: 2 cửa giữa, 2 cửa hai bên) ---
-        for (const gx of [-0.2, 0.2]) {
-            dashPiece(0.14, 0.05, 0.02, matDark, gx, 1.02, 5.815, Dashboard, 0);
+        // Hai cửa "giữa" đặt ở x ±0.78 (ngoài màn trung tâm x ±0.3125 và cụm đồng
+        // hồ 0.2575..0.6425): bản cũ ở x ±0.20 nằm TRONG THỂ TÍCH màn hình
+        // (z 5.805..5.825 vs màn 5.805..5.855) nên bị chôn và z-fighting.
+        for (const gx of [-0.78, 0.78]) {
+            dashPiece(0.14, 0.05, 0.02, matDark, gx, 2.16, 5.815, Dashboard, 0);
             for (let vi = 0; vi < 3; vi++) {
-                dashPiece(0.11, 0.008, 0.01, matDashboardPanel, gx, 1.0 + vi * 0.015, 5.808, Dashboard, 0);
+                dashPiece(0.11, 0.008, 0.01, matDashboardPanel, gx, 2.14 + vi * 0.015, 5.808, Dashboard, 0);
             }
         }
 
         // Cửa gió bên trái và phải (thêm cho THACO style)
         for (const gx of [-1.0, 1.0]) {
-            dashPiece(0.12, 0.06, 0.02, matDark, gx, 1.05, 5.815, Dashboard, 0);
+            dashPiece(0.12, 0.06, 0.02, matDark, gx, 2.19, 5.815, Dashboard, 0);
             for (let vi = 0; vi < 2; vi++) {
-                dashPiece(0.09, 0.008, 0.01, matDashboardPanel, gx, 1.04 + vi * 0.02, 5.808, Dashboard, 0);
+                dashPiece(0.09, 0.008, 0.01, matDashboardPanel, gx, 2.18 + vi * 0.02, 5.808, Dashboard, 0);
             }
         }
 
-        // Dải chrome ngang + LED trang trí
-        dashPiece(2.2, 0.01, 0.01, matDashboardPanel, 0, 1.09, 5.805, Dashboard, 0);
-        dashPiece(2.2, 0.006, 0.006, matLEDBlue, 0, 1.072, 5.806, Dashboard, 0);
+        // Dải chrome ngang + LED trang trí: chrome ở dải TRÊN đỉnh màn hình
+        // (2.236) và cụm đồng hồ (2.235); LED chuyển xuống mép DƯỚI mặt táp-lô
+        // (y 1.888, trên kick panel 1.876) vì dải trên chỉ còn 16mm, không đủ
+        // chỗ cho cả hai mà không cắt vào mặt đồng hồ.
+        dashPiece(2.2, 0.01, 0.01, matDashboardPanel, 0, 2.25, 5.805, Dashboard, 0);
+        dashPiece(2.2, 0.006, 0.006, matLEDBlue, 0, 1.888, 5.806, Dashboard, 0);
 
-        // Nút bấm bổ sung (THACO style: công tắc đèn, điều hòa, kèn)
-        for (const [gx, gy, gz] of [[-0.8, 0.85, 5.82], [0.8, 0.85, 5.82], [-0.6, 0.78, 5.82], [0.6, 0.78, 5.82]]) {
+        // Nút bấm bổ sung (THACO style: công tắc đèn, điều hòa, kèn) — z 5.835 để
+        // mặt sau trùng mặt panel 5.85 (trước đây 5.82 → hở 15mm, nút lơ lửng).
+        for (const [gx, gy, gz] of [[-0.8, 1.99, 5.835], [0.8, 1.99, 5.835], [-0.6, 1.92, 5.835], [0.6, 1.92, 5.835]]) {
             dashPiece(0.03, 0.03, 0.03, matBtn, gx, gy, gz, Dashboard, 0);
         }
 
         // --- Bàn đạp (ga, phanh, côn — phía chân tài xế, RHD bên phải) ---
         // RHD: bàn đạp bên phải (+0.65)
-        dashPiece(0.12, 0.08, 0.03, matDark, 0.58, 0.35, 5.70, DriverArea, 0);   // bàn ga
-        dashPiece(0.12, 0.06, 0.03, matDark, 0.42, 0.38, 5.72, DriverArea, 0);   // bàn phanh
-        dashPiece(0.10, 0.06, 0.03, matDark, 0.28, 0.38, 5.74, DriverArea, 0);   // bàn côn
-        dashPiece(0.25, 0.02, 0.15, matDark, 0.65, 0.12, 5.85, DriverArea, 0);   // tấm đệm chân
+        dashPiece(0.12, 0.08, 0.03, matDark, 0.58, 1.49, 5.70, DriverArea, 0);   // bàn ga
+        dashPiece(0.12, 0.06, 0.03, matDark, 0.42, 1.52, 5.72, DriverArea, 0);   // bàn phanh
+        dashPiece(0.10, 0.06, 0.03, matDark, 0.28, 1.52, 5.74, DriverArea, 0);   // bàn côn
+        dashPiece(0.25, 0.02, 0.15, matDark, 0.65, 1.22, 5.85, DriverArea, 0);   // tấm đệm chân (sát mặt sàn lái 1.21)
 
         // --- Cần số (giữa hai ghế, bên phải tài xế RHD: x=+0.28) ---
-        dashPieceSphere(0.032, matDark, 0.28, 0.78, 4.90, DriverArea);            // tay nắm cần số
-        dashPiece(0.014, 0.22, 0.014, matDark, 0.28, 0.68, 4.90, DriverArea, 0); // thân cần số
-        dashPiece(0.06, 0.04, 0.06, matDashboard, 0.28, 0.60, 4.90, DriverArea, 0); // đế cần số
+        // Đặt ĐẾ TRÊN CHIẾU NGHỈ (mặt sàn 1.64) thay vì lơ lửng ở y 1.72 giữa
+        // trời — quét hộp bao trước sửa: đáy cần số 1.72, mặt đỡ gần nhất = 0.
+        dashPieceSphere(0.032, matDark, 0.28, 1.90, 4.90, DriverArea);            // tay nắm cần số
+        dashPiece(0.014, 0.22, 0.014, matDark, 0.28, 1.77, 4.90, DriverArea, 0); // thân cần số (1.66..1.88)
+        dashPiece(0.06, 0.04, 0.06, matDashboard, 0.28, 1.66, 4.90, DriverArea, 0); // đế cần số (đáy 1.64)
 
         // --- Hộp đựng đồ + tủ lạnh nhỏ (THACO style) ---
-        dashPiece(0.35, 0.18, 0.18, matDashboard, -0.65, 0.75, 5.70, Dashboard, 0); // ngăn kéo (phía ghế phụ)
-        dashPiece(0.30, 0.12, 0.10, matDashboard, 0.85, 0.85, 5.75, Dashboard, 0);  // khoang nhỏ (phía lái)
+        // Ngăn kéo cũ ở (x -0.82..-0.48, y 1.80..1.98, z 5.61..5.79) nằm ĐÚNG
+        // trên đỉnh cầu thang (x -0.76, z 5.66) → khách leo lên xuyên qua hộp.
+        // Dời sang khoang chân tài xế dưới táp-lô (x 0.03..0.38), vẫn đủ chỗ để
+        // chân đạp pedal (pedal y ≤ 1.58) và không cấn lối vào.
+        dashPiece(0.35, 0.18, 0.18, matDashboard, 0.20, 1.73, 5.70, Dashboard, 0);  // ngăn kéo dưới táp-lô
+        dashPiece(0.30, 0.12, 0.10, matDashboard, 0.85, 1.99, 5.75, Dashboard, 0);  // khoang nhỏ (phía lái)
 
         // --- Sàn lái (thấp hơn khoang hành khách, có bậc chuyển tiếp) ---
         // KHÔNG thò vào khoang hành lý: chỉ phủ buồng lái z ≥ CABIN_END_Z (4.8).
-        dashPiece(1.8, 0.02, 1.05, matDark, 0, 0.06, 5.325, DriverArea, 0);   // sàn vùng lái
+        // Phủ kín chiều ngang (x -0.76..1.13) để không hở rãnh nhìn xuống gầm dọc
+        // vách phải; CHỪA lòng thang bên -x (x -1.13..-0.76, z 5.35..5.97) vì bậc
+        // thang đặc từ y 0 nên sàn 1.20 sẽ chặn mất lòng thang.
+        box(1.89, 0.02, NOSE_Z - CABIN_END_Z, matDark, 0.185, CABIN_Y, (CABIN_END_Z + NOSE_Z) / 2, DriverArea);
+        // Dải sàn trái: sau cầu thang (z 4.80..5.24) + góc trước-trái (z 5.97..kính)
+        // (lòng thang nay z 5.24..5.97 nên dải này phải dừng ở 5.24, nếu không
+        // tấm sàn 1.20 sẽ lơ lửng giữa lòng thang.)
+        box(0.37, 0.02, 5.24 - CABIN_END_Z, matDark, -0.945, CABIN_Y, (CABIN_END_Z + 5.24) / 2, DriverArea);
+        box(0.37, 0.02, FRONT_Z - 5.97, matDark, -0.945, CABIN_Y, (5.97 + FRONT_Z) / 2, DriverArea);
+
+        // --- Vách chắn trước + mặt bệ kính: nối táp-lô ra sát mũi xe ---
+        // Trước đây táp-lô dừng ở z 5.97, kính chắn gió ở z 6.0 → hở 0.4m tới mũi xe.
+        // Firewall (y 1.20..2.30) bịt hẳn khoang chân không nhìn xuyên ra ngoài.
+        box(2.26, 2.30 - CABIN_Y, 0.06, matDark, 0, (CABIN_Y + 2.30) / 2, NOSE_Z - 0.05, DriverArea);
+        // Mặt bệ kính: kéo sát tới MẶT TÁP-LÔ ĐỨNG (z 5.76) thay vì dừng ở 5.97 —
+        // nếu không, dải z 5.76..5.97 phía trên mặt táp-lô hở vào khoang sau
+        // táp-lô (nhìn thấy lưng panel + firewall). Hạ mép sau xuống 2.283 để
+        // chân tấm trùng đỉnh mặt táp-lô (2.256) và chừa ~2cm trên đỉnh đồng hồ.
+        dashPiece(2.26, 0.05, FRONT_Z - 5.76, matDashboardPanel, 0, 2.283, (5.76 + FRONT_Z) / 2, Dashboard, 0);
 
         // --- Ghế tài xế (nâng cấp: đệm, tựa lưng, tựa đầu, chân ghế) ---
         // RHD: ghế lái bên PHẢI (+0.65)
-        // Đế và chân ghế
-        box(0.52, 0.10, 0.52, matDark, 0.65, 0.15, 4.50, DriverArea);            // đế trượt ghế
-        box(0.40, 0.06, 0.40, matDark, 0.65, 0.35, 4.50, DriverArea);            // khung ghế
+        // LỖI CŨ: đệm ngồi 1.55..1.69 nằm LỌT trong tấm sàn khách (1.60..1.64) →
+        // chỉ nhô 5cm, nhìn như ghế bị chôn. Nay nâng cụm nhìn thấy +0.09 để đáy
+        // đệm trùng mặt sàn 1.64; đế/khung nằm dưới sàn (khuất, không đổi hình).
+        // Đệm sâu 0.42 (mép trước 4.32) để thân người rẽ vào làn 34P tại z 4.01
+        // (bán kính 0.17 → tới z 4.18) không cấn góc đệm (trước đây 4.25 → lấn).
+        box(0.52, 0.10, 0.52, matDark, 0.65, 1.38, 4.50, DriverArea);            // đế trượt ghế
+        box(0.40, 0.06, 0.40, matDark, 0.65, 1.58, 4.50, DriverArea);            // khung ghế
 
         // Đệm ngồi (dày hơn, có hỗ trợ thắt lưng)
-        box(0.50, 0.14, 0.50, matSeatCushion, 0.65, 0.48, 4.50, DriverArea);    // đệm ngồi chính
-        box(0.50, 0.06, 0.12, matSeatCushion, 0.65, 0.50, 4.75, DriverArea);     // hỗ trợ thắt lưng
+        box(0.50, 0.14, 0.42, matSeatCushion, 0.65, 1.71, 4.53, DriverArea);    // đệm ngồi chính
+        box(0.50, 0.06, 0.12, matSeatCushion, 0.65, 1.73, 4.75, DriverArea);     // hỗ trợ thắt lưng
 
         // Tựa lưng (có độ nghiêng nhẹ)
-        box(0.50, 0.55, 0.08, matSeatCushion, 0.65, 0.80, 4.25, DriverArea);    // tựa lưng chính
-        box(0.42, 0.20, 0.06, matSeatCushion, 0.65, 0.98, 4.27, DriverArea);     // đệm tựa lưng trên
+        box(0.50, 0.55, 0.08, matSeatCushion, 0.65, 2.03, 4.25, DriverArea);    // tựa lưng chính
+        box(0.42, 0.20, 0.06, matSeatCushion, 0.65, 2.21, 4.27, DriverArea);     // đệm tựa lưng trên
 
         // Tựa đầu
-        box(0.30, 0.16, 0.06, matSeatCushion, 0.65, 1.14, 4.28, DriverArea);     // tựa đầu
+        box(0.30, 0.16, 0.06, matSeatCushion, 0.65, 2.37, 4.28, DriverArea);     // tựa đầu
 
         // Tay vịn + cần điều chỉnh
-        box(0.03, 0.08, 0.30, matSeat, 0.92, 0.58, 4.50, DriverArea);            // tay vịn phải
-        box(0.03, 0.08, 0.30, matSeat, 0.38, 0.58, 4.50, DriverArea);            // tay vịn trái
+        box(0.03, 0.08, 0.30, matSeat, 0.92, 1.81, 4.50, DriverArea);            // tay vịn phải
+        box(0.03, 0.08, 0.30, matSeat, 0.38, 1.81, 4.50, DriverArea);            // tay vịn trái
 
         // --- Ghế phụ (copilot, nâng cấp tương tự) — RHD: copilot bên TRÁI (-0.35) ---
-        box(0.45, 0.08, 0.45, matDark, -0.35, 0.14, 4.50, DriverArea);           // đế ghế phụ
-        box(0.06, 0.18, 0.06, matDark, -0.35, 0.28, 4.50, DriverArea);           // chân ghế phụ
-        box(0.45, 0.12, 0.45, matSeatCushion, -0.35, 0.46, 4.50, DriverArea);    // đệm ghế phụ
-        box(0.45, 0.45, 0.06, matSeatCushion, -0.35, 0.72, 4.30, DriverArea);    // tựa lưng ghế phụ
-        box(0.25, 0.12, 0.04, matSeatCushion, -0.35, 0.95, 4.31, DriverArea);    // tựa đầu ghế phụ
+        box(0.45, 0.08, 0.45, matDark, -0.35, 1.38, 4.50, DriverArea);           // đế ghế phụ
+        box(0.06, 0.18, 0.06, matDark, -0.35, 1.52, 4.50, DriverArea);           // chân ghế phụ
+        box(0.45, 0.12, 0.40, matSeatCushion, -0.35, 1.70, 4.53, DriverArea);    // đệm ghế phụ
+        box(0.45, 0.45, 0.06, matSeatCushion, -0.35, 1.96, 4.30, DriverArea);    // tựa lưng ghế phụ
+        box(0.25, 0.12, 0.04, matSeatCushion, -0.35, 2.19, 4.31, DriverArea);    // tựa đầu ghế phụ
 
-        dashPiece(0.5, 0.2, 0.25, matDashboard, -0.85, 0.7, 5.1, Dashboard, 0);  // tủ đựng đồ phụ
-        dashPiece(0.4, 0.05, 0.2, matDashboardPanel, -0.85, 0.85, 5.15, Dashboard, 0); // mặt trên tủ
+        // Tủ đựng đồ phụ: trước đây lơ lửng ở (x -1.10..-0.60, y 1.74..1.94,
+        // z 4.97..5.22) giữa lối vào, không có mặt đỡ; lần sửa trước dời xuống
+        // (x -0.55..-0.05, z 5.58..5.76) nhưng lại CHẮN thân người từ đỉnh cầu
+        // thang (-0.52, z 5.50) rẽ vào khe hai ghế. Nay đặt trên chiếu nghỉ sát
+        // mép -x (x -0.76..-0.46, z 4.85..5.15) — ngoài đường đi, có mặt đỡ thật.
+        dashPiece(0.30, 0.30, 0.30, matDashboard, -0.61, 1.79, 5.00, Dashboard, 0);      // thân tủ
+        dashPiece(0.34, 0.04, 0.34, matDashboardPanel, -0.61, 1.96, 5.00, Dashboard, 0); // mặt trên tủ
     }
 
     const steerGroup = new THREE.Group();
     steerGroup.name = "legacySteeringWheel";
-    steerGroup.position.set(-0.35, 1.1, 5.1);   // RHD: vô lăng gốc bên trái (bị ẩn runtime)
+    steerGroup.position.set(-0.35, 2.24, 5.1);   // RHD: vô lăng gốc bên trái (bị ẩn runtime)
     // Vô-lăng xe khách: dày hơn, tỷ lệ thực tế, đúng góc nghiêng
     const ring = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.055, 12, 24), matSteeringWheel);
     ring.rotation.x = Math.PI / 2 - 0.25;
@@ -325,23 +428,7 @@ function buildCabin(groups) {
     steerGroup.add(column);
     DriverArea.add(steerGroup);
 
-    // RHD: ghế tài xế bên PHẢI (+0.65)
-    box(0.5, 0.08, 0.5, matDark, 0.65, 0.14, 4.5, DriverArea);
-    box(0.08, 0.2, 0.08, matDark, 0.65, 0.28, 4.5, DriverArea);
-    box(0.5, 0.12, 0.5, matSeatCushion, 0.65, 0.44, 4.5, DriverArea);
-    box(0.5, 0.55, 0.08, matSeatCushion, 0.65, 0.75, 4.25, DriverArea);
-    box(0.3, 0.15, 0.06, matSeatCushion, 0.65, 1.05, 4.25, DriverArea);
-    box(0.03, 0.08, 0.3, matSeat, 0.9, 0.5, 4.45, DriverArea);
-    box(0.03, 0.08, 0.3, matSeat, 0.4, 0.5, 4.45, DriverArea);
 
-    // RHD: ghế phụ bên TRÁI (-0.35)
-    box(0.45, 0.06, 0.45, matDark, -0.35, 0.13, 4.5, DriverArea);
-    box(0.06, 0.18, 0.06, matDark, -0.35, 0.25, 4.5, DriverArea);
-    box(0.45, 0.1, 0.45, matSeatCushion, -0.35, 0.4, 4.5, DriverArea);
-    box(0.45, 0.45, 0.06, matSeatCushion, -0.35, 0.65, 4.3, DriverArea);
-    box(0.25, 0.12, 0.04, matSeatCushion, -0.35, 0.9, 4.3, DriverArea);
-    box(0.5, 0.2, 0.25, matDashboard, -0.85, 0.7, 5.1, Dashboard);
-    box(0.4, 0.05, 0.2, matDashboardPanel, -0.85, 0.85, 5.15, Dashboard);
 }
 
 function buildEntryStaircase(Aisle) {
@@ -367,28 +454,71 @@ function buildEntryStaircase(Aisle) {
         side: THREE.DoubleSide, depthWrite: false
     });
     const welcomeGeo = new THREE.PlaneGeometry(0.52, 0.12);
-    // Căn sát cửa -x: stairX lệch về -x, z trải từ mép cabin ra giữa khoang cửa
-    const stairW = 0.62, stairX = -0.76, treadDepth = 0.19;
-    const zBase = CABIN_END_Z; // bậc cao nhất sát mép cabin
-    const stepTops = [0.81, 0.625, 0.44, 0.25];   // từ trên xuống dưới
-    const riserLow = [0.625, 0.44, 0.25, 0.06];
+    // Cầu thang cửa -x: 3 bậc + chiếu nghỉ, NẰM TRONG XE, đi thẳng vào trong (+X).
+    // LỖI CŨ: 2 bậc với nhịp 0.52 / 0.53 / 0.59 m — cao gấp đôi bậc xe khách thật.
+    // Nay chia đều 4 nhịp 0.3275 m: ngưỡng cửa 0.33 → 0.6575 → 0.985 → 1.3125 →
+    // chiếu nghỉ 1.64 (FLOOR_Y). Lòng thang z 5.24..5.97 nằm gọn trong khoang cửa
+    // thân xe (bus.js: z 5.139..6.189); bậc sâu 0.2067 m.
+    const stairZ0 = 5.24, stairZ1 = 5.97;
+    const stairW = stairZ1 - stairZ0, stairZ = (stairZ0 + stairZ1) / 2;   // 0.73 / 5.605
+    const treadDepth = 0.2067;
+    const xInner = -0.52;                 // mép trong bậc trên cùng = mép chiếu nghỉ
+    const stepTops = [1.3125, 0.985, 0.6575];  // từ trên (trong) xuống (ngoài)
+    const riserLow = [0.985, 0.6575, 0.33];    // đỉnh bậc dưới liền kề
     for (let i = 0; i < stepTops.length; i++) {
         const yTop = stepTops[i];
-        const zNear = zBase + treadDepth * i;
-        const zFar  = zNear + treadDepth; // +z ra phía cửa/buồng lái
-        box(stairW, yTop, treadDepth, matShell, stairX, yTop / 2, (zNear + zFar) / 2, Aisle);
+        // i=0: bậc cao nhất (trong cùng), i tăng: thấp dần ra ngoài (-X)
+        const xFar  = xInner - treadDepth * i;
+        const xNear = xFar - treadDepth; // phía ngoài (-X), mép ngoài ~ -1.14 (trong xe)
+        box(treadDepth, yTop, stairW, matShell, (xNear + xFar) / 2, yTop / 2, stairZ, Aisle);
         const plateY = (riserLow[i] + yTop) / 2;
         const plate = new THREE.Mesh(welcomeGeo, welcomeMat);
-        // WELCOME trên mặt đứng riser — hướng +z (về phía người bước lên từ ngoài cửa)
-        plate.position.set(stairX, plateY, zFar + 0.002);
+        // WELCOME trên mặt đứng riser — hướng -X (về phía người bước lên từ ngoài cửa)
+        plate.position.set(xNear - 0.002, plateY, stairZ);
+        plate.rotation.y = -Math.PI / 2;
         Aisle.add(plate);
-        const lamp = new THREE.Mesh(new THREE.BoxGeometry(stairW - 0.06, 0.02, 0.02), matLEDBlue);
-        lamp.position.set(stairX, yTop - 0.015, zFar - 0.01);
+        const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, stairW - 0.06), matLEDBlue);
+        lamp.position.set(xNear + 0.01, yTop - 0.015, stairZ);
         Aisle.add(lamp);
     }
-    // Bậc chuyển tiếp nối mặt trên cầu thang với sàn cabin.
-    box(stairW, 0.06, 0.26, matAisle, stairX, PASSENGER_FLOOR_Y - 0.03, CABIN_END_Z - 0.13, Aisle);
-    box(stairW, PASSENGER_FLOOR_Y, 0.12, matShell, stairX, PASSENGER_FLOOR_Y / 2, CABIN_END_Z - 0.06, Aisle);
+    // ---------- CHIẾU NGHỈ ĐẦU CẦU THANG (LANDING) ----------
+    // Sàn khách (1.64) dừng ở z = CABIN_END_Z (4.8). Chiếu nghỉ phủ kín lòng
+    // cầu thang + dải trước sàn khách, chừa khoang chân tài xế bên +x
+    // (x > 0.45, nơi đặt pedal/duỗi chân) — không đụng ghế/vô-lăng/camera.
+    // KHOÉT LÒNG THANG (x -0.76..-0.52, z 5.24..5.97): 3 bậc mới cao tới
+    // 1.3125 nên nếu phủ kín thì đầu người leo bậc đâm xuyên mặt chiếu nghỉ
+    // (đáy 1.58). Vì vậy chiếu nghỉ tách 2 tấm, không chồng nhau:
+    //   - tấm A: x -0.76..0.45, z 4.80..5.24  (sau lòng thang)
+    //   - tấm B: x -0.52..0.45, z 5.24..5.97  (cạnh lòng thang, tới mặt táp-lô)
+    const landX0 = -0.76, landX1 = 0.45;
+    const landZ0 = CABIN_END_Z, landZ1 = 5.97;
+    const notchX0 = -0.76, notchX1 = xInner;      // -0.76..-0.52
+    const landRiserH = PASSENGER_FLOOR_Y - 0.06 - 1.20;   // 0.38: từ sàn lái lên đáy chiếu nghỉ
+    const landRiserY = 1.20 + landRiserH / 2;
+    const plateY = PASSENGER_FLOOR_Y - 0.03;
+    // tấm A
+    box(landX1 - landX0, 0.06, stairZ0 - landZ0, matAisle,
+        (landX0 + landX1) / 2, plateY, (landZ0 + stairZ0) / 2, Aisle);
+    // tấm B (bắt đầu từ mép lòng thang tới mặt táp-lô)
+    box(landX1 - notchX1, 0.06, landZ1 - stairZ0, matAisle,
+        (notchX1 + landX1) / 2, plateY, (stairZ0 + landZ1) / 2, Aisle);
+    // hông +x (về phía tài xế) — giữ nguyên suốt chiều sâu chiếu nghỉ
+    box(0.04, landRiserH, landZ1 - landZ0, matShell, landX1 + 0.02, landRiserY,
+        (landZ0 + landZ1) / 2, Aisle);
+    // hông trước (về phía táp-lô) — chỉ còn phần tấm B
+    box(landX1 - notchX1, landRiserH, 0.04, matShell, (notchX1 + landX1) / 2, landRiserY,
+        landZ1 + 0.02, Aisle);
+    // hông -x: tấm A (x -0.78) — dừng ở lòng thang
+    box(0.04, landRiserH, stairZ0 - landZ0, matShell, landX0 - 0.02, landRiserY,
+        (landZ0 + stairZ0) / 2, Aisle);
+    // Mặt đứng nối bậc trên cùng (1.3125) lên đáy chiếu nghỉ, phía +x của lòng
+    // thang (x -0.56..-0.52, z 5.24..5.97) — bậc trên cùng chính là bậc cuối.
+    box(0.04, PASSENGER_FLOOR_Y - 0.06 - 1.3125, landZ1 - stairZ0, matShell,
+        notchX1 - 0.02, (1.3125 + PASSENGER_FLOOR_Y - 0.06) / 2, (stairZ0 + landZ1) / 2, Aisle);
+    // Vách bịt khoảng trống dưới tấm A nhìn từ lòng thang (z 5.20..5.24):
+    // từ đỉnh bậc kế (0.985) lên đáy chiếu nghỉ, x -0.76..-0.52.
+    box(notchX1 - notchX0, PASSENGER_FLOOR_Y - 0.06 - 0.985, 0.04, matShell,
+        (notchX0 + notchX1) / 2, (0.985 + PASSENGER_FLOOR_Y - 0.06) / 2, stairZ0 - 0.02, Aisle);
 }
 
 function buildPassengerCabin(groups) {
@@ -406,7 +536,7 @@ function buildPassengerCabin(groups) {
     const floorCz = (zFront + zRear) / 2;
     box(W - 0.1, 0.08, floorSpan, matFloorPax, 0, PASSENGER_FLOOR_Y - 0.04, floorCz, Floor);
     // Mặt bịt khoang hành lý phía trước — CHỪA LỐI CẦU THANG căn theo cửa -x.
-    // Staircase (buildEntryStaircase): stairX=-0.76, stairW=0.62 => x -1.07..-0.45.
+    // Staircase (buildEntryStaircase): lòng thang x -1.14..-0.52, z 5.24..5.97.
     // Mở lỗ x -1.12..-0.40, y 0.28..FLOOR_Y để bậc thang đi lên không bị bịt.
     const sealH = PASSENGER_FLOOR_Y - 0.28;
     const sealY = (PASSENGER_FLOOR_Y + 0.28) / 2;
@@ -420,11 +550,10 @@ function buildPassengerCabin(groups) {
     // Vách dưới (y 0..0.28) — bịt kín đáy, CHỪA LỖ CẦU THANG bên -x (stair gap x -1.12..-0.40)
     box(bodyHalf - stOpenR, 0.28, 0.06, matShell, (stOpenR + bodyHalf) / 2, 0.14, CABIN_END_Z - 0.03, Floor);
     box(stOpenL - (-bodyHalf), 0.28, 0.06, matShell, (-bodyHalf + stOpenL) / 2, 0.14, CABIN_END_Z - 0.03, Floor);
-    // Vòm bánh xe trong cabin: bánh trước (z 3.65) / bánh sau (z -2.59) có
-    // đỉnh y=1.05 > mặt sàn 1.00 — vòm che phần bánh thò (như xe giường nằm thật).
+    // Vòm bánh xe trong cabin (sàn mới 1.64m): che phần bánh thò trên mặt sàn
     for (const [wz] of [[3.65], [-2.59]]) {
         for (const side of [1, -1]) {
-            box(0.52, 0.18, 1.16, matShell, side * 1.02, 1.01, wz, Floor);
+            box(0.52, 0.18, 1.16, matShell, side * 1.02, PASSENGER_FLOOR_Y + 0.09, wz, Floor);
         }
     }
 
@@ -527,9 +656,15 @@ function buildPassengerCabin(groups) {
     // ---------- THÂN XE ----------
     const shellLen = L - 0.6;
     const doorCut = { z0: 5.139, z1: 6.189, y0: 0.307, y1: 2.749 };
+    // Vách thân (dải giữa 2 tầng cửa sổ) chỉ thuộc khoang hành khách:
+    // không kéo dài qua buồng lái/ghế tài-phụ (lùi mép trước khỏi khu ghế).
+    const shellZ0 = -shellLen / 2;
+    const shellZ1 = 4.4;
+    const paxShellLen = shellZ1 - shellZ0;
+    const paxShellCz = (shellZ0 + shellZ1) / 2;
     for (const side of [1, -1]) {
         wallBoxSide(0.04, WIN_LO_BOT - PASSENGER_FLOOR_Y, shellLen, matShell, side * WALL_X, (PASSENGER_FLOOR_Y + WIN_LO_BOT) / 2, 0, BodyShell, side, doorCut);
-        wallBoxSide(0.04, WIN_HI_BOT - WIN_LO_TOP, shellLen, matShell, side * WALL_X, (WIN_LO_TOP + WIN_HI_BOT) / 2, 0, BodyShell, side, doorCut);
+        wallBoxSide(0.04, WIN_HI_BOT - WIN_LO_TOP, paxShellLen, matShell, side * WALL_X, (WIN_LO_TOP + WIN_HI_BOT) / 2, paxShellCz, BodyShell, side, doorCut);
         box(0.04, CEILING_Y - WIN_HI_TOP, shellLen, matShell, side * WALL_X, (WIN_HI_TOP + CEILING_Y) / 2, 0, BodyShell);
     }
 
@@ -694,9 +829,6 @@ function buildPassengerCabin(groups) {
             rod2.updateMatrix();
             rod2.matrixAutoUpdate = false;
             Curtains.add(rod2);
-            rod2.updateMatrix();
-            rod2.matrixAutoUpdate = false;
-            Curtains.add(rod2);
         }
     }
 
@@ -706,7 +838,7 @@ function buildPassengerCabin(groups) {
     for (const side of [1, -1]) {
         const xLed = side * (WALL_X - 0.02);
         const ledLow = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, xLedType[0]), matLEDBlue);
-        ledLow.position.set(xLed, 2.37, xLedType[1]);
+        ledLow.position.set(xLed, 2.43, xLedType[1]);
         ledLow.updateMatrix();
         ledLow.matrixAutoUpdate = false;
         Led.add(ledLow);
@@ -844,14 +976,18 @@ export function createBusInterior() {
 //     3 dãy giường tối ưu không gian" + "sàn lót 2 dãy LED nằm trần"
 //     (catalogue-busgiuong-2024-1.pdf) -> đúng 3 dãy / 2 lối / 2 dải LED.
 //   * Quy định giường VN: rộng >= 48cm, dài >= 165cm.
+//     Dãy BÊN đạt chuẩn (0.52 x 1.70). Dãy GIỮA chỉ 0.54 x 1.37 vì phải nhét
+//     7 khoang vào 9.75m còn lại sau buồng lái (12m thân xe, 34 giường) —
+//     đây là thiếu hụt có từ trước (cũ: 1.40), KHÔNG phải do lần sửa này.
 //   * Khoang trong xe rộng 2.30m (WALL_X = 1.15) -> chia:
-//       giường bên 0.52 | lối đi 0.36 | giường giữa 0.54 | lối đi 0.36 | giường bên 0.52
+//       khung bên 0.56 | lối đi 0.30 | khung giữa 0.58 | lối đi 0.30 | khung bên 0.56
 //     (tổng đúng 2.30m — KHÔNG vật thể nào xuyên nhau).
-//   * Giường giữa 1.40m với BƯỚC 1.42m -> giữa 2 khoang liền kề có khe
+//   * Giường giữa 1.37m với BƯỚC 1.39m -> giữa 2 khoang liền kề có khe
 //     0.02m đúng bằng bề dày vách ngăn: vách TRƯỚC/SAU mỗi khoang nằm gọn
 //     trong khe nên mặt vách chỉ TIẾP XÚC mép nệm/khung, không lấn 1mm.
-//     7 giuong 1.40 + 8 vach 0.02 = 9.96m, vẫn nằm trong khoang
-//     [-5.95 .. 4.05] (dư 0.03 trước / 0.01 sau) — KHÔNG kéo dài thân xe.
+//     7 giường 1.37 + 8 vách 0.02 = 9.75m, từ z 3.815 (vách đầu) lùi về
+//     z -5.925 (vách cuối) — nằm trong khoang [-5.95 .. 4.05]. Vách đầu lùi
+//     khỏi lưng ghế tài/phụ (z 4.21) 0.395m để hành khách rẽ vào làn 34P.
 //     (Trước đây dãy giữa để 1.42m dính liền nhau, không còn khe đặt vách
 //     -> 7 giường nối đuôi thành 1 khối, thiếu vách ngăn riêng tư VIP.)
 //     Chi tiết: buildCenterRowPartitions34 ở CUỐI file.
@@ -902,21 +1038,27 @@ function mergeBoxes(geos) {
 }
 
 const CFG34 = {
-    FLOOR_Y: 1.00,          // sàn khoang hành khách (nâng lên — gầm để trống khoang hành lý)
-    LOWER_Y: 1.62,          // mặt nệm tầng dưới
-    UPPER_Y: 2.69,          // mặt nệm tầng trên
+    FLOOR_Y: 1.64,          // sàn khoang hành khách (nâng bằng mặt nệm tầng 1)
+    LOWER_Y: 1.76,          // mặt nệm tầng dưới (đặt trên sàn mới)
+    UPPER_Y: 2.70,          // mặt nệm tầng trên (trên sàn/vách phân tầng UPPER_FLOOR_Y)
     SIDE_BED_W: 0.52,       // bề rộng giường 2 dãy bên
     CENTER_BED_W: 0.54,     // bề rộng giường dãy giữa
     SIDE_BED_L: 1.70,       // chiều dài giường bên
-    CENTER_BED_L: 1.40,     // chiều dài giường giữa (bước 1.42 -> khe 0.02 đặt vách)
+    // LỖI CŨ: giường giữa dài 1.40, bước 1.42, tâm đầu 3.30 -> vách đầu hàng
+    // giữa ở z 4.02, chỉ cách lưng ghế tài/phụ (z 4.21) đúng 0.19 m. Hành khách
+    // từ khe hai ghế (x 0.15) muốn rẽ vào làn 34P (x 0.43) phải có >= 0.34 m
+    // (đường kính thân) → trước đây lấn xuyên vách 0.08 m. Nay rút còn 1.37
+    // (bước 1.39, tâm đầu 3.11): vách đầu lùi về z 3.815, lối vào rộng 0.395 m,
+    // vách cuối 3.11-6*1.39-0.695 = -5.925 vẫn nằm trong khoang (REAR_Z -5.95).
+    CENTER_BED_L: 1.37,     // chiều dài giường giữa (bước 1.39 -> khe 0.02 đặt vách)
     SIDE_X: 0.87,           // |x| tâm giường bên  (khung 0.56 -> 0.59..1.15)
     CENTER_X: 0.00,         // tâm dãy giữa (đối xứng)
     AISLE_X: 0.43,          // |x| tâm lối đi       (0.27 .. 0.59)
     AISLE_W: 0.32,
     Z_FIRST: 3.00,          // tâm giường bên đầu tiên
     Z_STEP: 2.00,          // bước giữa 2 giường bên
-    Z_CENTER_FIRST: 3.30,   // tâm giường giữa đầu tiên
-    Z_CENTER_STEP: 1.42,
+    Z_CENTER_FIRST: 3.11,   // tâm giường giữa đầu tiên (lùi 0.19 để mở lối vào làn)
+    Z_CENTER_STEP: 1.39,
     FRONT_Z: 4.05,          // mép trước khoang hành khách
     REAR_Z: -5.95           // mép sau khoang hành khách
 };
@@ -946,10 +1088,10 @@ function buildPassengerCabin34(groups) {
     // Vách dưới (y 0..0.28) — bịt kín đáy, CHỪA LỖ CẦU THANG bên -x (stair gap x -1.12..-0.40)
     box(bodyHalf - stOpenR, 0.28, 0.06, matShell, (stOpenR + bodyHalf) / 2, 0.14, CABIN_END_Z - 0.03, Floor);
     box(stOpenL - (-bodyHalf), 0.28, 0.06, matShell, (-bodyHalf + stOpenL) / 2, 0.14, CABIN_END_Z - 0.03, Floor);
-    // Vòm bánh xe (khớp cấu hình 20 phòng)
+    // Vòm bánh xe (khớp cấu hình 20 phòng, sàn mới 1.64m)
     for (const [wz] of [[3.65], [-2.59]]) {
         for (const side of [1, -1]) {
-            box(0.52, 0.18, 1.16, matShell, side * 1.02, 1.01, wz, Floor);
+            box(0.52, 0.18, 1.16, matShell, side * 1.02, C.FLOOR_Y + 0.09, wz, Floor);
         }
     }
 
@@ -985,15 +1127,20 @@ function buildPassengerCabin34(groups) {
     // ---------- THÂN XE (2 bên) + sàn tầng trên ----------
     const shellLen = L - 0.6;
     const doorCut = { z0: 5.139, z1: 6.189, y0: 0.307, y1: 2.749 };
+    // Vách thân (dải giữa 2 tầng cửa sổ) giới hạn trong khoang hành khách,
+    // không lấn buồng lái/ghế tài-phụ (khớp 20P).
+    const shellZ0 = -shellLen / 2;
+    const shellZ1 = 4.4;
+    const paxShellLen = shellZ1 - shellZ0;
+    const paxShellCz = (shellZ0 + shellZ1) / 2;
     const upperDeckGeos = [];
     for (const side of [1, -1]) {
-        const deck = new THREE.BoxGeometry(
-            C.SIDE_BED_W + 0.04, 0.08, zFront - zRear
-        );
-        deck.translate(side * C.SIDE_X, UPPER_FLOOR_Y, (zFront + zRear) / 2);
-        upperDeckGeos.push(deck);
+        // KHÔNG dựng sàn tầng trên ở đây: sàn dãy bên đã được dựng theo đúng
+        // phạm vi giường (sideDeck bên dưới). Bản cũ trải zFront=4.8 → zRear
+        // = -6.25 nên thò 0.95m về phía buồng lái, thành 2 miếng lơ lửng
+        // ngay trên ghế tài xế và trùng lặp với sideDeck (z-fighting).
         wallBoxSide(0.04, WIN_LO_BOT - C.FLOOR_Y, shellLen, matShell, side * WALL_X, (C.FLOOR_Y + WIN_LO_BOT) / 2, 0, BodyShell, side, doorCut);
-        wallBoxSide(0.04, WIN_HI_BOT - WIN_LO_TOP, shellLen, matShell, side * WALL_X, (WIN_LO_TOP + WIN_HI_BOT) / 2, 0, BodyShell, side, doorCut);
+        wallBoxSide(0.04, WIN_HI_BOT - WIN_LO_TOP, paxShellLen, matShell, side * WALL_X, (WIN_LO_TOP + WIN_HI_BOT) / 2, paxShellCz, BodyShell, side, doorCut);
         box(0.04, CEILING_Y - WIN_HI_TOP, shellLen, matShell, side * WALL_X, (WIN_HI_TOP + CEILING_Y) / 2, 0, BodyShell);
     }
 
@@ -1034,6 +1181,12 @@ function buildPassengerCabin34(groups) {
         sideWallGeos.push(g);
     };
     for (const side of [1, -1]) {
+        // Sàn tầng trên dãy bên (mặt deck dưới giường tầng trên)
+        const sideDeckRearZ = C.Z_FIRST - 4 * C.Z_STEP - C.SIDE_BED_L / 2;
+        const sideDeckFrontZ = C.Z_FIRST + C.SIDE_BED_L / 2;
+        const sideDeck = new THREE.BoxGeometry(C.SIDE_BED_W + 0.04, 0.08, sideDeckFrontZ - sideDeckRearZ);
+        sideDeck.translate(side * C.SIDE_X, UPPER_FLOOR_Y, (sideDeckFrontZ + sideDeckRearZ) / 2);
+        upperDeckGeos.push(sideDeck);
         for (let i = 0; i < 5; i++) {
             const z = C.Z_FIRST - i * C.Z_STEP;
             const x = side * C.SIDE_X;
@@ -1061,16 +1214,17 @@ function buildPassengerCabin34(groups) {
 
     // dãy giữa: 7 giường mỗi tầng (tổng 14) — khung KHÔNG nhô thêm theo z
     // (framePadZ=0) để giữ trống khe 0.02m đặt vách ngăn khoang.
+    // Sàn tầng trên dãy giữa làm liền mạch để không hở khe 0.02m giữa các khoang.
+    {
+        const centerDeckRearZ = C.Z_CENTER_FIRST - 6 * C.Z_CENTER_STEP - C.CENTER_BED_L / 2;
+        const centerDeckFrontZ = C.Z_CENTER_FIRST + C.CENTER_BED_L / 2;
+        const centerDeck = new THREE.BoxGeometry(C.CENTER_BED_W + 0.04, 0.08, centerDeckFrontZ - centerDeckRearZ);
+        centerDeck.translate(C.CENTER_X, UPPER_FLOOR_Y, (centerDeckFrontZ + centerDeckRearZ) / 2);
+        upperDeckGeos.push(centerDeck);
+    }
     for (let i = 0; i < 7; i++) {
         const z = C.Z_CENTER_FIRST - i * C.Z_CENTER_STEP;
         for (const y of [C.LOWER_Y, C.UPPER_Y]) {
-            if (y === C.UPPER_Y) {
-                const deck = new THREE.BoxGeometry(
-                    C.CENTER_BED_W + 0.04, 0.08, C.CENTER_BED_L
-                );
-                deck.translate(C.CENTER_X, UPPER_FLOOR_Y, z);
-                upperDeckGeos.push(deck);
-            }
             buildBed(C.CENTER_X, z, y, C.CENTER_BED_L, C.CENTER_BED_W, 0);
         }
     }
@@ -1310,7 +1464,7 @@ export function migrateInteriorCockpit(oldRoot, newRoot) {
 //   -> Dãy giữa PHẢI có vách trước/sau từng khoang như 2 dãy bên.
 //
 // HÌNH HỌC (có test riêng trong harness):
-//   * Bước 1.42 − giường 1.40 = khe 0.02 = ĐÚNG bề dày vách -> vách nằm
+//   * Bước 1.39 − giường 1.37 = khe 0.02 = ĐÚNG bề dày vách -> vách nằm
 //     trọn trong khe, 2 mặt chỉ TIẾP XÚC mép nệm/khung 2 khoang liền kề
 //     (không lấn 1mm -> không xuyên nệm/gối/khung).
 //   * Cao 0.30..3.20 (sàn->trần, đúng 2.90m như vách 2 dãy bên) -> 1 tấm
@@ -1339,7 +1493,7 @@ function buildCenterRowPartitions34(groups) {
     const gap = +(C.Z_CENTER_STEP - C.CENTER_BED_L).toFixed(6);   // 0.02
     const thick = Math.max(gap, 0.001);
     const wallW = C.CENTER_BED_W;                                 // 0.54 = nệm
-    const halfBody = C.CENTER_BED_L / 2 + thick / 2;              // 0.71 (tâm vách)
+    const halfBody = C.CENTER_BED_L / 2 + thick / 2;              // 0.695 (tâm vách)
     const rows = 7;
 
     // Viền lối đi (nhóm Aisle, code cấu hình 34): box(0.045, 0.05, ...) đặt

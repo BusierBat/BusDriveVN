@@ -447,8 +447,16 @@ export class TrafficAI {
                 }
             }
 
+            // Khoảng bumper->bumper phải trừ NỬA TỔNG chiều dài 2 xe, không
+            // phải chiều dài của riêng mình. Bản cũ `t - this.vehLen` đúng khi
+            // 2 xe cùng cỡ, nhưng xe con 4.475m đứng sau đầu kéo 16.9m thì
+            // tưởng còn 4.4m trong khi mũi xe đã nằm trong thùng xe trước
+            // 1.8m -> IDM không phanh -> chồng kim. 7/8 cặp chồng xe đo được
+            // trong harness là cặp LỆCH CỠ (xe con/đầu kéo/xe khách).
+            const oLen = (typeof o.vehLen === 'number' && o.vehLen > 0) ? o.vehLen : this.vehLen;
+            const halfSum = (this.vehLen + oLen) * 0.5;
             if (t > 0) {
-                const gap = t - this.vehLen;              // khoảng cách bumper->bumper
+                const gap = t - halfSum;                  // khoảng cách bumper->bumper
                 if (gap < s.nearestFrontGap) s.nearestFrontGap = gap;
                 const inLane = latDiff < sameLat && sameDir;
                 const hard = latDiff < hardLat && gap < 20;     // lấn làn / ngược chiều / player
@@ -460,7 +468,7 @@ export class TrafficAI {
                 const inTargetLane = sameDir &&
                     Math.abs(oCenter - this.targetLaneOffset) < sameLat;
                 if ((inLane || inTargetLane || hard) && gap < s.leaderGap) {
-                    s.leader = o; s.leaderGap = Math.max(gap, -this.vehLen);
+                    s.leader = o; s.leaderGap = Math.max(gap, -halfSum);
                     // Xe ngược chiều tiệm cận với vận tốc RELATIVE = v_mình +
                     // |v_nó|. IDM tính dv = v - leaderSpeed -> phải để SỐ ÂM
                     // (đang lái vào mặt nhau), nếu không sẽ trừ ngược ra
@@ -471,7 +479,7 @@ export class TrafficAI {
                     s.candFrontGap = gap; s.candFrontSpeed = oSpeed;
                 }
             } else {
-                const gapBack = -t - this.vehLen;
+                const gapBack = -t - halfSum;
                 if (latDiff < sameLat && sameDir && gapBack < s.rearGap) {
                     s.rear = o; s.rearGap = gapBack; s.rearSpeed = oSpeed;
                 }
@@ -604,7 +612,17 @@ export class TrafficAI {
     //    chậm (_stuckCreep, ≤1.5 m/s) để thoát khỏi giao điểm.
     _updateStuckEscape(dt) {
         const s = this.scan, f = this._frame;
-        const overlapped = s.leader && s.leaderGap < 0.5 && !s.junctionBlocked &&
+        // junctionBlock chỉ có ý nghĩa với xe còn ở NGOÀI hộp ngã (chờ vạch
+        // dừng). Xe ĐÃ NẰM TRONG hộp mà vẫn bị giữ tại chỗ -> nó khoá chặt
+        // cả 2 nhánh: nhánh đối diện chờ đủ YIELD_TIMEOUT (8s) rồi ùa vào
+        // -> hàn dính 2 xe giữa ngã (harness tick 1376+: cặp 33-37).
+        // Nguyên tắc ra đè: đã vào ngã thì phải TRƯỜN QUA, không đứng chết.
+        let blocked = s.junctionBlocked;
+        if (blocked && f) {
+            const dn = hypot2(f.p1.x - this.collider.x, f.p1.z - this.collider.z);
+            if (dn <= JUNCTION_BOX) blocked = false;   // chính mình trong hộp -> được trườn
+        }
+        const overlapped = s.leader && s.leaderGap < 0.5 && !blocked &&
             this.stop.phase === 'IDLE';
         if (!overlapped || !f) {
             this._stuckT = 0;
@@ -625,11 +643,13 @@ export class TrafficAI {
         }
         if (oncoming) {
             this.targetLaneOffset = this._maxOffset();   // ép sát lề phải = tách 2 bên
-        } else if (this.speed < 0.6 && this._stuckT > 5 && lat > 1.2) {
-            // CHỈ trườn khi 2 xe giao cắt lệch ngang thật sự (lộ ra giao
-            // điểm). Đụng xe cùng làn đứng trước (lat≈0) mà trườn là đẩy
-            // xe sau vào hẳn trong xe trước (gap thành -12m, chồng kim),
-            // creep không tắt được vì gap không bao giờ hở ra.
+        } else if (this.speed < 0.6 && this._stuckT > 5) {
+            // Cùng làn thẳng hàng (lat ≈ 0) cũng phải trườn: cả 2 xe cùng
+            // emergency-brake ngắt ga và đình tại chỗ mãi (harness: cặp 33-37
+            // kẹt v=0 giữa s_4403/s_4504 >60 tick, gap −11m). Trước đây chỉ
+            // trườn khi lat > 1.2 (giao cắt), nên ca hàn cùng làn không có
+            // nhánh nào tự gỡ — vạch dừng không cứu được xe đang ĐI QUA nhau.
+            // Trườn ≤1.5 m/s, IDM vẫn giữ ga khẩn nếu gap âm.
             this._stuckCreep = true;
         }
     }
@@ -1271,6 +1291,36 @@ export class TrafficAI {
             // để lọt -> xe thứ 2 ùa vào đè lên).
             if (t >= -this.vehLen && t < win) return true;
         }
+
+        // (2) KHOÁ NODE: hai xe không được cùng "vật chất hoá" tại một node
+        // trong cùng lúc, KỂ CẢ khi chúng rẽ vào hai NHÁNH KHÁC NHAU. Vòng
+        // lặp trên chỉ kiểm segment đích (cùng segment + cùng chiều) nên hai
+        // xe rời node theo hai nhánh vẫn đứng chồng nhau ngay tại node:
+        // harness đo 5 cặp chồng 700+ tick, nặng nhất 382 tick / sâu 3.47m.
+        // Quy tắc ưu tiên: xe GẦN NODE hơn thì đi trước (trực giác ngã rẽ —
+        // ai tới vạch trước đi trước). Đây là trật tự toàn cục một chiều theo
+        // khoảng cách nên KHÔNG thể có deadlock hai xe cùng nhường nhau —
+        // bản tie-break theo chiều chiếu `ahead` trước đây làm cả 2 nhánh
+        // thấy đối phương ở trước mình (harness: xe 37 đứng v=0 suốt 60s tại
+        // node s_4504 vì cả nó và xe 24 đều thấy "ahead > 0"). Chênh lệch
+        // < 0.3m coi là hoà -> tie-break theo id (id nhỏ đi trước). Quá
+        // ENTRY_WAIT_MAX (5s) vẫn vào để không chết đạo.
+        const myHalf = this.vehLen * 0.5;
+        const myId = (this.id != null) ? this.id : 1e9;
+        const myDn = hypot2(this.collider.x - a.x, this.collider.z - a.z);
+        for (let i = 0; i < vehs.length; i++) {
+            const o = vehs[i];
+            if (!o || o === this || !o.collider || o.isStatic) continue;
+            if (o.currentSegmentId === nextSeg.id) continue;   // đã xét ở trên
+            const oLen = (typeof o.vehLen === 'number' && o.vehLen > 0) ? o.vehLen : this.vehLen;
+            const oDn = hypot2(o.collider.x - a.x, o.collider.z - a.z);
+            if (oDn > myHalf + oLen * 0.5 + 0.5) continue;      // nó đã rời node
+            if (oDn < myDn - 0.3) return true;   // nó gần node hơn -> mình chờ
+            if (Math.abs(oDn - myDn) <= 0.3) {
+                const oId = (o.id != null) ? o.id : -1;
+                if (oId < myId) return true;     // hoà -> id nhỏ đi trước
+            }
+        }
         return false;
     }
 
@@ -1390,7 +1440,36 @@ export class TrafficAI {
         this._updatePositionFromSegment();
     }
 
+    // Xe khác đang ở quanh đuôi/mũi mình (bất kể chiều) -> chưa quay đầu được.
+    // Quay đầu là đổi hướng 180° tại chỗ: nếu có xe ngược chiều trong bán
+    // kính này, mình quay thẳng vào mặt nó và kẹt cứng (harness: cặp 63-67
+    // chồng 7.3m suốt 54 tick, phải chờ _updateStuckEscape kéo 8m ngang).
+    _uturnBlocked() {
+        const vehs = this._lastVehicles;
+        if (!vehs || !vehs.length) return false;
+        const lim = this.vehLen * 1.5 + 12;
+        for (let i = 0; i < vehs.length; i++) {
+            const o = vehs[i];
+            if (!o || o === this || !o.collider || o.isStatic) continue;
+            if (hypot2(o.collider.x - this.collider.x, o.collider.z - this.collider.z) > lim) continue;
+            return true;
+        }
+        return false;
+    }
+
     _uTurn() {
+        // Chờ khe trống trước khi quay (tối đa ENTRY_WAIT_MAX như cửa ra
+        // segment mới -> đường đông cũng không đứng chết).
+        if (this._uturnBlocked()) {
+            this._entryWait += this.updateInterval || (1 / 30);
+            if (this._entryWait < ENTRY_WAIT_MAX) {
+                this.progress = Math.min(this.progress, 0.9999);
+                if (this.speed > 1.5) this.speed = 1.5;
+                this.accel = Math.min(this.accel, -3);
+                this.state = AI_STATE.YIELDING;
+                return;
+            }
+        }
         // Quay đầu TẠI ĐƯỜNG CÙNG (chỉ xảy ra ở đường cụt): phân rã lại toạ
         // độ trong khung chiều mới -> xe đứng yên tại chỗ, rồi từ từ trôi về
         // làn phải của chiều mới (offset âm = đang ở bên trái, hợp lý khi vừa
