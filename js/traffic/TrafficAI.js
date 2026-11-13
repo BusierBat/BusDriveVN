@@ -597,6 +597,20 @@ export class TrafficAI {
                 v0 *= 0.55 + 0.45 * clamp(remain / 25, 0, 1);   // chậm lại trước ngã
             }
         }
+        // PHASE (junction reservation): nếu đang đè lên xe khác (qua ngã
+        // tư, cắt, hoặc va chạm chưa tách) -> giữ tốc độ mục tiêu ở mức 0
+        // cho tới frame sau khi hết đè (giải bởi IDM/stuck-escape khi khe hở).
+        const vehs = this._lastVehicles;
+        if (vehs) {
+            const lim = (this.vehLen + this.vehLen) * 0.5 + 0.05;
+            for (let i = 0; i < vehs.length; i++) {
+                const o = vehs[i];
+                if (!o || o === this || !o.collider || o.isStatic) continue;
+                const dx = o.collider.x - this.collider.x;
+                const dz = o.collider.z - this.collider.z;
+                if (dx * dx + dz * dz < lim * lim) { v0 = 0; break; }
+            }
+        }
         this.targetSpeed = Math.max(0, v0);
     }
 
