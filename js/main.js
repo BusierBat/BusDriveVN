@@ -14,7 +14,8 @@ import { createPassengerSystem } from "./passenger.js";
 import { createTrafficManager } from "./traffic/TrafficManager.js";
 import { TrafficDebug } from "./traffic/TrafficDebug.js";
 import { initEndermanEasterEgg, updateEnderman } from "./enderman.js";
-import { getTravelDirection, setTravelDirection } from "./economy.js";
+import { getTravelDirection, setTravelDirection, getMoney, addMoney, FARE_PER_PASSENGER, getFuel, setFuel, addFuel, consumeFuel, flushFuel, FUEL_CAPACITY, FUEL_PER_KM, FUEL_PRICE, RESCUE_FEE } from "./economy.js";
+import { formatMoney } from "./utils.js";
 import { createCSGTManager } from "./csgt.js";
 import { CollisionSystem } from "./collisionSystem.js";
 import { updatePhysicsState, PHYSICS_STATE, registerImpact, computeYawRate, updateRoadRoughness, applySurfaceFromSegment, computeVehicleMass, computeVehicleForces, rectContactMTV, computeEnginePower } from "./physics_step.js"; // vật lý cảm giác (roll/pitch/heave + nhíp bánh + RPM)
@@ -144,8 +145,7 @@ let wheelSpinAngle = 0;   // rad — góc quay cộng dồn của bánh (theo qu
 const KEY_BY_NAME = new Map();
 const LEGACY_BY_KEYCODE = new Map();
 const keysPressed = new Map();   // code -> timestamp keydown gần nhất (chống phím kẹt)
-const steerReleaseAt = new Map();
-const steerReleaseReady = new Set();
+const steerReleaseAt = new Map(); // A/D: debounce nhả phím (tránh ghost từ IME), hết hạn thì xóa khỏi keysPressed
 
 
 let keyDiagOn = false;
@@ -308,15 +308,16 @@ function pruneStaleKeys(now) {
     for (const [code, last] of keysPressed) {
         const releaseAt = steerReleaseAt.get(code);
         if (releaseAt !== undefined && now >= releaseAt) {
+            // Hết thời gian debounce nhả phím lái (A/D): phải thực sự thả phím,
+            // nếu không keysPressed giữ mãi -> ghost/stuck steering.
+            keysPressed.delete(code);
             steerReleaseAt.delete(code);
-            steerReleaseReady.add(code);
             continue;
         }
         const timeout = (code === "KeyA" || code === "KeyD") ? STEER_KEY_HOLD_TIMEOUT_MS : KEY_HOLD_TIMEOUT_MS;
         if (now - last > timeout) {
             keysPressed.delete(code);
             steerReleaseAt.delete(code);
-            steerReleaseReady.delete(code);
         }
     }
 }
@@ -324,7 +325,6 @@ function pruneStaleKeys(now) {
 function clearPressedKeys() {
     keysPressed.clear();
     steerReleaseAt.clear();
-    steerReleaseReady.clear();
 }
 
 // Thu vi tri TAT CA cot den duong trong scene (dung cho street lights pool
@@ -458,8 +458,11 @@ function roadSegmentInfo(phys) {
     const dx = b.x - a.x, dz = b.z - a.z;
     const horiz = Math.sqrt(dx * dx + dz * dz) || 1;
     const ay = Number.isFinite(a.y) ? a.y : 0, by = Number.isFinite(b.y) ? b.y : ay;
-    // Hướng xe (forward = +z local): lên dốc nếu đi về phía node cao hơn.
-    const fz = Math.sin(bus.group.rotation.y), fx = Math.cos(bus.group.rotation.y);
+    // Hướng xe (forward = local +Z quay theo rotation.y) — lên dốc nếu đi về
+    // phía node cao hơn. Xe di chuyển bằng `(0,0,1).applyQuaternion()` nên
+    // forward thế giới = (sin yaw, cos yaw); bản cũ dùng (cos, sin) ⇒ dấu dốc
+    // bị lật theo hướng xe (chỉ đúng khi yaw = 0/π/2...), làm pitch sai.
+    const fx = Math.sin(bus.group.rotation.y), fz = Math.cos(bus.group.rotation.y);
     const dir = (fz * dz + fx * dx) / horiz >= 0 ? 1 : -1;
     _lastGrade = dir * Math.atan2(by - ay, horiz);
     info.gradeRad = _lastGrade;
@@ -508,6 +511,10 @@ function updateVehiclePhysics(dt) {
     } else if (isAlt) {
         brake = 0.72;
     }
+
+    // HẾT XĂNG = KHÔNG đạp ga được nữa (bus đã bị cắt ở đây khi fuel=0).
+    // Xe vẫn trôi theo đà và bị lực cản lăn/phanh hạ tốc độ tự nhiên.
+    if (throttle > 0 && getFuel() <= 0) throttle = 0;
 
     phys.throttleInput = throttle;
     phys.brakeInput = -brake;
@@ -617,6 +624,9 @@ function updateVehiclePhysics(dt) {
     if (Math.abs(phys.speed) > 0.001) {
         const forward = phys.forwardVector.set(0, 0, 1).applyQuaternion(bus.group.quaternion);
         const moveDistance = phys.speed * dt;
+        // ===== NHIÊN LIỆU: tiêu hao theo quãng đường di chuyển (0.30 L/km) =====
+        // Trừ RAM ngay (rẻ), ghi localStorage qua flushFuel() định kỳ ở updateHUD.
+        if (moveDistance !== 0) consumeFuel(Math.abs(moveDistance) / 1000 * FUEL_PER_KM);
         const oldX = bus.group.position.x, oldZ = bus.group.position.z;
         const newX = oldX + forward.x * moveDistance;
         const newZ = oldZ + forward.z * moveDistance;
@@ -751,8 +761,6 @@ function updateVehiclePhysics(dt) {
     
     if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z, bus.group.position.y);
     bus.group.updateMatrixWorld(true);
-    for (const code of steerReleaseReady) keysPressed.delete(code);
-    steerReleaseReady.clear();
 }
 
 // ===== PHÍM CỨU HỘ (R) — đưa xe về điểm ĐƯỜNG HỢP LỆ gần nhất =====
@@ -903,7 +911,6 @@ function initInput() {
         }
 
         steerReleaseAt.delete(code);
-        steerReleaseReady.delete(code);
         keysPressed.set(code, _now);
         // Windows chỉ auto-repeat phím được nhấn SAU CÙNG. Giữ Shift+W rồi bấm A/D
         // để rẽ -> Shift+W ngừng repeat -> pruneStaleKeys xóa -> xe giảm tốc oan.
@@ -926,11 +933,9 @@ function initInput() {
         if (code === "KeyA") {
             keysPressed.delete("KeyD");
             steerReleaseAt.delete("KeyD");
-            steerReleaseReady.delete("KeyD");
         } else if (code === "KeyD") {
             keysPressed.delete("KeyA");
             steerReleaseAt.delete("KeyA");
-            steerReleaseReady.delete("KeyA");
         }
         
         // Additional safety: if both A and D are somehow pressed, cancel both (neutral)
@@ -939,8 +944,6 @@ function initInput() {
             keysPressed.delete("KeyD");
             steerReleaseAt.delete("KeyA");
             steerReleaseAt.delete("KeyD");
-            steerReleaseReady.delete("KeyA");
-            steerReleaseReady.delete("KeyD");
         }
         // Shift/Alt không auto-repeat khi phím khác được nhấn -> sync từ state vật lý.
         if (!composing) {
@@ -1381,6 +1384,9 @@ async function requestCloseSettings() {
 }
 
 let hudTimer = 0;
+let fuelFlushTimer = 0;   // đếm thời gian giữa các lần flushFuel() xuống localStorage
+let strandedT = 0;         // đếm thời gian xe hết xăng + đứng yên liên tục
+let lowFuelWarned = false; // tránh spam cảnh báo sắp hết nhiên liệu
 function handleResize() {
     if (!renderer || !camera) return;
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -1438,6 +1444,8 @@ function initRenderer() {
 
 async function boot() {
     ui = createUI({ map: null });
+    // Menu chính hiện số dư THẬT ngay từ đầu (trước đây là chữ tĩnh trong HTML).
+    ui.setMoney(getMoney());
     musicPlayer = createMusicPlayer({ volume: gameSettings.audioVolume });
     if (isMobile || isLowEnd) { ui.saveSettings(); }
     ui.showMainMenu();
@@ -1951,6 +1959,8 @@ async function startGameFromMenu() {
         cameraSystem.settings.fov = gameSettings.fov;
         // Camera dán cùng chuyển động thân (PHẦN 10.5 — không rung khi vô nguyên do)
         cameraSystem.setMotionSource(PHYSICS_STATE);
+        // Passenger system đọc window.PHYSICS_STATE để phản hồi chuyển động xe
+        window.PHYSICS_STATE = PHYSICS_STATE;
         await new Promise(r => setTimeout(r, 300));
         
         ui.setLoading("Giao thông & Hành khách...", 0.8);
@@ -2025,6 +2035,7 @@ async function startGameFromMenu() {
 }
 
 function updateWorld(delta) {
+    pruneStaleKeys(performance.now());
     if (!lighting) return;
     // --- Phase 6: giờ game suy từ lái xe thật ---
     // TravelClock trả về timeScale (theo tốc độ/độ dốc/loại đường) và
@@ -2050,7 +2061,14 @@ function updateWorld(delta) {
             doorServiceStarted = true;
             if (passengerSystem &&
                 !passengerSystem.dropOffAtRouteDestination?.()) {
-                passengerSystem.pickUpPassengers();
+                const picked = passengerSystem.pickUpPassengers();
+                // Doanh thu vé: thu khi khách lên xe (như phụ xe thu tiền mặt).
+                if (picked > 0) {
+                    const revenue = picked * FARE_PER_PASSENGER;
+                    addMoney(revenue);
+                    ui?.setMoney?.(getMoney());
+                    ui?.toast?.(`💰 +${formatMoney(revenue)} (${picked} vé)`);
+                }
             }
         } else if (doorTarget === 0) {
             doorServiceStarted = false;
@@ -2153,6 +2171,80 @@ function updateHUD(delta) {
         z: bus.group.position.z,
         speedKmh: vehiclePhysics.currentSpeedKmh
     });
+    // ===== HỆ THỐNG NHIÊN LIỆU (B) =====
+    // 1) Flush mức xăng xuống localStorage định kỳ (tránh ghi mỗi tick 30Hz).
+    fuelFlushTimer += delta;
+    if (fuelFlushTimer >= 5) { fuelFlushTimer = 0; flushFuel(); }
+    const fuelNow = getFuel();
+    // 2) Cảnh báo sắp hết (chỉ 1 lần / ngưỡng; reset khi >20% bình).
+    if (fuelNow > 0 && fuelNow <= FUEL_CAPACITY * 0.2 && !lowFuelWarned) {
+        lowFuelWarned = true;
+        ui.toast(`⚠ Nhiên liệu sắp hết (${Math.floor(fuelNow)}L) — còn vài chục km nữa là hết`, true);
+    } else if (fuelNow > FUEL_CAPACITY * 0.2) {
+        lowFuelWarned = false;
+    }
+    // 3) Hết xăng + xe đứng yên > 30s liên tục -> cứu hộ về trạm gần nhất.
+    if (fuelNow <= 0) {
+        if (Math.abs(vehiclePhysics.speed) < 0.5) {
+            strandedT += delta;
+            if (strandedT >= 30) {
+                strandedT = 0;
+                const g = map?.getRoadGraph?.();
+                const pois = g?.pois;
+                let target = null;
+                let bestD2 = Infinity;
+                if (pois) {
+                    for (let i = 0; i < pois.length; i++) {
+                        const p = pois[i];
+                        if (p.type !== 'FUEL_STATION') continue;
+                        const dx = p.position.x - bus.group.position.x;
+                        const dz = p.position.z - bus.group.position.z;
+                        const d2 = dx * dx + dz * dz;
+                        if (d2 < bestD2) { bestD2 = d2; target = p; }
+                    }
+                }
+                if (target) {
+                    const fee = Math.min(RESCUE_FEE, getMoney());  // không trả dư: nợ trần 1 bình
+                    if (fee > 0) addMoney(-fee);
+                    bus.group.position.set(target.position.x, target.position.y ?? bus.group.position.y, target.position.z);
+                    bus.group.rotation.y = Math.atan2(target.position.z - bus.group.position.z, target.position.x - bus.group.position.x);
+                    vehiclePhysics.speed = 0;
+                    playerStuckT = 0;
+                    if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z, bus.group.position.y);
+                    flushFuel();
+                    ui.toast(`🛻 Hết xăng! Cứu hộ về trạm gần nhất (${target.name}) — phí ${formatMoney(fee)}`);
+                }
+            }
+        } else {
+            strandedT = 0;
+        }
+    } else {
+        strandedT = 0;
+    }
+    // 4) Đổ xăng tự động khi trong bán kính 35 m của trạm xăng (FUEL_STATION).
+    if (fuelNow < FUEL_CAPACITY - 0.5) {
+        const g = map?.getRoadGraph?.();
+        const pois = g?.pois;
+        if (pois) {
+            const bx = bus.group.position.x, bz = bus.group.position.z;
+            for (let i = 0; i < pois.length; i++) {
+                const p = pois[i];
+                if (p.type !== 'FUEL_STATION') continue;
+                const dx = p.position.x - bx, dz = p.position.z - bz;
+                if (dx * dx + dz * dz > 35 * 35) continue;
+                const need = FUEL_CAPACITY - fuelNow;
+                const cost = Math.round(need * FUEL_PRICE);
+                const paid = Math.min(cost, getMoney());   // hết tiền -> đổ tới khi hết tiền (không softlock)
+                const litres = Math.max(0, paid / FUEL_PRICE);
+                if (litres > 0) { addMoney(-paid); addFuel(litres); }
+                flushFuel();
+                lowFuelWarned = false;
+                ui.toast(`⛽ Đã đổ ${Math.floor(litres)}L tại ${p.name} — ${formatMoney(paid)}`);
+                break;
+            }
+        }
+    }
+
     const passengerCount = passengerSystem?.getPassengerCount?.();
     ui.update({
         fps: 1/delta,
@@ -2160,6 +2252,8 @@ function updateHUD(delta) {
         speedLimit: csgtManager?.getLimitKmh() ?? null,
         passengers: passengerCount?.onboard || 0,
         passengerCapacity: passengerCount?.max || 24,
+        money: getMoney(),
+        fuel: getFuel(),
         timeMinutes: lighting?.getGameTime() || 0,
         x: bus.group.position.x,
         z: bus.group.position.z,
@@ -2232,6 +2326,9 @@ function loop() {
         if (renderer && scene && camera) {
             const t0 = performance.now();
             renderer.render(scene, camera);
+            if (gameState === "playing" && lighting?.atmosphereSystem) {
+                lighting.atmosphereSystem.renderGodRays(renderer, scene, camera);
+            }
             perfSection.render += performance.now() - t0;
         }
         if (gameState === "playing") updateHUD(rawDelta);

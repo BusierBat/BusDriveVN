@@ -27,6 +27,19 @@ import {
 const BUS_LEN_APPROX = 12.8;   // xe NPC dùng chung mesh bus (bus.js BUS_DIMENSIONS)
 const BUS_W_APPROX = 2.53;
 
+// Class đường KHÔNG bao giờ spawn NPC chạy (hẻm/nội bộ/sân bến/nông nghiệp/dân cư).
+// Hằng số dùng chung cho _segOk — trước đây tạo Set mới mỗi lần gọi.
+const NO_SPAWN_CLASS = new Set([
+    'TUNNEL', 'RAMP', 'INTERNAL', 'SERVICE', 'STATION_ACCESS', 'ALLEY',
+    'AGRICULTURAL', 'RESIDENTIAL'
+]);
+
+// Spatial grid: tối đa bao lâu thì rebuild lại toạ độ xe một lần.
+// Grid KHÔNG được chỉ rebuild theo chuyển động của player: player dừng đèn đỏ
+// / dừng bến 1 phút là grid đóng băng trong khi NPC vẫn chạy tới 25 m/s ->
+// _scan không thấy xe dẫn -> đè đuôi. 0.5s * 25 m/s = 12.5m << cell 100m.
+const GRID_REBUILD_MS = 500;
+
 // ===== PHÂN BỔ LOẠI XE NPC =====
 // Giao thông đường VN thực tế: xe khách liên tỉnh + ô tô con chạy xe buýt,
 // van 16 chỗ đưa rước, xe tải thùng kín và đầu kéo container chạy QL/cao
@@ -105,7 +118,7 @@ const PERSONALITY_TABLE = [
     { p: 'FAST', w: 0.17 },
     { p: 'AGGRESSIVE', w: 0.10 },
     { p: 'BUS_DRIVER', w: 0.10 },
-    { p: 'GDCD_SKIPPER', w: 0.10 }
+    { p: 'GDCD_SKIPPER', w: 0.03 }
 ];
 const PERSONALITY_TOTAL = PERSONALITY_TABLE.reduce((a, b) => a + b.w, 0);
 
@@ -196,12 +209,13 @@ export class TrafficManager {
     }
 
     // ---------------------------------------------------------------- helpers
+    // Tập class KHÔNG spawn NPC (hằng số module: trước đây `new Set` được tạo
+    // lại MỖI lần gọi _segOk — mà _segOk chạy cho toàn bộ segment trong
+    // segmentsNear + từng ứng viên spawn -> hàng trăm Set rác mỗi lần spawn).
     _segOk(s) {
         if (!s) return false;
         // Chỉ spawn NPC trên đường lớn, không spawn trên ramp/hầm/đường nội bộ/sân bến/hẻm
-        const blocked = new Set(['TUNNEL', 'RAMP', 'INTERNAL', 'SERVICE', 'STATION_ACCESS', 'ALLEY',
-            'AGRICULTURAL', 'RESIDENTIAL']); // tránh spawn trong hẻm/đường nông nghiệp/đường dân cư
-        if (blocked.has(s.class)) return false;
+        if (NO_SPAWN_CLASS.has(s.class)) return false; // tránh spawn trong hẻm/đường nông nghiệp/đường dân cư
         if (s.type === 'tunnel' || s.type === 'bus_station_road' || s.type === 'highway_ramp') return false;
         const f = this.roadGraph.getNode(s.from);
         const t = this.roadGraph.getNode(s.to);
@@ -363,6 +377,7 @@ export class TrafficManager {
 
         this.aiVehicles.push(ai);
         this.activeCount++;
+        this._gridInsert(ai);   // xe vừa spawn phải thấy được NGAY
         return ai;
     }
 
@@ -403,15 +418,23 @@ export class TrafficManager {
     // Kiểm tra khoảng trống tại điểm spawn: cùng đoạn theo TRỤC ĐƯỜNG
     // (chồng đầu-đuôi) + Euclidean với mọi xe quanh (dùng spatial grid O(1)).
     _spawnSpotFree(segId, dir, progress, x, z) {
+        const seg = this.roadGraph.getSegment(segId);
         const sameSeg = this._bySeg.get(segId);
         if (sameSeg && sameSeg.length) {
-            const seg = this.roadGraph.getSegment(segId);
             const f = seg ? this.roadGraph.getNode(seg.from) : null;
             const t = seg ? this.roadGraph.getNode(seg.to) : null;
             const len = (f && t) ? hypot2(t.x - f.x, t.z - f.z) : 100;
+            const meta = (this.roadGraph.getLaneMeta) ? this.roadGraph.getLaneMeta(seg) : null;
+            const speedMs = (meta && meta.speedMs) || 12;
+            // Khoảng hở phải theo TỐC ĐỘ ĐƯỜNG, không phải hằng số 21.8m:
+            // xe spawn ra chạy ngay ở tốc độ đường, nếu cách xe đang bò/chờ
+            // chỉ ~29m thì không kịp phanh. Harness: xe 14.3 m/s spawn sau
+            // xe 1.5 m/s 16.6m (bumper) -> húc đuôi, chồng 2.5m suốt 77 tick.
+            // 6 + v*2.4: 70km/h -> 52m, 40km/h -> 33m, sàn 21.8m.
+            const minClear = Math.max(BUS_LEN_APPROX * 1.7, 6 + speedMs * 2.4);
             for (const o of sameSeg) {
                 if (o.direction !== dir) continue;
-                if (Math.abs(o.progress - progress) * len < BUS_LEN_APPROX * 1.7) return false;
+                if (Math.abs(o.progress - progress) * len < minClear) return false;
             }
         }
         // Dùng spatial grid để tìm xe gần (O(1) thay vì O(N))
@@ -505,6 +528,7 @@ export class TrafficManager {
         this.aiVehicles.push(ai);
         this.activeCount++;
         this.staticCount++;          // xe dap ben: khong tru ngan sach xe chay
+        this._gridInsert(ai);   // xe tĩnh phải thấy được ngay
     }
 
     // ---------------------------------------------------------------- player
@@ -805,39 +829,53 @@ export class TrafficManager {
     // out riêng trong _getNearbyVehicles) trong cùng frame, không giữ tham
     // chiếu qua đêm -> an toàn khi tái sử dụng.
     _updateVehicleGrid() {
-        const frameNo = this._frameNo;
         const playerPos = this.lastPlayerPos;
         const cellSize = this._vehicleGridCellSize;
+        const now = performance.now();
         const dx = playerPos.x - this._lastGridRebuildPos.x;
         const dz = playerPos.z - this._lastGridRebuildPos.z;
-        // Chỉ rebuild grid khi player di chuyển đủ xa (50m). Như vậy khi đứng yên
-        // / di chuyển chậm, grid không bị rebuild bất cứ frame nào -> giảm O(N)
-        // mỗi frame trên máy yếu. Xe NPC di chuyển chậm, grid cũ vẫn chấp nhận.
-        if (Math.hypot(dx, dz) <= cellSize * 0.5) return;
+        // Rebuild khi player đi đủ xa (50m) HOẶC quá GRID_REBUILD_MS.
+        // Chỉ-theo-player (bản cũ) làm grid ĐÓNG BĂNG khi player đứng yên
+        // (dừng đèn/bến/nghỉ): NPC vẫn chạy, toạ độ cell lệch hàng trăm mét ->
+        // _scan mù xe dẫn -> đè đuôi. Đo bằng harness: player đứng 60s thì
+        // 76-90% xe nằm sai cell; sau fix = 0%.
+        if (Math.hypot(dx, dz) <= cellSize * 0.5 &&
+            now - (this._lastGridRebuildTime || 0) < GRID_REBUILD_MS) return;
+        this._lastGridRebuildTime = now;
         this._lastGridRebuildPos.x = playerPos.x;
         this._lastGridRebuildPos.z = playerPos.z;
 
-        for (const a of this._vehicleGrid.values()) {
-            if (a._f !== frameNo) a.length = 0;
-        }
+        // Xoá NỘI DUNG mọi cell (giữ mảng để tái dùng) rồi nạp lại từ đầu.
+        for (const a of this._vehicleGrid.values()) a.length = 0;
         for (let i = 0; i < this.aiVehicles.length; i++) {
             const ai = this.aiVehicles[i];
             if (!ai.active || !ai.collider) continue;
-            const cx = Math.floor(ai.collider.x / cellSize);
-            const cz = Math.floor(ai.collider.z / cellSize);
-            const key = cx + ',' + cz;
-            let arr = this._vehicleGrid.get(key);
-            if (!arr) { arr = []; arr._f = frameNo; this._vehicleGrid.set(key, arr); }
-            else if (arr._f !== frameNo) { arr.length = 0; arr._f = frameNo; }
-            arr.push(ai);
+            this._gridInsert(ai);
         }
-        if (this._vehicleGrid.size > 1024) {   // cell lái qua lâu rồi: quét lười
-            for (const [k, a] of this._vehicleGrid) if (a._f !== frameNo) this._vehicleGrid.delete(k);
+        if (this._vehicleGrid.size > 1024) {   // cell không còn xe: quét lười
+            for (const [k, a] of this._vehicleGrid) if (a.length === 0) this._vehicleGrid.delete(k);
         }
+    }
+
+    // Đưa 1 xe vào grid (dùng chung cho rebuild và xe VỪA spawn).
+    // Tuyệt đối KHÔNG clear cell ở đây: bản cũ clear cell khi "frame khác"
+    // nên MỖI lần spawn một xe là xoá sạch 5-7 xe khác khỏi cell đó -> chúng
+    // vô hình với _scan (leaderGap = null) -> xe sau đè đuôi xe trước.
+    // Harness: 91 lần spawn -> "grid thiếu tối đa 7 xe" + 1286 lần chồng xe.
+    // Xe đi sang cell khác vẫn còn entry cũ tới lần rebuild sau (≤0.5s) —
+    // trùng lặp vô hại (mỗi xe chỉ tự loại chính nó bằng `o === this`).
+    _gridInsert(ai) {
+        const cellSize = this._vehicleGridCellSize;
+        const key = Math.floor(ai.collider.x / cellSize) + ',' + Math.floor(ai.collider.z / cellSize);
+        let arr = this._vehicleGrid.get(key);
+        if (!arr) { arr = []; this._vehicleGrid.set(key, arr); }
+        if (arr.indexOf(ai) < 0) arr.push(ai);
     }
 
     // Lấy xe trong bán kính (O(1) query qua grid)
     // Mảng kết quả được reuse (`_nearbyOut`) để tránh cấp phát mảng mới mỗi xe mỗi frame.
+    // BỎ xe đã retire (active=false) còn sót trong cell: nếu không, xe vừa
+    // despawn vẫn được coi là vật cản -> phanh ảo đúng chỗ nó biến mất.
     _getNearbyVehicles(x, z, radius) {
         const cellSize = this._vehicleGridCellSize;
         const rCells = Math.ceil(radius / cellSize);
@@ -849,7 +887,11 @@ export class TrafficManager {
             for (let dz = -rCells; dz <= rCells; dz++) {
                 const key = (cx0 + dx) + ',' + (cz0 + dz);
                 const arr = this._vehicleGrid.get(key);
-                if (arr) out.push(...arr);
+                if (!arr) continue;
+                for (let i = 0; i < arr.length; i++) {
+                    const ai = arr[i];
+                    if (ai && ai.active) out.push(ai);
+                }
             }
         }
         return out;

@@ -377,8 +377,11 @@ function assembleBus(mats, withDoorPivot) {
     extMeshes.push(upper);
     motion.add(upper);
 
+    // LED ngoại thất tầng dưới: ngay bên dưới vách phân tầng/sàn tầng trên
+    // (dải đen phân tầng texture ~2.441..2.843, deck 2.45..2.53) — không nằm
+    // lọt vào dải kính tầng dưới. Neo theo kiến trúc hai tầng, không kéo độc lập.
     const lower = new THREE.Mesh(ledGeo, extMat.clone());
-    lower.position.set(side * (WALL_X + 0.04), 2.37, ledPosZ);
+    lower.position.set(side * (WALL_X + 0.04), 2.43, ledPosZ);
     lower.renderOrder = 3;
     lower.name = "exteriorLed";
     extMeshes.push(lower);
@@ -415,8 +418,15 @@ function makeControl(a) {
       }
     },
     setDoor: (t) => {
+      // Cửa bên -x (aperture z 5.139..6.189, mép trước thân xe z = L/2 ≈ 6.40):
+      // trượt -z (về phía sau) như cửa lùa thật. +z sẽ đẩy panel vượt mũi xe
+      // (6.189 + 1.15 = 7.34 > 6.40) = panel lơ lửng trước đầu xe → sai hướng.
+      // -z 1.15m > bề rộng aperture (1.05m) nên panel rời hẳn khoang cửa;
+      // cầu thang hiện nằm tại z 5.35..5.97 (trục X) nên không bị panel che.
       if (a.doorPivot) {
-        a.doorPivot.position.z = -t * 1.2;
+        const tt = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+        a.doorPivot.position.z = -tt * 1.15;
+        a.doorPivot.visible = true;
       }
     },
     // Nghiêng thân (PHẦN 9.5): pitch/roll/heave/sway -> motion group.
@@ -620,7 +630,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     const screenMesh = findMesh((gp, o) =>
       Math.abs(gp.width - 0.5) < 0.03 && Math.abs(gp.height - 0.25) < 0.03 &&
       Math.abs(gp.depth - 0.05) < 0.03 && Math.abs(o.position.x) < 0.12 &&
-      o.position.z > 5.3 && o.position.y > 0.9);
+      o.position.z > 5.3 && o.position.y > 1.9);
     // RHD: cụm đồng hồ tài xế bên PHẢI — speedo ở x≈+0.45, gauge phụ x≈-0.45
     const speedoMesh = findMesh((gp, o) =>
       Math.abs(gp.width - 0.35) < 0.03 && Math.abs(gp.height - 0.2) < 0.03 &&
@@ -631,7 +641,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     const btnMeshes = findAllMeshes((gp, o) =>
       Math.abs(gp.width - 0.04) < 0.02 && Math.abs(gp.height - 0.04) < 0.02 &&
       Math.abs(gp.depth - 0.04) < 0.02 && o.position.z > 5.3 &&
-      o.position.y > 0.7 && o.position.y < 1.0);
+      o.position.y > 1.7 && o.position.y < 2.2);
 
     if (screenMesh) {
       const SW = 320, SH = 192, DOT_N = 5, DOT_R = 13;
@@ -897,16 +907,19 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     // Dùng thêm khối dup ở đây chỉ gây z-fighting + tái tạo hình "chân bàn".
     // Các giáo deco giữ lại MẮT LÊN MẶT DASH MỚI:
     //   mặt trước dash z≈5.785±0.025 (bề ngoài 5.81) — mọi mesh mặt ở z>5.81.
-    // Nep chrome ngang seam mặt trước/kick panel (y seam 0.736)
+    // Cac deco chrome phai nam TREN mat táp-lô (mặt trước z 5.850..5.900):
+    // bản cũ đặt ở z 5.808/5.87/5.86 → trim lơ lửng 42mm trước mặt táp-lô, còn
+    // 2 vòng chrome nằm hẳn TRONG thân panel (không thấy). Dời ra mặt ngoài.
+    // Nep chrome ngang seam mặt trước/kick panel (y seam 1.876)
     const trim = new THREE.Mesh(new THREE.BoxGeometry(2.24, 0.025, 0.03), chrome);
-    trim.position.set(0, 0.736, 5.808);
+    trim.position.set(0, 1.876, 5.845);
     interiorRoot.add(trim);
-    // Vong chrome quanh cluster (RHD: phai +0.45) + gauge phu (trai -0.45)
+    // Vong chrome quanh cluster (RHD: phai +0.50 theo interior.js) + gauge phu
     const clusterTrim = new THREE.Mesh(new THREE.TorusGeometry(0.21, 0.018, 8, 24), chrome);
-    clusterTrim.position.set(0.45, 0.99, 5.87);
+    clusterTrim.position.set(0.50, 2.13, 5.795);
     interiorRoot.add(clusterTrim);
     const gaugeTrim = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.014, 8, 20), chrome);
-    gaugeTrim.position.set(-0.45, 0.98, 5.86);
+    gaugeTrim.position.set(-0.45, 2.12, 5.79);
     interiorRoot.add(gaugeTrim);
 
     const legacySteer = interiorRoot.getObjectByName("legacySteeringWheel");
@@ -919,7 +932,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     const wheelGroup = new THREE.Group();
 
     // RHD: vô lăng trước ghế tài xế bên PHẢI (+0.65)
-    wheelGroup.position.set(0.65, 1.21, 5.02);
+    wheelGroup.position.set(0.65, 2.35, 5.02);
     cockpitWheelGroup = wheelGroup;
     // Tay tài xế — 9h/3h grip bám vô lăng (hàm dùng chung với NPC)
     driverHandsGroup = buildDriverHands();
@@ -968,50 +981,57 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     for (const vx of [-0.95, -0.62]) {
       const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.035, 14), chrome);
       ring.rotation.x = Math.PI / 2;
-      ring.position.set(vx, 1.0, 5.826);
+      ring.position.set(vx, 2.14, 5.826);
       interiorRoot.add(ring);
       const core = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.03, 12), panelMat);
       core.rotation.x = Math.PI / 2;
-      core.position.set(vx, 1.0, 5.831);
+      core.position.set(vx, 2.14, 5.831);
       interiorRoot.add(core);
     }
-    // Can so: tru + num (RHD: bên trái)
-    const gearStick = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.02, 0.2, 8), chrome);
-    gearStick.position.set(-0.5, 0.75, 4.7);
-    interiorRoot.add(gearStick);
-    const gearKnob = new THREE.Mesh(new THREE.SphereGeometry(0.038, 10, 8), dashDark);
-    gearKnob.position.set(-0.5, 0.87, 4.7);
-    interiorRoot.add(gearKnob);
+    // Can so: DA CO san trong interior.js (0.28, y 1.66..1.90, z 4.90 — dat
+    // dung mat chieu nghi 1.64). Ban dung them o day (-0.5, 1.89/2.01, 4.7)
+    // tao ra CAN SO THU HAI lo lung 0.13m tren dem ghe phu -> bo.
     // Panel cong tac ben trai — montag len mat truoc dash moi (z>5.81)
     const switchPanel = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.16, 0.03), panelMat);
-    switchPanel.position.set(-0.75, 0.80, 5.823);
+    switchPanel.position.set(-0.75, 1.94, 5.823);
     interiorRoot.add(switchPanel);
     // ===== CAI THIEN KHOANG LAI (THACO, bus.js-only, khong dup mesh interior) =====
-    // 1) Brow/but tap-lo trên cluster tốc độ (RHD bên phải +0.45)
-    const clusterBrow = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.05, 0.22), dashDark);
-    clusterBrow.position.set(0.45, 1.115, 5.68);
+    // LƯU Ý: 3 chi tiết dưới đây (clusterBrow/gaugeBrow/grabHandle) được canh
+    // theo mặt táp-lô CŨ (mặt trên y 2.315, z 4.87..5.97). Mặt trên nay hạ
+    // xuống 2.05 và chỉ phủ khoang chân (x ≥ 0.30) nên bản cũ LƠ LỬNG giữa
+    // trời. Canh lại theo mặt táp-lô ĐỨNG mới: mặt 5.850..5.900, cạnh trên 2.256.
+    // 1) Brow/but tap-lo trên cluster tốc độ (RHD bên phải +0.50)
+    const clusterBrow = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.04, 0.09), dashDark);
+    clusterBrow.position.set(0.50, 2.236, 5.80);
     clusterBrow.rotation.x = 0.22;   // nghiêng theo mặt táp-lô
     interiorRoot.add(clusterBrow);
     // 2) Brow nhỏ bên trái (gauge phụ)
-    const gaugeBrow = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.04, 0.18), dashDark);
-    gaugeBrow.position.set(-0.45, 1.10, 5.70);
+    const gaugeBrow = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.03, 0.09), dashDark);
+    gaugeBrow.position.set(-0.45, 2.20, 5.80);
     gaugeBrow.rotation.x = 0.22;
     interiorRoot.add(gaugeBrow);
     // 3) Tay nắm phụ trên mặt táp-lô bên ghế phụ (x=-0.62) — grab handle THACO
     const grabHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.34, 10), chrome);
     grabHandle.rotation.z = Math.PI / 2;
-    grabHandle.position.set(-0.62, 1.045, 5.76);
+    grabHandle.position.set(-0.62, 2.185, 5.84);
     interiorRoot.add(grabHandle);
     for (const gx of [-0.78, -0.46]) {
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.011, 0.055, 8), chrome);
-      post.position.set(gx, 1.01, 5.765);
+      post.position.set(gx, 2.15, 5.835);
       post.rotation.x = 0.3;
       interiorRoot.add(post);
     }
     // 4) Thảm chân vùng lái — phân biệt sàn lái thấp hơn sàn khách — RHD PHẢI
+    // Sàn lái (interior.js) mặt trên = 1.21 → thảm đặt sát mặt (1.21..1.222);
+    // bản cũ y 1.268 lơ lửng 5cm trên sàn.
     const footMat = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.012, 0.5), panelMat);
-    footMat.position.set(0.65, 0.128, 5.72);
+    footMat.position.set(0.65, 1.216, 5.72);
     interiorRoot.add(footMat);
+    // 5) Giá treo bàn đạp: 3 pedal (interior.js, y 1.45..1.55) trước đây treo
+    // lơ lửng dưới knee console (đáy 1.695) — thêm 1 tấm nối pedal lên console.
+    const pedalBracket = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.14, 0.04), panelMat);
+    pedalBracket.position.set(0.47, 1.62, 5.72);
+    interiorRoot.add(pedalBracket);
     // ===== GHE TAI XE + PHU XE: boc CAM/DEN khau thoi theo anh THACO =====
     // Mesh ghe co san cua interior (cushion/back/headrest, z4.2-4.6, y<1.15):
     // gán material runtime — khong doi hinh hoc, khong sua file cam.
@@ -1021,20 +1041,23 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     const bigScreen = findMesh((gp, o) =>
       Math.abs(gp.width - 0.5) < 0.03 && Math.abs(gp.height - 0.25) < 0.03 &&
       Math.abs(gp.depth - 0.05) < 0.03 && Math.abs(o.position.x) < 0.12 &&
-      o.position.z > 5.3 && o.position.y > 0.9);
+      o.position.z > 5.3 && o.position.y > 1.9);
     // QUAN TRỌNG: mesh của interior qua helper box() bị đóng băng matrix
     // (matrixAutoUpdate=false + matrix cache sẵn) — scale.set() thật mà KHÔNG
     // gọi updateMatrix() thì matrix không bao giờ được tính lại = scale chết.
-    if (bigScreen) { bigScreen.scale.set(1.4, 1.4, 1); bigScreen.updateMatrix(); }
+    // Man trung tam + cluster: scale RUNTIME. Tran scale bi gioi han boi dai
+    // chrome y 2.245 (man 1.2 -> dinh 2.23) va canh cluster moi (x 0.316):
+    // ban 1.4/1.25 khien man (nua rong 0.35) long vao cluster 47mm.
+    if (bigScreen) { bigScreen.scale.set(1.2, 1.2, 1); bigScreen.updateMatrix(); }
     const bigCluster = findMesh((gp, o) =>
       Math.abs(gp.width - 0.35) < 0.03 && Math.abs(gp.height - 0.2) < 0.03 &&
       o.position.x > 0.25 && o.position.x < 0.6 && o.position.z > 5.3);
-    if (bigCluster) { bigCluster.scale.set(1.25, 1.25, 1); bigCluster.updateMatrix(); }
+    if (bigCluster) { bigCluster.scale.set(1.05, 1.05, 1); bigCluster.updateMatrix(); }
     const seatMeshes = findAllMeshes((gp, o) =>
       (Math.abs(gp.width - 0.5) < 0.03 || Math.abs(gp.width - 0.45) < 0.03 ||
        Math.abs(gp.width - 0.3) < 0.03 || Math.abs(gp.width - 0.25) < 0.03) &&
       o.position.z < 4.65 && o.position.z > 4.15 &&
-      o.position.y > 0.2 && o.position.y < 1.15 &&
+      o.position.y > 1.3 && o.position.y < 2.3 &&
       (Math.abs(o.position.x + 0.35) < 0.05 || Math.abs(o.position.x - 0.65) < 0.05));
     const seatCam = new THREE.MeshStandardMaterial({ color: 0xd97b1f, roughness: 0.9, metalness: 0.05 });
     const seatBlack = new THREE.MeshStandardMaterial({ color: 0x17171e, roughness: 0.85, metalness: 0.05 });
@@ -1190,13 +1213,13 @@ export function createNpcBus({ skinPath = null, ledColor = 0x2fb6ff } = {}) {
   let npcSteerLerp = 0;
   const npcSeatMat = new THREE.MeshStandardMaterial({ color: 0x2a2a33, roughness: 0.85 });
   const seatBase = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.09, 0.5), npcSeatMat);
-  seatBase.position.set(0.65, 0.44, 4.5);
+  seatBase.position.set(0.65, 1.58, 4.5);
   a.root.add(seatBase);
   const seatBack = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.09), npcSeatMat);
-  seatBack.position.set(0.65, 0.75, 4.25);
+  seatBack.position.set(0.65, 1.89, 4.25);
   a.root.add(seatBack);
   const npcWheelGroup = new THREE.Group();
-  npcWheelGroup.position.set(0.65, 1.21, 5.02);
+  npcWheelGroup.position.set(0.65, 2.35, 5.02);
   const npcWheel = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.04, 8, 18), new THREE.MeshStandardMaterial({ color: 0x1a1a22, roughness: 0.9 }));
   npcWheel.rotation.x = Math.PI / 2 - 0.2;
   npcWheelGroup.add(npcWheel);

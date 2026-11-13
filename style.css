@@ -162,8 +162,12 @@ canvas {
 }
 
 #hud-minimap-container {
+    /* Neo ĐÁY-TRÁI (không dùng top): index.html đặt inline bottom:16px.
+       Trước đây CSS để top:15px + height:200px → phần tử bị over-constrain,
+       bottom inline bị bỏ qua nên minimap nhảy lên góc trên-trái, đè lên
+       HUD tiền/nhiên liệu (#hud-top-left top:16px). */
     position: absolute;
-    top: 15px;
+    bottom: 20px;
     left: 15px;
     width: 200px;
     height: 200px;

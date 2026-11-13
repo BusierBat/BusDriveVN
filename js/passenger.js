@@ -84,10 +84,12 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
     const PICKUP_RANGE = 25;
     const BED20_Z = [1.85, 2.05, 0.25, -1.85, -3.5, -5.15];
     const BED34_SIDE_Z = [3.00, 1.00, -1.00, -3.00, -5.00];
-    const BED34_MID_Z = [3.30, 1.88, 0.46, -0.96, -2.38, -3.80, -5.22];
+    // Tâm giường dãy giữa — PHẢI khớp CFG34 trong interior.js
+    // (Z_CENTER_FIRST 3.11, Z_CENTER_STEP 1.39; xem comment ở CFG34).
+    const BED34_MID_Z = [3.11, 1.72, 0.33, -1.06, -2.45, -3.84, -5.23];
     const SIDE_X_BED20 = 0.75, SIDE_X_BED34 = 0.87;
-    // Khớp LOWER_BED_Y/UPPER_BED_Y của js/interior.js (tái cấu trúc 2 tầng)
-    const TIER_LOW = 1.62, TIER_HIGH = 2.70;
+    // Khớp LOWER_BED_Y/UPPER_BED_Y của js/interior.js (sàn đi bộ = tầng 1)
+    const TIER_LOW = 1.76, TIER_HIGH = 2.70;
     const berthOccupied = new Array(MAX_PASSENGERS).fill(null);
     const berthLocalPosition = (i) => {
         if (isBed34) {
@@ -101,6 +103,56 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
         const row = Math.floor(i / 4), tier = i % 2, side = Math.floor((i % 4) / 2) ? -1 : 1;
         return new THREE.Vector3(side * SIDE_X_BED20, tier ? TIER_HIGH : TIER_LOW, BED20_Z[row]);
     };
+    // Neo hình học cửa/cầu thang (bus-local, dùng chung cho boarding/alighting)
+    // Cầu thang 3 bậc + chiếu nghỉ, NẰM TRONG XE: tiến thẳng vào trong (+X).
+    // Đường đi thực tế z 5.50 (lòng thang z 5.24..5.97, khớp interior.js) — lùi
+    // 0.16 so với tâm lòng thang để thân người (bán kính 0.17) không chạm mặt bệ
+    // kính trước (z 5.76, cao 2.258..2.308): 5.50 + 0.17 = 5.67 < 5.76.
+    const STAIR_Z = 5.50;
+    const STAIR_X_TOP = -0.30;                                // điểm đứng trên chiếu nghỉ
+    const DOOR_STEP1 = new THREE.Vector3(-1.18, 0.33, STAIR_Z); // ngưỡng trong cửa, sát bậc dưới
+    const AISLE_Y = 1.69;                                     // sàn khách (FLOOR_Y + 0.05)
+    const STAGING_BASE = { x: -1.8, y: 0, z: STAIR_Z };       // xếp hàng ngoài cửa, sát xe
+    const DROP_OFF_POINT = new THREE.Vector3(-2.2, 0, STAIR_Z); // ra ngoài cửa (trục cửa -x)
+    // Waypoint 3 bậc + chiếu nghỉ (leo vào: -X -> +X, lên cao; xuống ngược lại).
+    // Nhịp đều 0.3275 m, khớp stepTops trong interior.js (0.6575 / 0.985 / 1.3125).
+    // Mỗi điểm đặt ĐÚNG MÉP NGOÀI của mặt bậc kế tiếp và đã ở cao độ mặt bậc đó:
+    //   mép bậc 1 x -1.1401, bậc 2 x -0.9334, bậc 3 x -0.7267 (xInner -0.52 trừ
+    //   0.2067 mỗi bậc), chiếu nghỉ x -0.52.
+    // Nhờ vậy đoạn dốc lên luôn nằm TRÊN mặt bậc dưới (chân không lún vào khối
+    // bậc). Nếu đặt waypoint ở TÂM mặt bậc như trước, đoạn nối từ tâm bậc dưới
+    // tới tâm bậc trên cắt qua khối bậc kế → chân lún tới 0.20 m (đo bằng raycast).
+    const CLIMB_PTS = [
+        new THREE.Vector3(-1.1401, 0.6575, STAIR_Z),   // mép ngoài bậc 1
+        new THREE.Vector3(-0.9334, 0.9850, STAIR_Z),   // mép ngoài bậc 2
+        new THREE.Vector3(-0.7267, 1.3125, STAIR_Z),   // mép ngoài bậc 3
+        new THREE.Vector3(-0.5200, AISLE_Y, STAIR_Z),  // mép chiếu nghỉ (xInner)
+        new THREE.Vector3(STAIR_X_TOP, AISLE_Y, STAIR_Z)
+    ];
+    const DESCEND_PTS = [
+        new THREE.Vector3(-0.5200, AISLE_Y, STAIR_Z),  // mép chiếu nghỉ
+        new THREE.Vector3(-0.7267, 1.3125, STAIR_Z),
+        new THREE.Vector3(-0.9334, 0.9850, STAIR_Z),
+        new THREE.Vector3(-1.1401, 0.6575, STAIR_Z)
+    ];
+    const aisleXFor = (tx) => isBed34 ? (tx < 0 ? -0.44 : 0.44) : 0.0;
+    // Lối vào lối đi (dọn hình học khu cửa/cầu thang):
+    // Trước đây khách đi THẲNG từ đỉnh thang (-0.76, 5.66) tới (aisleX, targetZ)
+    // nên cắt chéo qua rèm (x -0.33), giường và tựa lưng ghế phụ (z 4.21..4.33).
+    // Nay: vào khe giữa hai ghế (ghế phụ tới x -0.125, ghế tài từ x 0.40) rồi
+    // mới rẽ ngang vào làn (xem AISLE_PASS_Z bên dưới).
+    const COCKPIT_GAP_X = 0.15;                       // tâm khe giữa ghế tài (+x) và ghế phụ (-x)
+    const AISLE_ENTRY_Z = 4.62;                       // mức hai ghế — từ chiếu nghỉ vào khe
+    // Sau lưng hai ghế (z 4.21..4.29) MỚI được toả ngang: đệm tựa lưng ghế tài
+    // x 0.40..0.90 và ghế phụ x -0.575..-0.125 chỉ chừa đúng khe giữa
+    // x -0.125..0.40 (0.525m, vừa thân người bán kính 0.17).
+    // 34P: lối vào làn là khe giữa vách đầu hàng giường giữa (z <= 3.815 sau khi
+    // rút giường giữa còn 1.37) và lưng ghế tài/phụ (z 4.21). Khe rộng 0.395 m
+    // → thân người (bán kính 0.17) lọt với ~0.027 m mỗi bên khi rẽ ngang ở
+    // z 4.01. Trước đây vách tới z 4.02 nên khe chỉ 0.19 m, thân người lấn
+    // xuyên vách 0.08 m.
+    const AISLE_PASS_Z = isBed34 ? 4.01 : 4.02;       // z đã qua khỏi lưng hai ghế
+    const AISLE_TURN_Z = AISLE_PASS_Z;                // giữ tên cũ cho caller/test
     const claimBerth = () => {
         for (let i = 0; i < berthOccupied.length; i++) if (berthOccupied[i] === null) { berthOccupied[i] = true; return i; }
         return -1;
@@ -281,12 +333,11 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
         // (đường đi do state machine quyết định cục bộ; chỉ check chướng ngại
         // trong lối đi — O(n²) với n ≤ 34, chấp nhận được ở 30 Hz).
         // =====================================================================
-        const DOOR_STEP1 = new THREE.Vector3(-1.45, 0.28, 5.45);   // bậc 1
-        const DOOR_ENTRY = new THREE.Vector3(-0.95, 0.82, 5.10);   // bậc 2 → sàn lái
-        const AISLE_Y = 1.05;                                     // sàn khách
-        const STAGING_BASE = { x: -2.4, y: 0, z: 5.4 };             // điểm xếp hàng ngoài cửa
-        const DROP_OFF_POINT = new THREE.Vector3(-3.2, 0, 4.8);     // điểm ra ngoài (bốc hẳn đi)
-        const aisleXFor = (tx) => isBed34 ? (tx < 0 ? -0.44 : 0.44) : 0.0;
+        // Neo theo HÌNH HỌC THẬT của buildEntryStaircase (interior.js):
+        // cầu thang cửa -x đi thẳng vào trong (+X) tại STAIR_Z=5.50, 3 bậc nhịp
+        // 0.3275 (x -1.14..-0.52) + chiếu nghỉ 1.64, sàn khách FLOOR_Y=1.64
+        // (AISLE_Y=1.69). Waypoint bậc/đích đi lấy từ CLIMB_PTS, DESCEND_PTS,
+        // DOOR_STEP1, STAIR_X_TOP để đồng bộ mesh–chuyển động.
         const faceAlong = (p, dx, dz) => { p.model.rotation.y = Math.atan2(dx, dz); };
         const moveToward = (p, target, speed, dt) => {
             const m = p.model.position;
@@ -365,16 +416,31 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
                 continue;
             }
             if (state === 'CLIMBING_STEPS') {
-                const ax = -0.78;
-                const pts = [_tmpV.set(ax,0.30,5.46),_tmpV.set(ax,0.49,5.27),_tmpV.set(ax,0.68,5.08),_tmpV.set(ax,0.86,4.89),_tmpV.set(ax,AISLE_Y,4.62)];
+                // Bậc thật (interior.js) sau nâng sàn FLOOR_Y 1.64m: kéo dài cầu thang
+                const pts = CLIMB_PTS;
                 p.climbIdx = p.climbIdx|0;
-                if (moveToward(p, pts[Math.min(p.climbIdx,pts.length-1)], 0.78, dt)) { p.climbIdx++; if (p.climbIdx>=pts.length){p.climbIdx=0;p.state='WALKING_AISLE';} }
+                if (moveToward(p, pts[Math.min(p.climbIdx,pts.length-1)], 0.78, dt)) { p.climbIdx++; if (p.climbIdx>=pts.length){p.climbIdx=0;p.aisleStep=0;p.state='WALKING_AISLE';} }
                 continue;
             }
             if (state === 'WALKING_AISLE') {
                 const ax = aisleXFor(p.targetX);
                 const dirSign = Math.sign(p.targetZ - m.z) || -1;
                 if (Math.abs(m.z - p.targetZ) > 0.15 && aisleBlocked(p, dirSign)) { animateWalk(p, false, dt); continue; }
+                // 0: vào khe giữa hai ghế → 1: đi dọc khe qua khỏi lưng ghế →
+                // 2: toả ngang vào làn → 3: đi dọc lối đi tới giường.
+                const step = p.aisleStep | 0;
+                if (step === 0) {
+                    if (moveToward(p, _tmpV.set(COCKPIT_GAP_X, AISLE_Y, AISLE_ENTRY_Z), 1.0, dt)) p.aisleStep = 1;
+                    continue;
+                }
+                if (step === 1) {
+                    if (moveToward(p, _tmpV.set(COCKPIT_GAP_X, AISLE_Y, AISLE_PASS_Z), 0.9, dt)) p.aisleStep = 2;
+                    continue;
+                }
+                if (step === 2) {
+                    if (moveToward(p, _tmpV.set(ax, AISLE_Y, AISLE_PASS_Z), 0.9, dt)) p.aisleStep = 3;
+                    continue;
+                }
                 if (moveToward(p, _tmpV.set(ax, AISLE_Y, p.targetZ), 1.1, dt)) p.state = 'APPROACHING_BERTH';
                 continue;
             }
@@ -418,19 +484,33 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
             }
             if (state === 'COLLECTING_LUGGAGE') {
                 p.luggageT = (p.luggageT || 0) + dt;   // 0.25s đứng lấy đồ (chưa có dữ liệu hành lý)
-                if (p.luggageT >= 0.25) { p.luggageT = 0; p.state = 'WALKING_TO_EXIT'; }
+                if (p.luggageT >= 0.25) { p.luggageT = 0; p.exitStep = 0; p.state = 'WALKING_TO_EXIT'; }
                 continue;
             }
             if (state === 'WALKING_TO_EXIT') {
                 const ax = aisleXFor(p.targetX);
-                const dirSign = Math.sign(4.25 - m.z) || 1;
-                if (Math.abs(m.z - 4.25) > 0.15 && aisleBlocked(p, dirSign)) { animateWalk(p, false, dt); continue; }
-                if (moveToward(p, _tmpV.set(ax, AISLE_Y, 4.55), 1.1, dt)) p.state = 'DESCENDING_STEPS';
+                const dirSign = Math.sign(STAIR_Z - m.z) || 1;
+                if (Math.abs(m.z - STAIR_Z) > 0.15 && aisleBlocked(p, dirSign)) { animateWalk(p, false, dt); continue; }
+                // Ngược chiều lúc lên: đi dọc làn → toả về khe hai ghế → ra đỉnh thang.
+                const step = p.exitStep | 0;
+                if (step === 0) {
+                    if (moveToward(p, _tmpV.set(ax, AISLE_Y, AISLE_PASS_Z), 1.0, dt)) p.exitStep = 1;
+                    continue;
+                }
+                if (step === 1) {
+                    if (moveToward(p, _tmpV.set(COCKPIT_GAP_X, AISLE_Y, AISLE_PASS_Z), 0.9, dt)) p.exitStep = 2;
+                    continue;
+                }
+                if (step === 2) {
+                    if (moveToward(p, _tmpV.set(COCKPIT_GAP_X, AISLE_Y, AISLE_ENTRY_Z), 0.9, dt)) p.exitStep = 3;
+                    continue;
+                }
+                if (moveToward(p, _tmpV.set(STAIR_X_TOP, AISLE_Y, STAIR_Z), 1.0, dt)) p.state = 'DESCENDING_STEPS';
                 continue;
             }
             if (state === 'DESCENDING_STEPS') {
-                const ax = -0.78;
-                const pts=[_tmpV.set(ax,0.86,4.89),_tmpV.set(ax,0.68,5.08),_tmpV.set(ax,0.49,5.27),_tmpV.set(ax,0.30,5.46)];
+                // Xuống ngược bậc thật (interior): đỉnh thang (STAIR_X_TOP, AISLE_Y, STAIR_Z) -> ra ngoài (-X)
+                const pts = DESCEND_PTS;
                 p.climbIdx=p.climbIdx|0;
                 if (moveToward(p, pts[Math.min(p.climbIdx,pts.length-1)], 0.78, dt)) { p.climbIdx++; if (p.climbIdx>=pts.length){p.climbIdx=0;p.state='LEAVING_BUS';} }
                 continue;
@@ -499,8 +579,8 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
             const bodySpace = bus.motionGroup || bus.group;
             passengerGroup.remove(p.model);
             bodySpace.add(p.model);
-            // Bắt đầu từ đúng vị trí đứng ngoài cửa (bus-local: x dương = phải + ngoài)
-            p.model.position.set(-2.4 - picked * 0.8, 0, 5.4);
+            // Bắt đầu từ đúng vị trí đứng ngoài cửa (bus-local), xếp hàng sát trục cầu thang/cửa -x
+            p.model.position.set(STAGING_BASE.x - picked * 0.8, STAGING_BASE.y, STAGING_BASE.z);
             p.model.rotation.y = -Math.PI / 2;  // đối mặt cửa -x
             p.model.scale.set(0.78, 0.78, 0.78);
             onboardPassengers.push({
