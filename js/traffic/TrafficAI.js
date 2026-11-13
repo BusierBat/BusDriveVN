@@ -597,6 +597,12 @@ export class TrafficAI {
                 v0 *= 0.55 + 0.45 * clamp(remain / 25, 0, 1);   // chậm lại trước ngã
             }
         }
+        // PHASE (junction reservation, refine): trong vùng ngã tư mà còn
+        // leader đi trước trên đường dẫn -> giữ tốc độ (yield), không phóng
+        // qua. Bổ sung cho hold-overlap: trước khi đè lấn, giữ trước khi phóng.
+        if (this._inJunction && this.scan && this.scan.leaderGap < 50) {
+            v0 = 0;
+        }
         // PHASE (junction reservation): nếu đang đè lên xe khác (qua ngã
         // tư, cắt, hoặc va chạm chưa tách) -> giữ tốc độ mục tiêu ở mức 0
         // cho tới frame sau khi hết đè (giải bởi IDM/stuck-escape khi khe hở).
