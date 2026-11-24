@@ -268,18 +268,31 @@ function getShared() {
 }
 
 const textureCache = new Map();
+const textureWaiters = new Map();
 const materialCache = new Map();
 let sharedLoader = null;
 
 function getLoader() { if (!sharedLoader) sharedLoader = new THREE.TextureLoader(); return sharedLoader; }
 
-export function loadTextureCached(path) {
+export function loadTextureCached(path, onLoaded) {
   let t = textureCache.get(path);
   if (!t) {
-    t = getLoader().load(path);
+    t = getLoader().load(path, () => {
+      const cbs = textureWaiters.get(path) || [];
+      textureWaiters.delete(path);
+      for (const cb of cbs) { try { cb(t); } catch (e) { /* best-effort */ } }
+    });
     t.colorSpace = THREE.SRGBColorSpace;
     t.anisotropy = 4;
     textureCache.set(path, t);
+  }
+  if (onLoaded) {
+    if (t.image) onLoaded(t);
+    else {
+      const cbs = textureWaiters.get(path) || [];
+      cbs.push(onLoaded);
+      textureWaiters.set(path, cbs);
+    }
   }
   return t;
 }
@@ -1329,6 +1342,26 @@ export function pickNpcSkinPath() {
   }
   const randomIndex = Math.floor(Math.random() * npcSkinList.length);
   return npcSkinList[randomIndex];
+}
+
+/**
+ * Nạp + upload GPU TOÀN BỘ skin xe NPC ngay lúc loading.
+ * Mỗi skin 2048x1024 (~16MB); nếu đợi xe NPC spawn lúc đang chơi thì lần đầu
+ * render gọi texSubImage2D và main thread bị chặn 1.3-2s (đo bằng CPU trace:
+ * `loop` 1796ms nhưng chỉ 174ms CPU). Không đổi nội dung/texture — chỉ dời
+ * chi phí sang màn hình loading và nhường giữa các ảnh bằng setTimeout(0).
+ */
+export async function preloadNpcSkinTextures(renderer = null) {
+  const paths = await loadNpcSkinList();
+  const all = [...new Set([...(paths || []), BUS_TEXTURE_URL])];
+  await Promise.all(all.map(p => new Promise(resolve => loadTextureCached(p, resolve))));
+  if (!renderer) return all.length;
+  for (const p of all) {
+    const t = textureCache.get(p);
+    if (t?.image) { try { renderer.initTexture(t); } catch (e) { /* best-effort */ } }
+    await new Promise(r => setTimeout(r, 0));
+  }
+  return all.length;
 }
 
 export function pickLedColor() {

@@ -5234,6 +5234,22 @@ export class MapLoader {
         });
     }
 
+    // Attach chunk sau khi prepareChunkForRender (compileAsync) resolve.
+    // Nếu đợi tới first-draw, getUniforms()->onFirstUse()->getProgramInfoLog()
+    // chặn main thread 1.3-3s trên N5000 (đo bằng CPU trace).
+    _finalizeChunkAttach(entry) {
+        if (!entry || entry.built || entry.attached) return;
+        if (!this.loadedChunks.has(entry.cx + "," + entry.cz)) return;  // đã unload lúc đang compile
+        const g = entry.group;
+        if (!g.parent) this.chunkRoot.add(g);
+        this.freezeStaticMeshes(g);
+        g.boundingBox = new THREE.Box3().setFromObject(g);
+        entry.built = true;
+        entry.building = false;
+        entry.attached = true;
+        entry.pendingAttach = false;
+    }
+
     _drainChunkBuilds(px, pz, budgetMs) {
         if (!this._buildQueue || !this._buildQueue.length) return;
         const t0 = performance.now();
@@ -5315,16 +5331,24 @@ export class MapLoader {
                 // Tối đa 1 chunk attach/frame: LAN GPU upload (first-draw) của
                 // chunk mới được chia đều ra các frame thay vì dồn cùng 1 render.
                 if (attachedThisCall >= 1) return;
+                let prep = null;
                 if (typeof this.prepareChunkForRender === "function") {
-                    try { this.prepareChunkForRender(g); } catch (e) { /* best-effort */ }
+                    try { prep = this.prepareChunkForRender(g, e); } catch (err) { prep = null; }
                 }
-                this.chunkRoot.add(g);
-                this.freezeStaticMeshes(g);
-                e.group.boundingBox = new THREE.Box3().setFromObject(g);
-                e.built = true;
-                e.building = false;
-                attachedThisCall++;
                 this._buildQueue.splice(i, 1); i--;
+                if (prep && typeof prep.then === "function") {
+                    // Chờ shader thật sự ready rồi mới cho chunk vào scene.
+                    // Vẫn tối đa 1 chunk/frame được đưa vào hàng đợi async.
+                    e.pendingAttach = true;
+                    attachedThisCall++;
+                    prep.then(
+                        () => this._finalizeChunkAttach(e),
+                        () => this._finalizeChunkAttach(e)   // lỗi compile vẫn giữ chunk
+                    );
+                    continue;
+                }
+                this._finalizeChunkAttach(e);
+                attachedThisCall++;
                 continue;
             }
             if (performance.now() - t0 >= budgetMs) return;   // hết ngân sách -> frame sau
@@ -5929,6 +5953,22 @@ export function createMap(options) {
         dispose: () => loader.dispose()
     };
     return api;
+}
+
+/**
+ * Đợi texture biển quảng cáo load xong rồi upload GPU ngay lúc boot.
+ * Ảnh 1196x896 gán muộn vào material (TextureLoader async) nên nếu không nạp
+ * lúc loading thì first-draw giữa chơi phải texSubImage2D + đổi program.
+ */
+export function preloadBillboardTexture(renderer = null) {
+    return new Promise((resolve) => {
+        getBillboardAdMaterial(() => {
+            if (renderer && _adTex) {
+                try { renderer.initTexture(_adTex); } catch (e) { /* best-effort */ }
+            }
+            resolve();
+        });
+    });
 }
 
 export { World };

@@ -372,6 +372,40 @@ export function getColorCount(kind) {
     return (PAINT_PALETTES[kind] || [0xffffff]).length;
 }
 
+/** Dựng sẵn template gộp geometry lúc loading — lúc spawn không còn merge giật 100ms. */
+export function prewarmVehicleTemplates() {
+    let n = 0;
+    for (const kind of Object.values(NPC_VEHICLE_KIND)) {
+        if (kind === NPC_VEHICLE_KIND.BUS) continue;   // xe khách dùng geometry riêng
+        const count = getColorCount(kind) || 1;
+        for (let c = 0; c < count; c++) { getVehicleTemplate(kind, c); n++; }
+    }
+    return n;
+}
+
+/**
+ * Group tối thiểu chứa 4 material dùng chung của xe NPC. Truyền cho
+ * renderer.compileAsync() ở lúc loading để MAT_GLASS (trong suốt) không bị
+ * tạo program lần đầu ngay khi xe spawn (đo được cú getProgramInfoLog 1.7s).
+ * Dùng chính geometry của template nên shader có cùng vertex attributes.
+ */
+export function createVehicleMaterialWarmupGroup() {
+    const tpl = getVehicleTemplate(NPC_VEHICLE_KIND.CAR, 0);
+    const group = new THREE.Group();
+    const add = (geometry, material) => {
+        if (!geometry) return;
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.matrixAutoUpdate = false;
+        mesh.updateMatrix();
+        group.add(mesh);
+    };
+    add(tpl.body, MAT_BODY);
+    add(tpl.glass, MAT_GLASS);
+    add(tpl.head, MAT_HEAD);
+    add(tpl.tail, MAT_TAIL);
+    return group;
+}
+
 /** Ngẫu nhiên màu cho 1 loại xe. */
 export function pickVehicleColor(kind, random = Math.random) {
     const n = getColorCount(kind);

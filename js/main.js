@@ -1,9 +1,9 @@
 // js/main.js
 import * as THREE from "three";
-import { MapLoader } from "./map.js";
+import { MapLoader, preloadBillboardTexture } from "./map.js";
 import { createUI } from "./ui.js";
 import { createNPC } from "./npc.js";
-import { createBus, loadNpcSkinList, BUS_DIMENSIONS } from "./bus.js";
+import { createBus, loadNpcSkinList, preloadNpcSkinTextures, BUS_DIMENSIONS } from "./bus.js";
 import { createBusInterior, createBusInterior34, optimizeInteriorLights, migrateInteriorCockpit } from "./interior.js";
 import { CameraSystem, PASSENGER_SEATS, PASSENGER_SEATS_34 } from "./camera.js";
 import { createAudioSystem } from "./audio.js";
@@ -12,6 +12,7 @@ import { LightingSystem, LIGHTING_QUALITY_PRESETS } from "./lighting.js";
 import { TravelClock } from "./TravelClock.js";
 import { createPassengerSystem } from "./passenger.js";
 import { createTrafficManager } from "./traffic/TrafficManager.js";
+import { prewarmVehicleTemplates, createVehicleMaterialWarmupGroup } from "./npc_vehicles.js";
 import { TrafficDebug } from "./traffic/TrafficDebug.js";
 import { initEndermanEasterEgg, updateEnderman } from "./enderman.js";
 import { getTravelDirection, setTravelDirection, getMoney, addMoney, FARE_PER_PASSENGER, getFuel, setFuel, addFuel, consumeFuel, flushFuel, FUEL_CAPACITY, FUEL_PER_KM, FUEL_PRICE, RESCUE_FEE } from "./economy.js";
@@ -30,6 +31,25 @@ let gameState = "menu", paused = false;
 // dựng dở phải biên dịch toàn bộ shader program (đo được 5955.7ms ở menu).
 // Compile xong ở cuối startGame() mới bật flag này — stall nằm hẳn trong loading.
 let renderReady = false;
+// compileAsync() chỉ chờ LINK xong. Lần đầu bind program, three.js vẫn gọi
+// onFirstUse() -> getProgramInfoLog()/getShaderInfoLog() và chặn main thread
+// 0.4-1.9s trên N5000 (đo bằng CPU trace). Ép first-use ngay lúc loading/chunk
+// prep — giữ nguyên checkShaderErrors, không giấu lỗi shader.
+function finalizeShaderPrograms(rendererInstance) {
+    const programs = rendererInstance?.info?.programs;
+    if (!programs) return 0;
+    let finalized = 0;
+    for (const program of programs) {
+        try {
+            program.getUniforms?.();
+            program.getAttributes?.();
+            finalized++;
+        } catch (e) {
+            // Giữ program lại; lỗi shader sẽ vẫn do three.js báo ở first-draw.
+        }
+    }
+    return finalized;
+}
 let doorProgress = 0, doorTarget = 0, doorServiceStarted = false;
 let playerColId = -1;
 let playerStuckT = 0;   // đếm thời gian bị chặn hoàn toàn liên tục (Bug "dính cứng")
@@ -1953,7 +1973,13 @@ async function startGameFromMenu() {
             for (const t of textures) {
                 try { renderer.initTexture(t); } catch (e) { /* best-effort */ }
             }
-            try { renderer.compileAsync(group, camera, scene); } catch (e) { /* best-effort */ }
+            // Trả Promise để MapLoader ĐỢI shader link + first-use xong mới attach.
+            // compileAsync chạy nền; finalizeShaderPrograms() dồn cú getProgramInfoLog
+            // sang lúc chuẩn bị chunk, không để first-draw stall giữa chuyến xe.
+            try {
+                return Promise.resolve(renderer.compileAsync(group, camera, scene))
+                    .then(() => finalizeShaderPrograms(renderer), () => finalizeShaderPrograms(renderer));
+            } catch (e) { return null; }
         };
         // Apply render distance
         map.renderRadius = gameSettings.renderDist;
@@ -2121,15 +2147,37 @@ async function startGameFromMenu() {
         passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui, interiorType: gameSettings.interior });
         await new Promise(r => setTimeout(r, 10));
         
-        // Dồn chi phí biên dịch shader "lần đầu" vào màn hình loading. Trên
-        // Pentium N5000, getProgram/getParameters khi render material mới có
-        // thể stall hàng trăm ms -> 2s ngay giữa lúc đang lái (đỉnh [PERF]
-        // 2033.9ms từng ghi nhận). renderer.compile() đi qua mọi material đang
-        // có trong scene và tạo program trước, không đổi chất lượng hay bỏ object.
+        // CPU trace chốt nguyên nhân cú 1.3-2s giữa chơi: `loop` chạy 1796ms
+        // nhưng chỉ 174ms CPU; sampling nằm trong texSubImage2D <- uploadTexture
+        // <- setProgram. Đó là 12 skin xe NPC 2048x1024 (16MB/ảnh) nạp lazily
+        // lúc xe spawn + ảnh biển quảng cáo gán muộn. Nạp/upload chúng ở đây,
+        // TRƯỚC frame đầu tiên, không giảm số skin hay chất lượng ảnh.
+        try {
+            const tWarm = performance.now();
+            const skinCount = await preloadNpcSkinTextures(renderer);
+            await preloadBillboardTexture(renderer);
+            const tplCount = prewarmVehicleTemplates();
+            // Template chỉ nằm trong cache, không nằm trong scene -> material kính
+            // trong suốt chưa từng được compile. Compile group warm-up ở đây để
+            // lần spawn xe đầu tiên không tạo program + stall 1.7s giữa chơi.
+            const warmGroup = createVehicleMaterialWarmupGroup();
+            if (renderer.compileAsync) await renderer.compileAsync(warmGroup, camera, scene);
+            else renderer.compile(warmGroup, camera, scene);
+            warmGroup.clear();   // geometry/material dùng chung, KHÔNG dispose
+            console.log(`[PERF] prewarm npc skins ${skinCount}, templates ${tplCount} in ${(performance.now() - tWarm).toFixed(0)}ms`);
+        } catch (e) {
+            console.warn('[PERF] prewarm assets skipped:', e?.message || e);
+        }
+        // Dồn toàn bộ chi phí shader "lần đầu" vào màn hình loading. Trên
+        // Pentium N5000, onFirstUse() gọi getProgramInfoLog() và chặn main thread
+        // 0.4-1.9s (CPU trace). compileAsync() chỉ đợi link; phải gọi thêm
+        // getUniforms()/getAttributes() thì first-draw mới không còn stall.
         try {
             const tCompile = performance.now();
-            renderer.compile(scene, camera);
-            console.log(`[PERF] precompile shaders ${(performance.now() - tCompile).toFixed(0)}ms, programs ${renderer.info.programs?.length || 0}`);
+            if (renderer.compileAsync) await renderer.compileAsync(scene, camera);
+            else renderer.compile(scene, camera);
+            const finalized = finalizeShaderPrograms(renderer);
+            console.log(`[PERF] precompile shaders ${(performance.now() - tCompile).toFixed(0)}ms, programs ${renderer.info.programs?.length || 0}, first-use ${finalized}`);
         } catch (e) {
             console.warn('[PERF] precompile shaders skipped:', e?.message || e);
         }
@@ -2425,14 +2473,33 @@ const MAX_HISTORY = 60;
 // Thống kê spike theo cửa sổ 10s (xem loop() — KHÔNG warn từng frame nữa)
 let perfWindowStart = performance.now();
 let perfWindowSum = 0, perfWindowCount = 0;
-let perfSpikeCount = 0, perfPeakMs = 0;
+let perfSpikeCount = 0, perfPeakMs = 0, perfPeakGapMs = 0;
 // Snapshot của CHÍNH frame đỉnh. Trước đây log lấy TB cả cửa sổ 10s cho đỉnh
 // của 1 frame nên cú 2033.9ms bị hòa ra "updateWorld 0.0ms · render 8.3ms" —
 // nhìn như game không làm gì mà vẫn giật 2 giây.
-let perfPeakFrame = null;
+// Giữ peak LOOP và peak GAP RIÊNG: từng có cú render 1346ms bị dấu đi vì ngay
+// sau đó xuất hiện gap 1368ms (lớn hơn vài chục ms) ghi đè snapshot.
+let perfPeakFrame = null, perfPeakGapFrame = null;
 // Instrumentation chi tiết từng section (ms accumulated trong cửa sổ 10s)
 const perfSection = { physics: 0, traffic: 0, chunk: 0, lighting: 0, shadow: 0, render: 0, other: 0 };
 let pendingLightingDelta = 0;
+
+function perfFrameSnapshot(frameTime, gapMs, before) {
+    const fPhysics = perfSection.physics - before.physics;
+    const fLighting = perfSection.lighting - before.lighting;
+    const fShadow = perfSection.shadow - before.shadow;
+    const fRender = perfSection.render - before.render;
+    return {
+        frame: frameTime, gap: gapMs, state: gameState,
+        physics: fPhysics,
+        chunk: perfSection.chunk - before.chunk,
+        traffic: perfSection.traffic - before.traffic,
+        lighting: fLighting, shadow: fShadow, render: fRender,
+        other: Math.max(0, frameTime - fPhysics - fLighting - fShadow - fRender),
+        // idle = phần gap nằm NGOÀI loop (rAF bị trễ: GC/compositor/CDP)
+        idle: Math.max(0, gapMs - frameTime)
+    };
+}
 
 function loop() {
     try {
@@ -2514,21 +2581,16 @@ function loop() {
         perfWindowCount++;
         if (frameTime > MAX_FRAME_TIME || rawGapMs > MAX_FRAME_TIME) {
             perfSpikeCount++;
-            const worst = Math.max(frameTime, rawGapMs);
-            if (worst > perfPeakMs) {
-                perfPeakMs = worst;
-                const fPhysics = perfSection.physics - secBefore.physics;
-                const fLighting = perfSection.lighting - secBefore.lighting;
-                const fShadow = perfSection.shadow - secBefore.shadow;
-                const fRender = perfSection.render - secBefore.render;
-                perfPeakFrame = {
-                    frame: frameTime, gap: rawGapMs, state: gameState,
-                    physics: fPhysics,
-                    chunk: perfSection.chunk - secBefore.chunk,
-                    traffic: perfSection.traffic - secBefore.traffic,
-                    lighting: fLighting, shadow: fShadow, render: fRender,
-                    other: Math.max(0, frameTime - fPhysics - fLighting - fShadow - fRender)
-                };
+            // Hai peak ĐỘC LẬP. Dùng Math.max(frameTime, gap) như cũ làm cú
+            // render 1346ms bị cú gap 1368ms ở frame SAU ghi đè snapshot →
+            // log báo render 20.7ms trong khi render thật là 1346ms.
+            if (frameTime > perfPeakMs) {
+                perfPeakMs = frameTime;
+                perfPeakFrame = perfFrameSnapshot(frameTime, rawGapMs, secBefore);
+            }
+            if (rawGapMs > perfPeakGapMs) {
+                perfPeakGapMs = rawGapMs;
+                perfPeakGapFrame = perfFrameSnapshot(frameTime, rawGapMs, secBefore);
             }
         }
         const nowLoop = performance.now();
@@ -2537,16 +2599,18 @@ function loop() {
                 const avg = perfWindowSum / Math.max(1, perfWindowCount);
                 const n = Math.max(1, perfWindowCount);
                 const s = perfSection;
-                const p = perfPeakFrame || { frame: 0, gap: 0, state: gameState, physics: 0, chunk: 0, traffic: 0, lighting: 0, shadow: 0, render: 0, other: 0 };
-                console.warn(`[PERF] Spikes ${perfSpikeCount}/${perfWindowCount} frame trong 10s — đỉnh ${perfPeakMs.toFixed(1)}ms`
-                    + ` (loop ${p.frame.toFixed(1)} / gap ${p.gap.toFixed(1)}, ${p.state}), TB ${avg.toFixed(1)}ms`
+                const zero = { physics: 0, chunk: 0, traffic: 0, lighting: 0, shadow: 0, render: 0, other: 0, idle: 0 };
+                const p = perfPeakFrame || zero;
+                const g = perfPeakGapFrame || p;
+                console.warn(`[PERF] Spikes ${perfSpikeCount}/${perfWindowCount} frame trong 10s — đỉnh loop ${perfPeakMs.toFixed(1)}ms / gap ${perfPeakGapMs.toFixed(1)}ms (${p.state}), TB ${avg.toFixed(1)}ms`
                     + ` | FRAME ĐỈNH: updateWorld ${p.physics.toFixed(1)}ms (chunk ${p.chunk.toFixed(1)}, traffic ${p.traffic.toFixed(1)})`
                     + ` · lighting ${p.lighting.toFixed(1)}ms · shadow ${p.shadow.toFixed(1)}ms · render ${p.render.toFixed(1)}ms · other ${p.other.toFixed(1)}ms`
+                    + ` | GAP ĐỈNH: render ${g.render.toFixed(1)}ms · idle ${g.idle.toFixed(1)}ms`
                     + ` | TB10s: render ${(s.render / n).toFixed(1)}ms`);
             }
             perfWindowStart = nowLoop;
-            perfWindowSum = 0; perfWindowCount = 0; perfSpikeCount = 0; perfPeakMs = 0;
-            perfPeakFrame = null;
+            perfWindowSum = 0; perfWindowCount = 0; perfSpikeCount = 0; perfPeakMs = 0; perfPeakGapMs = 0;
+            perfPeakFrame = null; perfPeakGapFrame = null;
             perfSection.physics = 0; perfSection.traffic = 0; perfSection.chunk = 0;
             perfSection.lighting = 0; perfSection.shadow = 0; perfSection.render = 0; perfSection.other = 0;
         }
