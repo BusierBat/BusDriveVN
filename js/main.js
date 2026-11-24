@@ -706,8 +706,10 @@ function updateVehiclePhysics(dt) {
             // đẩy nhẹ + auto-rescue bên dưới là code chết. Chỉ reset khi xe
             // THOÁT được (nhánh if phía trên).
             playerStuckT += dt;
-            if (playerStuckT > 2.0 && (isAccel || isBrake)) {
-                // đẩy nhẹ tách 2 khối; vẫn bounded bởi depth → hết chồng là dừng
+            if (playerStuckT > 2.0 && (isAccel || isBrake) && contactMtv) {
+                // đẩy nhẹ tách 2 khối; vẫn bounded bởi depth → hết chồng là dừng.
+                // Guard contactMtv: nếu check() trả hit mà narrow-phase không có
+                // MTV thì nhánh cũ ném TypeError ngay giữa lúc đang kẹt.
                 const push = Math.min(0.35 * dt, contactMtv.depth);
                 bus.group.position.x += contactMtv.nx * push;
                 bus.group.position.z += contactMtv.nz * push;
