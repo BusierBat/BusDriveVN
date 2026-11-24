@@ -515,12 +515,14 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   const tailMaterial = a.tailMesh.material;
   const emergencyMaterial = a.emergencyMesh.material;
 
-  const spotL = new THREE.SpotLight(0xfff3cf, 0, 400, Math.PI / 5, 0.05, 1.0);
+  // F = đèn pha: tầm chiếu 400m -> 900m, target đẩy xa để chùm sáng nằm ngang
+  // hơn (không húc xuống đường ở cự ly gần) và tới được đoạn đường phía trước.
+  const spotL = new THREE.SpotLight(0xfff3cf, 0, 900, Math.PI / 5, 0.05, 1.0);
   spotL.position.set(-0.78, 1.05, L / 2 + 0.05);
-  const spotLT = new THREE.Object3D(); spotLT.position.set(-0.78, 0, L / 2 + 100);
-  const spotR = new THREE.SpotLight(0xfff3cf, 0, 400, Math.PI / 5, 0.05, 1.0);
+  const spotLT = new THREE.Object3D(); spotLT.position.set(-0.78, 0, L / 2 + 300);
+  const spotR = new THREE.SpotLight(0xfff3cf, 0, 900, Math.PI / 5, 0.05, 1.0);
   spotR.position.set(0.78, 1.05, L / 2 + 0.05);
-  const spotRT = new THREE.Object3D(); spotRT.position.set(0.78, 0, L / 2 + 100);
+  const spotRT = new THREE.Object3D(); spotRT.position.set(0.78, 0, L / 2 + 300);
   const tailGlow = new THREE.PointLight(0xff2020, 0, 20, 2.5);
   tailGlow.position.set(0, 1.1, -L / 2 - 0.3);
   a.root.add(spotL, spotLT, spotR, spotRT, tailGlow);

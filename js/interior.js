@@ -129,28 +129,30 @@ function makeInteriorLedApplier(groups, options = {}) {
     return function applyLedGroups(state) {
         const ceiling = level(state, 'ceiling');
         const trim = level(state, 'trim');
-        const maxLevel = Math.max(ceiling, trim, level(state, 'exterior'), level(state, 'body'));
+        // Bất kỳ nhóm LED nào sáng cũng cấp nguồn cho dàn PointLight cabin —
+        // L+2/L+3/L+4 không chỉ tự phát sáng trên mat mà chiếu thật vào ghế/lối đi.
+        const lightLevel = Math.max(ceiling, trim, level(state, 'exterior'), level(state, 'body'));
         matLEDBlue.emissiveIntensity = ceiling * 5.0;
         matLEDBlueTrim.emissiveIntensity = trim * 5.0;
         matLEDNude.emissiveIntensity = ceiling * 5.5;
         matLEDRib.emissiveIntensity = ceiling * 3.5;
-        matCluster.emissiveIntensity = state.master === false ? 0.1 : 0.3 + 0.7 * maxLevel;
-        if (named[0]) named[0].intensity = ceiling * 6.0;
-        if (named[1]) named[1].intensity = ceiling * 5.0;
-        if (named[2]) named[2].intensity = ceiling * 5.0;
-        if (named[3]) named[3].intensity = ceiling * 4.5;
-        if (named[4]) named[4].intensity = ceiling * 4.5;
+        matCluster.emissiveIntensity = state.master === false ? 0.1 : 0.3 + 0.7 * lightLevel;
+        if (named[0]) named[0].intensity = lightLevel * 6.0;
+        if (named[1]) named[1].intensity = lightLevel * 5.0;
+        if (named[2]) named[2].intensity = lightLevel * 5.0;
+        if (named[3]) named[3].intensity = lightLevel * 4.5;
+        if (named[4]) named[4].intensity = lightLevel * 4.5;
         for (let i = 0; i < stripLights.length; i++) {
             const pl = stripLights[i];
             if (!pl) continue;
             pl.intensity = options.stripFromBase
-                ? ceiling * pl.userData.base
-                : ceiling * 5.0 * (stripFactors[i] || 0.8);
+                ? lightLevel * pl.userData.base
+                : lightLevel * 5.0 * (stripFactors[i] || 0.8);
             pl.visible = true;
         }
         if (options.extraLights) {
             for (const pl of options.extraLights) {
-                pl.intensity = ceiling * pl.userData.base * 1.5;
+                pl.intensity = lightLevel * pl.userData.base * 1.5;
                 pl.visible = true;
             }
         }
