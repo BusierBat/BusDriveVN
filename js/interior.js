@@ -109,6 +109,53 @@ const matBtn = new THREE.MeshStandardMaterial({ color: 0x333344 });
 const matFloorPax = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 });
 const matScreen = new THREE.MeshStandardMaterial({ color: 0x0a0a1a, emissive: 0x2f6fbf, emissiveIntensity: 0.5 });
 
+// ===== TEXTURE VẢI/DA DÙNG CHUNG =====
+// Cabin cũ phẳng vì mọi bề mặt chỉ có `color` + roughness: nệm, rèm, ghế đều
+// là một khối màu loang đều. Hai CanvasTexture nhỏ, tạo 1 lần, dùng chung cho
+// mọi lần build (20 <-> 34) — không thêm asset, không thêm draw call.
+let _fabricTexShared = null;
+let _leatherTexShared = null;
+function _weaveTexture(base, line, seed) {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 64;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, 64, 64);
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.16;
+    ctx.strokeStyle = line;
+    for (let i = -64; i < 128; i += 6) {
+        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + 64, 64); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(i + 64, 0); ctx.lineTo(i, 64); ctx.stroke();
+    }
+    // Hạt nhiễu cố định (same seed) để không nháy khi đổi cấu hình nội thất.
+    let s = seed >>> 0;
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < 180; i++) {
+        s = (s * 1664525 + 1013904223) >>> 0;
+        ctx.fillStyle = (s & 1) ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)';
+        ctx.fillRect(s & 63, (s >>> 6) & 63, 1, 1);
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(4, 4);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+}
+function ensureInteriorTextures() {
+    if (typeof document === 'undefined') return;
+    if (!_fabricTexShared) _fabricTexShared = _weaveTexture('#efede7', '#b9b2a4', 20241124);
+    if (!_leatherTexShared) _leatherTexShared = _weaveTexture('#f0e8dc', '#cfc0aa', 19950712);
+    const fabricMats = [matFabric, matFabricDark, matSeat, matSeatCushion];
+    const leatherMats = [matBrownLeather, matBrownLeatherDark];
+    for (const m of fabricMats) {
+        if (m.map !== _fabricTexShared) { m.map = _fabricTexShared; m.needsUpdate = true; }
+    }
+    for (const m of leatherMats) {
+        if (m.map !== _leatherTexShared) { m.map = _leatherTexShared; m.needsUpdate = true; }
+    }
+}
+
 function makeInteriorLedApplier(groups, options = {}) {
     const trimLeds = [];
     for (const name of ["Aisle", "Dashboard"]) {
@@ -201,10 +248,17 @@ function box(w, h, d, mat, x, y, z, group) {
 }
 
 function createPaxTvs(groups, entries) {
+    const count = Math.max(1, entries.length);
     const material = new THREE.MeshBasicMaterial({ color: 0x05060a, side: THREE.DoubleSide, toneMapped: false });
-    const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.34, 0.20), material, Math.max(1, entries.length));
+    const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.34, 0.20), material, count);
     mesh.name = "paxTvs";
     mesh.frustumCulled = false;
+    // Viền TV: 1 InstancedMesh nữa, LUÔN hiển thị dù màn hình tắt. Trước đây
+    // TV là một mặt phẳng đen không khung → trông như lỗ khoét trên vách.
+    const bezelMat = new THREE.MeshBasicMaterial({ color: 0x15171c, side: THREE.DoubleSide, toneMapped: false });
+    const bezel = new THREE.InstancedMesh(new THREE.BoxGeometry(0.39, 0.25, 0.012), bezelMat, count);
+    bezel.name = "paxTvBezels";
+    bezel.frustumCulled = false;
     const dummy = new THREE.Object3D();
     const positions = [];
     const on = [];
@@ -216,10 +270,17 @@ function createPaxTvs(groups, entries) {
         mesh.setMatrixAt(i, dummy.matrix);
         positions.push(dummy.position.clone());
         on.push(true);
+
+        dummy.position.set(e.x, e.y, e.z + 0.012); // nằm SAU màn hình 12mm
+        dummy.updateMatrix();
+        bezel.setMatrixAt(i, dummy.matrix);
     });
     mesh.count = entries.length;
     mesh.instanceMatrix.needsUpdate = true;
+    bezel.count = entries.length;
+    bezel.instanceMatrix.needsUpdate = true;
     groups.Cabins.add(mesh);
+    groups.Cabins.add(bezel);
     return {
         material, positions, count: entries.length,
         setOn(i, value) {
@@ -237,13 +298,65 @@ function createPaxTvs(groups, entries) {
     };
 }
 
+// Gộp nhiều hộp thành 1 mesh — dùng cho mọi chi tiết mới để không tăng draw call.
+function addMergedDetail(group, geos, mat, name) {
+    if (!geos || !geos.length) return null;
+    const geo = mergeBoxes(geos);
+    if (!geo) return null;
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = name || '';
+    mesh.updateMatrix();
+    mesh.matrixAutoUpdate = false;
+    group.add(mesh);
+    return mesh;
+}
+
+// Trần có hốc: dải dọc + gờ ngang tạo bóng quanh dải LED. LED giữ nguyên tên
+// và material nên setLedGroups vẫn điều khiển như cũ (không thêm PointLight).
+function addCeilingCoffers(group, z0, z1, ribXs) {
+    const geos = [];
+    for (const x of ribXs) {
+        const g = new THREE.BoxGeometry(0.035, 0.045, z1 - z0);
+        g.translate(x, CEILING_Y - 0.025, (z0 + z1) / 2);
+        geos.push(g);
+    }
+    for (let z = z0 + 0.6; z < z1 - 0.3; z += 1.2) {
+        const g = new THREE.BoxGeometry(W - 0.18, 0.035, 0.045);
+        g.translate(0, CEILING_Y - 0.025, z);
+        geos.push(g);
+    }
+    return addMergedDetail(group, geos, matDivider, 'ceilingCoffers');
+}
+
+// Gờ ôm 2 bên nệm + nếp gấp chăn/đầu giường. Mọi giường dùng chung 2 mesh gộp.
+function addBedComfortDetails(group, beds) {
+    const bolsterGeos = [];
+    const pipingGeos = [];
+    for (const b of beds) {
+        for (const sx of [-1, 1]) {
+            const g = new THREE.BoxGeometry(0.055, 0.09, b.length * 0.92);
+            g.translate(b.x + sx * (b.width / 2 - 0.028), b.y + 0.045, b.z);
+            bolsterGeos.push(g);
+        }
+        const foot = new THREE.BoxGeometry(b.width * 0.85, 0.05, 0.06);
+        foot.translate(b.x, b.y + 0.105, b.z - b.length * 0.12 - b.length * 0.45 / 2);
+        pipingGeos.push(foot);
+        const head = new THREE.BoxGeometry(b.width * 0.90, 0.03, 0.04);
+        head.translate(b.x, b.y + 0.09, b.z + b.length / 2 - 0.03);
+        pipingGeos.push(head);
+    }
+    addMergedDetail(group, bolsterGeos, matFabricDark, 'bedBolsters');
+    addMergedDetail(group, pipingGeos, matCream, 'bedPiping');
+}
+
 // Dùng cho táp-lô rebuild: như box() nhưng hỗ trợ nghiêng quanh trục X
 // (mặt trên táp-lô nghiêng nhẹ về kính trước) — rotate TRƯỚC updateMatrix
 // vì mesh bị freeze matrix (matrixAutoUpdate=false).
-function dashPiece(w, h, d, mat, x, y, z, group, rotX) {
+function dashPiece(w, h, d, mat, x, y, z, group, rotX, rotZ) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(x, y, z);
     m.rotation.x = rotX || 0;
+    m.rotation.z = rotZ || 0;
     m.updateMatrix();
     m.matrixAutoUpdate = false;
     group.add(m);
@@ -261,6 +374,7 @@ function dashPieceSphere(r, mat, x, y, z, group) {
 
 function buildCabin(groups) {
     const { DriverArea, Dashboard, Windows, BodyShell } = groups;
+    ensureInteriorTextures();
 
     // ===== MẶT TRƯỚC BUỒNG LÁI — NEO VÀO MŨI XE THẬT =====
     // Nội thất dùng L = 12 (chiều dài khoang khách) nhưng thân xe trong bus.js
@@ -539,6 +653,35 @@ function buildCabin(groups) {
         // mép -x (x -0.76..-0.46, z 4.85..5.15) — ngoài đường đi, có mặt đỡ thật.
         dashPiece(0.30, 0.30, 0.30, matDashboard, -0.61, 1.79, 5.00, Dashboard, 0);      // thân tủ
         dashPiece(0.34, 0.04, 0.34, matDashboardPanel, -0.61, 1.96, 5.00, Dashboard, 0); // mặt trên tủ
+
+        // ===== HOÀN THIỆN BUỒNG LÁI (không đổi kích thước mesh bus.js tìm) =====
+        // Viền màn/đồng hồ là 4 thanh MỎNG nằm NGOÀI bounds cũ (screen 0.5×0.25,
+        // cluster 0.35×0.2) nên không chắn nội dung, nhưng tạo cảm giác có khung
+        // thật thay vì tấm màu dán lên táp-lô.
+        for (const sx of [-1, 1]) {
+            dashPiece(0.012, 0.27, 0.012, matDashboardPanel, sx * 0.266, 2.08, 5.80, Dashboard, 0);
+            dashPiece(0.012, 0.22, 0.012, matDashboardPanel, 0.50 + sx * 0.181, 2.13, 5.80, Dashboard, 0);
+        }
+        for (const sy of [-1, 1]) {
+            dashPiece(0.54, 0.012, 0.012, matDashboardPanel, 0, 2.08 + sy * 0.131, 5.80, Dashboard, 0);
+            dashPiece(0.37, 0.012, 0.012, matDashboardPanel, 0.50, 2.13 + sy * 0.106, 5.80, Dashboard, 0);
+        }
+        // Mũ trùm đồng hồ: táp-lô có bóng và chiều sâu, không còn là mặt phẳng.
+        dashPiece(0.42, 0.025, 0.14, matDashboard, 0.50, 2.25, 5.79, Dashboard, -0.22);
+        // Visor 2 bên + gương + cần gạt nước — đồ vật thật thường thấy trên xe khách.
+        dashPiece(0.72, 0.10, 0.03, matFabricDark, -0.52, 3.03, FRONT_Z - 0.05, DriverArea, 0.28);
+        dashPiece(0.72, 0.10, 0.03, matFabricDark, 0.52, 3.03, FRONT_Z - 0.05, DriverArea, 0.28);
+        dashPiece(0.26, 0.07, 0.03, matDark, 0, 3.06, FRONT_Z - 0.04, DriverArea, 0);
+        dashPiece(0.82, 0.012, 0.012, matDark, -0.48, 2.70, FRONT_Z - 0.012, DriverArea, 0, 0.16);
+        dashPiece(0.82, 0.012, 0.012, matDark, 0.48, 2.70, FRONT_Z - 0.012, DriverArea, 0, -0.16);
+        // Đường chỉ viền đệm ngồi (2 ghế) — chỉ là gờ mỏng, không thêm draw call đáng kể.
+        for (const sx of [0.65, -0.35]) {
+            dashPiece(0.012, 0.01, 0.36, matFabricDark, sx - 0.14, 1.785, 4.71, frontSeats, 0);
+            dashPiece(0.012, 0.01, 0.36, matFabricDark, sx + 0.14, 1.785, 4.71, frontSeats, 0);
+        }
+        // Dây an toàn vắt nhẹ qua tựa lưng (nghiêng trong mặt XY).
+        dashPiece(0.035, 0.55, 0.012, matDark, 0.65, 2.02, 4.385, frontSeats, 0, 0.38);
+        dashPiece(0.030, 0.44, 0.012, matDark, -0.35, 1.96, 4.445, frontSeats, 0, -0.34);
     }
 
     const steerGroup = new THREE.Group();
@@ -710,6 +853,8 @@ function buildPassengerCabin(groups) {
 
     // ---------- TRẦN & 3 DẢI LED ----------
     box(W - 0.06, 0.04, L - 0.5, matCream, 0, CEILING_Y + 0.02, 0, Ceiling);
+    // Hốc trần (1 mesh gộp): dải LED nằm trong rãnh thay vì dán lên mặt phẳng.
+    addCeilingCoffers(Ceiling, zRear + 0.2, zFront - 0.2, [-0.55, 0.55]);
 
     const centerLed = box(0.06, 0.02, L - 0.8, matLEDNude, 0, CEILING_Y - 0.005, 0.5, Led);
     centerLed.name = "centerLed";
@@ -835,6 +980,7 @@ function buildPassengerCabin(groups) {
     const deckBottom = upperFloorY - floorThick / 2;
     const deckTop = upperFloorY + floorThick / 2;
     const partitionGeos = [];
+    const detailBeds = [];
     const addPartition = (x, z) => {
         const lowerHeight = deckBottom - PASSENGER_FLOOR_Y;
         const upperHeight = CEILING_Y - deckTop;
@@ -850,6 +996,7 @@ function buildPassengerCabin(groups) {
         const xPos = side * xPosAbs;
         for (const z of BED_Z_POSITIONS) {
             const yLow = LOWER_BED_Y;
+            detailBeds.push({ x: xPos, z, y: yLow, width: BED_WIDTH, length: BED_LENGTH });
             const frameLow = new THREE.Mesh(new THREE.BoxGeometry(BED_WIDTH + 0.06, 0.08, BED_LENGTH + 0.06), matBedFrame);
             frameLow.position.set(xPos, yLow - 0.12, z);
             frameLow.updateMatrix();
@@ -872,6 +1019,7 @@ function buildPassengerCabin(groups) {
             Beds.add(blanketLow);
 
             const yUp = UPPER_BED_Y;
+            detailBeds.push({ x: xPos, z, y: yUp, width: BED_WIDTH, length: BED_LENGTH });
             const frameUp = new THREE.Mesh(new THREE.BoxGeometry(BED_WIDTH + 0.06, 0.08, BED_LENGTH + 0.06), matBedFrame);
             frameUp.position.set(xPos, yUp - 0.12, z);
             frameUp.updateMatrix();
@@ -897,6 +1045,7 @@ function buildPassengerCabin(groups) {
             addPartition(xPos, z - BED_LENGTH / 2);
         }
     }
+    addBedComfortDetails(Beds, detailBeds);
 
     groups.paxTvEntries = [];
     for (const side of [1, -1]) {
@@ -940,6 +1089,7 @@ function buildPassengerCabin(groups) {
 
     // ---------- RÈM CỬA ----------
     // REM CUA dung vat lieu module chung (matFabric/matFabricDark/matDark).
+    const curtainFoldGeos = [];
     for (const side of [1, -1]) {
         const xCurtain = side * (WALL_X - 0.02);
         const xAisle = side * 0.32;
@@ -954,6 +1104,14 @@ function buildPassengerCabin(groups) {
             curtainUp.updateMatrix();
             curtainUp.matrixAutoUpdate = false;
             Curtains.add(curtainUp);
+            // Nếp rèm: 3 dải mỏng gộp lại, rèm không còn là tấm bìa phẳng.
+            for (const [fy0, fy1] of [[WIN_LO_BOT, WIN_LO_TOP], [WIN_HI_BOT, WIN_HI_TOP]]) {
+                for (const dz of [-0.11, 0, 0.11]) {
+                    const g = new THREE.BoxGeometry(0.026, fy1 - fy0, 0.018);
+                    g.translate(xCurtain, (fy0 + fy1) / 2, z - 0.50 + dz);
+                    curtainFoldGeos.push(g);
+                }
+            }
             const aisleCurtainLow = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.85, 0.35), matFabric);
             aisleCurtainLow.position.set(xAisle, LOWER_BED_Y + 0.02, z + BED_LENGTH / 2 - 0.35);
             aisleCurtainLow.updateMatrix();
@@ -977,6 +1135,7 @@ function buildPassengerCabin(groups) {
             Curtains.add(rod2);
         }
     }
+    addMergedDetail(Curtains, curtainFoldGeos, matFabricDark, 'curtainFolds20');
 
     // ---------- LED DỌC TẦNG (cắt ngắn, không thò qua cửa buồng lái) ----------
     // z từ 4.8 (vách cabin) lùi về -5.0; đoạn 5.0..6.0 = buồng lái/cửa ra vào
@@ -1180,6 +1339,8 @@ function buildPassengerCabin34(groups) {
 
     // ---------- TRẦN + 2 DẢI LED NẰM TRẦN (trên 2 lối đi) ----------
     box(W - 0.06, 0.04, L - 0.5, matCream, 0, CEILING_Y + 0.02, 0, Ceiling);
+    // Hốc trần riêng cho 2 lối đi (1 mesh gộp, không đụng 2 dải LED tên cũ).
+    addCeilingCoffers(Ceiling, aisleZ1 + 0.2, aisleZ0 - 0.2, [0, -0.78, 0.78]);
     for (const side of [1, -1]) {
         const ax = side * C.AISLE_X;
         // dải LED dọc nằm trần TRÊN ĐÚNG LỐI ĐI
@@ -1218,6 +1379,7 @@ function buildPassengerCabin34(groups) {
     // 20 phòng). Geometry gộp theo vật liệu: 34 giường x 4 chi tiết = 136
     // mesh rời -> 4 mesh (giảm draw call, quan trọng cho iGPU N5000).
     const bedFrameGeo = [], bedMatGeo = [], bedPillowGeo = [], bedBlanketGeo = [];
+    const bedBolsterGeo = [], bedPipingGeo = [];
     let bedCount = 0;
     const pushBox = (arr, w, h, d, x, y, z) => {
         const g = new THREE.BoxGeometry(w, h, d);
@@ -1233,6 +1395,12 @@ function buildPassengerCabin34(groups) {
         pushBox(bedMatGeo, bedW, 0.14, bedLen, x, y, z);
         pushBox(bedPillowGeo, bedW * 0.64, 0.10, 0.28, x, y + 0.10, z + bedLen / 2 - 0.22);
         pushBox(bedBlanketGeo, bedW * 0.85, 0.04, bedLen * 0.45, x, y + 0.08, z - bedLen * 0.12);
+        // Gờ ôm/nếp chăn — nằm TRONG bề rộng nệm, không lấn khe 0.02m của dãy giữa.
+        for (const sx of [-1, 1]) {
+            pushBox(bedBolsterGeo, 0.05, 0.085, bedLen * 0.92, x + sx * (bedW / 2 - 0.025), y + 0.042, z);
+        }
+        pushBox(bedPipingGeo, bedW * 0.85, 0.045, 0.055, x, y + 0.10, z - bedLen * 0.12 - bedLen * 0.45 / 2);
+        pushBox(bedPipingGeo, bedW * 0.90, 0.03, 0.04, x, y + 0.09, z + bedLen / 2 - 0.03);
         bedCount++;
     };
 
@@ -1332,6 +1500,7 @@ function buildPassengerCabin34(groups) {
     }
 
     // ---------- CỬA SỔ + RÈM (2 dãy bên, 2 tầng) ----------
+    const curtainFoldGeos34 = [];
     for (const side of [1, -1]) {
         const xGlass = side * (WALL_X + 0.01);
         const xCurtain = side * (WALL_X - 0.02);
@@ -1352,16 +1521,26 @@ function buildPassengerCabin34(groups) {
                 curt.updateMatrix(); curt.matrixAutoUpdate = false;
                 Curtains.add(curt);
             }
+            // Nếp rèm 34P — 3 dải mỏng x 2 tầng, gộp thành 1 mesh.
+            for (const [fy0, fy1] of [[WIN_LO_BOT, WIN_LO_TOP], [WIN_HI_BOT, WIN_HI_TOP]]) {
+                for (const dz of [-0.10, 0, 0.10]) {
+                    const g = new THREE.BoxGeometry(0.026, fy1 - fy0, 0.018);
+                    g.translate(xCurtain, (fy0 + fy1) / 2, z - C.SIDE_BED_L / 2 + 0.15 + dz);
+                    curtainFoldGeos34.push(g);
+                }
+            }
         }
     }
+    addMergedDetail(Curtains, curtainFoldGeos34, matFabricDark, 'curtainFolds34');
 
     // ---------- ĐÈN (5 PointLight: 2 lối đi + 2 đầu + 1 phụ) ----------
     // Gộp geometry giường vừa dựng thành 4 mesh (1 draw call / vật liệu).
-    const addMerged = (arr, mat) => {
+    const addMerged = (arr, mat, name) => {
         if (!arr.length) return;
         const merged = mergeBoxes(arr);
         if (!merged) return;
         const mesh = new THREE.Mesh(merged, mat);
+        mesh.name = name || '';
         mesh.matrixAutoUpdate = false;
         mesh.updateMatrix();
         Beds.add(mesh);
@@ -1370,6 +1549,9 @@ function buildPassengerCabin34(groups) {
     addMerged(bedMatGeo, matBrownLeather);
     addMerged(bedPillowGeo, matWhite);
     addMerged(bedBlanketGeo, matBrownLeatherDark);
+    // 34 giường x (2 gờ + 2 nếp) vẫn chỉ thành 2 mesh — iGPU không khóc.
+    addMerged(bedBolsterGeo, matFabricDark, 'bedBolsters34');
+    addMerged(bedPipingGeo, matCream, 'bedPiping34');
     Beds.userData.bedCount = bedCount;
 
     const mkPoint = (x, y, z, intensity, dist, name) => {

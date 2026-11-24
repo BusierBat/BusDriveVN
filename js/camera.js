@@ -278,7 +278,9 @@ export class CameraSystem {
       const seat = this.seats[idx % this.seats.length];
       this.targetPos = seat.localPos.clone();
       this.targetPos.y += 0.15;
-      this.targetPos.z += 0.11;
+      // Lùi mắt hành khách thêm ~9cm so với bản trước (+0.11): tránh dính
+      // vách đầu giường/TV nhưng vẫn nằm trọn trong khoang ngồi.
+      this.targetPos.z += 0.02;
       // Pivot = hướng lối đi (aisle): trái nhìn +x, phải nhìn −x.
       if (seat.side === 'center') this.seatPivotYaw = seat.row % 2 === 1 ? 1.13 : -1.13;
       else this.seatPivotYaw = seat.side === 'left' ? 0.65 : -0.65;

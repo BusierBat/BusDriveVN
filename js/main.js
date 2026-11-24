@@ -485,7 +485,9 @@ function updateVehiclePhysics(dt) {
     if (!bus?.group) return;
     const phys = vehiclePhysics;
     const isAccel = keysPressed.has("KeyW") || mobileInput.accel > 0;
-    const isBrake = keysPressed.has("KeyS") || mobileInput.brake > 0;
+    // ArrowDown là phím lùi dự phòng: trước đây chỉ được map/preventDefault rồi
+    // bỏ rơi ở physics — bấm ↓ không có ga lùi, không đếm kẹt, không cứu hộ.
+    const isBrake = keysPressed.has("KeyS") || keysPressed.has("ArrowDown") || mobileInput.brake > 0;
     const isShift = keysPressed.has("ShiftLeft") || keysPressed.has("ShiftRight");
     const isAlt = keysPressed.has("AltLeft") || keysPressed.has("AltRight");
     
@@ -671,12 +673,13 @@ function updateVehiclePhysics(dt) {
                     // VA CHẠM THẬT -> physics_step.registerImpact: rung camera +
                     // gằn chấn theo cường độ xâm thực (tốc độ tiếp cận m/s /25)
                     registerImpact(Math.min(1, (Math.abs(into) / Math.max(1e-3, dt)) / 25));
-                    // Realistic collision response: stop instead of bouncing back
-                    if (Math.abs(phys.speed) > 5 * KMH_TO_MS) {   // > 5 km/h = va đủ mạnh
-                        phys.speed = 0; // Hard stop at high speed
-                    } else {
-                        phys.speed *= 0.2; // Gentle slowdown at low speed
-                    }
+                    // Giữ vận tốc theo QUÃNG ĐƯỜNG CÒN ĐI ĐƯỢC sau khi trượt.
+                    // Trước đây speed=0 (va mạnh) hoặc *=0.2 (va nhẹ) bị lặp lại
+                    // 15 substep/frame → xe bóp ga hộ người chơi, đạp lùi cũng
+                    // chết máy trước khi kịp thoát. Chiếu lại theo forward vừa
+                    // giữ cảm giác trượt, vừa đểga/lùi tiếp tục có lực.
+                    const escapedSpeed = (moveDx * forward.x + moveDz * forward.z) / dt;
+                    phys.speed = Math.max(phys.maxReverseSpeed, Math.min(phys.maxSpeed, escapedSpeed));
                     // XÓA BUG KHÓA ĐÔI: không còn set hit.data.ai.speed = 0 mỗi frame.
                     // NPC có logic hãm riêng (_checkCollision trong TrafficManager);
                     // việc zeroing liên tục khiến 2 xe ghim vào nhau thành deadlock.
@@ -689,12 +692,15 @@ function updateVehiclePhysics(dt) {
         wheelSpinAngle += (phys.speed / (bus.wheelRadius || 0.525)) * dt;
         bus.setWheelRotation?.(wheelSpinAngle);
 
-        if (Math.abs(moveDx) > 1e-6 || Math.abs(moveDz) > 1e-6) {
-            bus.group.position.x += moveDx;
-            bus.group.position.z += moveDz;
-            playerStuckT = 0;
-        } else if (contactMtv) {
-            // bị chặn hoàn toàn (chạm trực diện) -> đếm thời kẹt.
+        const movedLen = Math.hypot(moveDx, moveDz);
+        bus.group.position.x += moveDx;
+        bus.group.position.z += moveDz;
+        // Reset timer CHỈ khi xe đi được quãng đáng kể. Bản cũ reset ngay khi
+        // còn displacement trượt dọc mặt cản -> timer không bao giờ tới 2s/3.5s,
+        // biến push-out lẫn auto-rescue thành code chết.
+        const stalled = movedLen < Math.max(1e-4, Math.abs(moveDistance) * 0.15);
+        if (stalled) {
+            // bị chặn gần như hoàn toàn -> đếm thời kẹt.
             // D-09: trước đây ngay sau khối này có `playerStuckT = 0;` vô điều
             // kiện -> bộ đếm bị xóa mỗi frame, không bao giờ đạt 2s nên phần
             // đẩy nhẹ + auto-rescue bên dưới là code chết. Chỉ reset khi xe
@@ -712,19 +718,19 @@ function updateVehiclePhysics(dt) {
                 playerStuckT = 0;
                 rescuePlayerToNearestRoad();
             }
+        } else {
+            // Đi được quãng thật -> không kẹt, reset bộ đếm.
+            playerStuckT = 0;
         }
         } else {
-            if (keysPressed.has("KeyW") || keysPressed.has("KeyS") || mobileInput.accel !== 0 || mobileInput.brake !== 0) {
+            // speed ≈ 0: vẫn đếm nếu người chơi đạp ga/lùi, để R hoặc auto-rescue
+            // có thể kích hoạt thay vì đứng im vĩnh viễn.
+            if (isAccel || isBrake) {
                 playerStuckT += dt;
-                if (playerStuckT > 1.5 && (isAccel || isBrake)) {
-                    // Auto-rescue attempt gently
-                    if (playerStuckT > 3.0) {
-                        playerStuckT = 0;
-                        // Try rescue if available
-                        if (typeof rescuePlayerToNearestRoad === 'function') {
-                            rescuePlayerToNearestRoad();
-                        }
-                    }
+                if (playerStuckT > 3.0
+                    && typeof rescuePlayerToNearestRoad === 'function') {
+                    playerStuckT = 0;
+                    rescuePlayerToNearestRoad();
                 }
             } else {
                 playerStuckT = 0;
