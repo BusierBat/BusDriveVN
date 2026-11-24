@@ -1,5 +1,6 @@
 // js/bus.js
 import * as THREE from "three";
+import { applyNightColorFloor } from "./utils.js";
 
 export const BUS_TEXTURE_URL = "assets/textures/bus/bus_final.png";
 export const NPC_SKIN_DIR = "assets/textures/bus/bus_npc/";
@@ -35,6 +36,14 @@ const sharedDark = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 
 const sharedMetal = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.4, metalness: 0.8 });
 const sharedTire = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
 const sharedPlate = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.6 });
+
+// Xe và bóng đèn có material riêng; dùng chung uniform với map.js/lighting.js
+// để đêm vẫn thấy màu sơn xe mà không đẩy ambient/exposure.
+function applyBusNightFloor(mats) {
+    for (const m of [mats.body, mats.glass, mats.door, sharedDark, sharedMetal, sharedTire, sharedPlate]) {
+        applyNightColorFloor(m);
+    }
+}
 
 const U = (x) => x / TW, V = (y) => 1 - y / TH;
 const UV_REGIONS = {
@@ -198,6 +207,10 @@ function getShared() {
     }
     u.needsUpdate = true;
   }
+  // Root cause: BoxGeometry được tạo quanh gốc (y = -0.06..0.06) rồi add vào
+  // motion ở y=0 -> tấm mái nằm ngang gầm xe, cọ mặt đường. Body đã nằm từ
+  // BODY_BOTTOM..H; đẩy mái lên đúng đỉnh H để min.y = H - 0.06 > wheelBottom.
+  roof.translate(0, H, 0);
   g.roof = roof;
 
   g.glassSide = mergeGeos([pixelQuad("right", PX.sideR.winFront, PX.sideR.winRear, PX.sideR.winLoTop, PX.sideR.winLoBot, 0.006), pixelQuad("right", PX.sideR.winFront, PX.sideR.winRear, PX.sideR.winHiTop, PX.sideR.winHiBot, 0.006)]);
@@ -509,6 +522,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     emergency: emergencyMat,
     ledExtTexture: ledExtTexture
   };
+  applyBusNightFloor(mats);
 
   const a = assembleBus(mats, true);
   const c = makeControl(a);
@@ -1341,6 +1355,7 @@ export function createNpcBus({ skinPath = null, ledColor = 0x2fb6ff } = {}) {
     emergency: emergencyMat,
     ledExtTexture: ledExtTexture
   };
+  applyBusNightFloor(mats);
 
   const a = assembleBus(mats, false);
   const c = makeControl(a);

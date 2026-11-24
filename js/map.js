@@ -1,7 +1,7 @@
 // js/map.js
 
 import * as THREE from "three";
-import { hypot2 } from "./utils.js";
+import { hypot2, applyNightColorFloor } from "./utils.js";
 import { RuntimeRoadGraph } from "./RuntimeRoadGraph.js";
 
 const DATA_PATH = "generated/maps/";
@@ -55,6 +55,81 @@ function smoothstep(e0, e1, x) {
     if (e0 === e1) return x < e0 ? 0 : 1;
     const t = clamp((x - e0) / (e1 - e0), 0, 1);
     return t * t * (3 - 2 * t);
+}
+
+// ===== ĐÈN ĐƯỜNG THEO LOẠI ĐƯỜNG (runtime, không regenerate sector JSON) =====
+// Chấm đô thị theo region của 2 đầu đoạn — thay vì_only urban boolean thô.
+const _LAMP_REGION_SCORE = {
+    URBAN: 1.0, INDUSTRIAL: 0.85, COMMERCIAL: 1.0, SUBURBAN: 0.7,
+    COASTAL: 0.35, RURAL: 0.2, RURAL_DESERT: 0.05, MOUNTAIN: 0.05, TUNNEL: 0
+};
+const _LAMP_OBSTACLE_RADIUS = {
+    POLE: 1.8, TREE: 3.2, PINE_TREE: 3.0, PALM_TREE: 3.0, CASUARINA: 3.2,
+    BAMBOO: 2.6, CACTUS: 1.6, DRY_BUSH: 1.4, GUARDRAIL: 2.0,
+    KM_MARKER: 3.0, HIGHWAY_SIGN: 3.4, TRAFFIC_SIGN: 3.0, BUS_STOP: 3.0
+};
+function streetLightUrbanScore(a, b, t) {
+    const ua = _LAMP_REGION_SCORE[a?.region] ?? 0.2;
+    const ub = _LAMP_REGION_SCORE[b?.region] ?? 0.2;
+    return lerp(ua, ub, t);
+}
+
+// map.js vẽ dải phân cách cho EXPRESSWAY/RAMP; QL/đại lộ >=18m/4 làn cũng có
+// dải giữa ở đô thị. Dải 1.6m quá hẹp để dựng cột => chỉ đặt đèn 2 lề ngoài.
+function streetLightMedian(seg) {
+    if (seg.type === "tunnel" || seg.class === "TUNNEL") return false;
+    if (seg.class === "EXPRESSWAY" || seg.class === "RAMP") return true;
+    return (seg.width || 12) >= 18 && (seg.lanes || 2) >= 4;
+}
+
+// Trả rule ÂM khi đoạn này không nên có đèn. `weight` là hệ số cường độ cho
+// pool 6 đèn thật của LightingSystem — KHÔNG thêm PointLight.
+function streetLightRule(seg, a, b, t, len) {
+    const cls = seg.class || "";
+    const u = streetLightUrbanScore(a, b, t);
+    const urban = u >= 0.6, semi = u >= 0.3;
+    const median = streetLightMedian(seg);
+    const both = (bothUrban, bothSemi) => urban ? bothUrban : (semi ? bothSemi : false);
+
+    if (cls === "EXPRESSWAY") {
+        return len >= 80 ? { spacing: 55, bothSides: true, shoulder: 6.0, weight: 0.78, cls: "EXPRESSWAY", median } : null;
+    }
+    if (cls === "RAMP") {
+        return len >= 60 ? { spacing: 70, bothSides: true, shoulder: 4.5, weight: 0.62, cls: "EXPRESSWAY", median } : null;
+    }
+    if (cls === "NATIONAL") {
+        if (urban) return { spacing: 40, bothSides: true, shoulder: 3.4, weight: 1.0, cls: "NATIONAL", median };
+        if (semi) return { spacing: 58, bothSides: false, shoulder: 4.0, weight: 0.8, cls: "NATIONAL", median };
+        // QL1A xuyên đồng: chỉ thắp ở đoạn chạm khu dân cư/bến, không rải đèn giữa ruộng.
+        return (a?.region === "RURAL_DESERT" || b?.region === "RURAL_DESERT") ? null
+            : { spacing: 88, bothSides: false, shoulder: 4.5, weight: 0.55, cls: "NATIONAL", median };
+    }
+    if (cls === "ARTERIAL" || cls === "COLLECTOR" || cls === "PROVINCIAL_ROAD" ||
+        cls === "COMMERCIAL" || cls === "INDUSTRIAL_ACCESS") {
+        if (urban) return { spacing: 40, bothSides: true, shoulder: 3.2, weight: 1.0, cls: "URBAN", median };
+        if (semi) return { spacing: 54, bothSides: false, shoulder: 3.6, weight: 0.78, cls: "URBAN", median };
+        return cls === "PROVINCIAL_ROAD"
+            ? { spacing: 85, bothSides: false, shoulder: 4.2, weight: 0.5, cls: "RURAL", median }
+            : null;
+    }
+    if (cls === "RESIDENTIAL" || cls === "LOCAL" || cls === "STATION_ACCESS" || cls === "SERVICE") {
+        if (!semi) return null;
+        const dense = cls === "RESIDENTIAL" || cls === "LOCAL";
+        return {
+            spacing: dense ? 36 : 50,
+            bothSides: both(dense, false),
+            shoulder: 3.0,
+            weight: dense ? 0.85 : 0.6,
+            cls: dense ? "RESIDENTIAL" : "URBAN",
+            median
+        };
+    }
+    if (cls === "INTER_VILLAGE") {
+        return semi ? { spacing: 82, bothSides: false, shoulder: 3.8, weight: 0.45, cls: "RURAL", median } : null;
+    }
+    // ALLEY / RURAL_LOCAL / AGRICULTURAL / INTERNAL / TUNNEL / unknown:
+    // ngõ và đường đồng VN ban đêm phần lớn tối — đừng rải đèn "cho có".
+    return null;
 }
 
 // Frame-level cache cho fbm/fbmSmall — tránh tính lại cùng (x,z) trong 1 frame
@@ -637,7 +712,7 @@ function makeMaterials() {
     // side: DoubleSide cho mặt đường: quad dựng từ hình học thủ công, winding có
     // thể ngược ở vài đoạn — DoubleSide đảm bảo mặt đường LUÔN nhìn thấy từ trên.
     const roadSide = THREE.DoubleSide;
-    return {
+    const mats = {
         asphalt: new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.92, side: roadSide }),
         asphaltOld: new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.95, side: roadSide }),
         highway: new THREE.MeshStandardMaterial({ color: 0x333338, roughness: 0.9, side: roadSide }),
@@ -697,6 +772,10 @@ function makeMaterials() {
         fuelBrandA: new THREE.MeshLambertMaterial({ color: 0x1f6fb2 }),
         fuelBrandB: new THREE.MeshLambertMaterial({ color: 0xb22222 })
     };
+    // Đêm vẫn nhận diện được màu asphalt/cỏ/nhà mà KHÔNG nâng ambient/exposure.
+    // Material phát sáng sẵn (bóng đèn) được applyNightColorFloor() tự bỏ qua.
+    for (const m of Object.values(mats)) applyNightColorFloor(m);
+    return mats;
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,6 +1158,7 @@ function getBillboardAdMaterial(onReady) {
     _adMat = new THREE.MeshStandardMaterial({
         color: 0xffffff, roughness: 0.42, metalness: 0.0,
     });
+    applyNightColorFloor(_adMat);
     _adMat.name = "billboard_ad";
 
     const loader = new THREE.TextureLoader();
@@ -1140,9 +1220,20 @@ export class MapLoader {
         this.inProgress = new Set();
         this.loadQueue = [];
         this._buildQueue = [];   // hang cho dang chunk (fix dong bang build dong bo)
+        // Hook tuỳ chọn (main.js gán): chuẩn bị GPU cho chunk TRƯỚC khi attach
+        // vào scene. Trước đây texture upload + shader link dồn ở first-draw
+        // của render(): chunk đô thị ~900 draw call gây spike 1.8s giữa đường.
+        // MapLoader không biết gì về renderer — chỉ gọi callback, giữ API cũ.
+        this.prepareChunkForRender = null;
         this._timer = 0;
         this._lastDir = { x: 0, z: -1 };
         this._segByChunk = new Map();
+        // Đèn đường runtime: cache theo chunk + cache truy vấn gần xe.
+        // Không đụng 1609 file sector (đã có 51k STREET_LIGHT nhưng collector
+        // chạy trước khi chunk load nên toàn bộ từng "chết sáng").
+        this._runtimeStreetLights = true;
+        this._lampByChunk = new Map();
+        this._lampLast = null;
         this._chunkIndex = null;
         this.sectorSize = 0;
         this._sectorCache = new Map();
@@ -1161,6 +1252,7 @@ export class MapLoader {
         this._facadeMats = new Map();
         this._roofMats = new Map();
         this._terrainMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+        applyNightColorFloor(this._terrainMat);
         this._waterGeo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE);
         this._sharedMats = new Set([...Object.values(this._mats), this._terrainMat]);
         this._sharedGeos = new Set([...Object.values(this._geos), this._waterGeo]);
@@ -1240,6 +1332,7 @@ export class MapLoader {
             this._buildSurfaceBoxes();
             this._buildRoadIndex();
             this._buildJunctionIndex();
+            this._initRuntimeStreetLights();
             this._buildRoadCollisionBoxes();
             this._buildRoadGroup();
             this._buildStations();
@@ -1393,6 +1486,7 @@ export class MapLoader {
         let m = this._facadeMats.get(key);
         if (!m) {
             m = new THREE.MeshStandardMaterial({ color: key, roughness: 0.88 });
+            applyNightColorFloor(m);
             this._facadeMats.set(key, m);
         }
         return m;
@@ -1402,6 +1496,7 @@ export class MapLoader {
         let m = this._roofMats.get(key);
         if (!m) {
             m = new THREE.MeshStandardMaterial({ color: key, roughness: 0.92 });
+            applyNightColorFloor(m);
             this._roofMats.set(key, m);
         }
         return m;
@@ -3304,8 +3399,160 @@ export class MapLoader {
         }
     }
 
+    // ------------------------------------------------- runtime street lights
+    _initRuntimeStreetLights() {
+        this._runtimeStreetLights = true;
+        this._lampByChunk = new Map();
+        this._lampLast = null;
+    }
+
+    // Chặn đèn cắm vào sân bến, mặt đường khác, giao lộ, nhà/cột/cây trong chunk.
+    _lampSpotClear(x, z, seg, entry) {
+        if (this._insideStationYard(x, z)) return false;
+        // `_nearestRoad` chỉ trả kết quả khi điểm nằm TRONG corridor (nửa bề rộng
+        // + 2m). Cột mình đặt ở lề +3..6m nên chính đoạn này bị trả null; nếu
+        // vẫn có kết quả -> đang cắm vào một mặt đường khác/đường cắt ngang.
+        if (this._nearestRoad(x, z)) return false;
+
+        if (this._junctionByChunk && this._junctions) {
+            const jk = Math.floor(x / CHUNK_SIZE) + "," + Math.floor(z / CHUNK_SIZE);
+            const ids = this._junctionByChunk.get(jk);
+            if (ids) {
+                for (const id of ids) {
+                    const J = this._junctions.get(id);
+                    if (!J || !J.poly) continue;
+                    let r2 = 0;
+                    for (const p of J.poly) {
+                        const dx = p[0] - J.x, dz = p[1] - J.z;
+                        const d2 = dx * dx + dz * dz;
+                        if (d2 > r2) r2 = d2;
+                    }
+                    const rr = Math.sqrt(r2) + 2.0;
+                    if ((x - J.x) ** 2 + (z - J.z) ** 2 < rr * rr) return false;
+                }
+            }
+        }
+
+        const objects = entry?.data?.objects;
+        if (objects) {
+            for (const o of objects) {
+                if (!o || typeof o.x !== "number") continue;
+                const r = _LAMP_OBSTACLE_RADIUS[o.type];
+                if (!r) continue;
+                const dx = x - o.x, dz = z - o.z;
+                if (dx * dx + dz * dz < r * r) return false;
+            }
+        }
+        const buildings = entry?.data?.buildings;
+        if (buildings) {
+            for (const b of buildings) {
+                const r = 0.5 * Math.hypot(b.w || 5, b.d || 5) + 1.5;
+                const dx = x - b.x, dz = z - b.z;
+                if (dx * dx + dz * dz < r * r) return false;
+            }
+        }
+        return true;
+    }
+
+    // Sinh đèn cho MỘT chunk từ roadGraph. Chỉ nhận vị trí mà base cột thực sự
+    // nằm trong chunk này — tránh nhân đôi ở ranh giới giữa 2 chunk kề nhau.
+    _addRuntimeStreetLights(cx, cz, parent, entry, far = false) {
+        if (!this._runtimeStreetLights || !this.roadGraph) return;
+        const key = cx + "," + cz;
+        const sids = this._segByChunk.get(key);
+        if (!sids || !sids.length) { this._lampByChunk.set(key, []); return; }
+
+        const records = [];
+        const fake = [];
+        const lift = this.world?.roadLift || 0;
+        for (const sid of sids) {
+            const seg = this.roadGraph.getSegment(sid);
+            if (!seg || seg.class === "INTERNAL" || seg.class === "TUNNEL" || seg.type === "tunnel") continue;
+            const a = this.roadGraph.getNode(seg.from);
+            const b = this.roadGraph.getNode(seg.to);
+            if (!a || !b) continue;
+            // Hầm Đèo Cả nằm ở region TUNNEL dù class vẫn là NATIONAL/EXPRESSWAY.
+            // Đèn hầm cần hệ thống riêng, không dùng cột lề ngoài trời.
+            if (a.region === "TUNNEL" || b.region === "TUNNEL") continue;
+            if (this._insideStationYard(a.x, a.z) && this._insideStationYard(b.x, b.z)) continue;
+
+            const dx = b.x - a.x, dz = b.z - a.z;
+            const len = Math.hypot(dx, dz);
+            if (len < 24) continue;
+            const ux = dx / len, uz = dz / len;
+            const nx = -uz, nz = ux;
+            const tr = this._trimOf(sid), bd = this._bendDecorrTrimOf(sid);
+            const start = Math.max(tr[0], bd[0]) + 10;
+            const end = len - Math.max(tr[1], bd[1]) - 10;
+            if (end <= start) continue;
+
+            const firstRule = streetLightRule(seg, a, b, start / len, len);
+            if (!firstRule) continue;
+            const spacing = firstRule.spacing;
+            const y1 = (typeof a.y === "number" ? a.y : this.world.getElevation(a.x, a.z)) + lift;
+            const y2 = (typeof b.y === "number" ? b.y : this.world.getElevation(b.x, b.z)) + lift;
+            let idx = 0;
+            for (let d = start; d <= end; d += spacing, idx++) {
+                // rule lấy theo t (region có thể đổi dọc đoạn dài)
+                const t = d / len;
+                const rule = streetLightRule(seg, a, b, t, len);
+                if (!rule) break;
+                const sides = rule.bothSides ? [-1, 1] : [(idx & 1) ? 1 : -1];
+                const off = (seg.width || 12) * 0.5 + rule.shoulder;
+                for (const side of sides) {
+                    const px = a.x + ux * d + nx * off * side;
+                    const pz = a.z + uz * d + nz * off * side;
+                    if (Math.floor(px / CHUNK_SIZE) !== cx || Math.floor(pz / CHUNK_SIZE) !== cz) continue;
+                    if (!this._lampSpotClear(px, pz, seg, entry)) continue;
+                    // Cánh đèn hướng VÀO lòng đường: side = +1 (bên trái theo
+                    // hướng đi) thì vector về giữa là -normal.
+                    const rot = Math.atan2(-nx * side, -nz * side);
+                    const baseY = lerp(y1, y2, t);
+                    const hx = px + Math.sin(rot) * 2.25;
+                    const hz = pz + Math.cos(rot) * 2.25;
+                    records.push({
+                        key: sid + "|" + side + "|" + idx,
+                        x: hx, y: baseY + 8.5, z: hz,
+                        weight: rule.weight, cls: rule.cls, median: !!rule.median
+                    });
+                    if (!far) fake.push({ type: "STREET_LIGHT", x: px, y: baseY, z: pz, rot });
+                }
+            }
+        }
+
+        this._lampByChunk.set(key, records);
+        this._lampLast = null;   // dép cache truy vấn vì dữ liệu chunk vừa đổi
+        if (fake.length) this._addChunkObjects(fake, parent, far, entry, true);
+    }
+
+    // Trả đèn trong bán kính awaken của pool (180m). Giữ NGUYÊN reference khi xe
+    // đi <15m để main.js không gọi setStreetLamps() mỗi frame.
+    getStreetLampPositions(px, pz) {
+        const last = this._lampLast;
+        if (last && (px - last.x) ** 2 + (pz - last.z) ** 2 < 225) return last.result;
+        const out = [];
+        const seen = new Set();
+        const ccx = Math.floor(px / CHUNK_SIZE), ccz = Math.floor(pz / CHUNK_SIZE);
+        const R2 = 180 * 180;
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+                const arr = this._lampByChunk.get((ccx + dx) + "," + (ccz + dz));
+                if (!arr) continue;
+                for (const rec of arr) {
+                    if (seen.has(rec.key)) continue;
+                    const ddx = rec.x - px, ddz = rec.z - pz;
+                    if (ddx * ddx + ddz * ddz > R2) continue;
+                    seen.add(rec.key);
+                    out.push(rec);
+                }
+            }
+        }
+        this._lampLast = { x: px, z: pz, result: out };
+        return out;
+    }
+
     // --------------------------------------------------------------- objects
-    _addChunkObjects(objects, parent, lowDetail, ownerEntry = null) {
+    _addChunkObjects(objects, parent, lowDetail, ownerEntry = null, forceStreetLight = false) {
         if (!objects || objects.length === 0) return;
         // Bug 8 (va chạm môi trường): CÂY/CỘT ĐÈN/CỘT ĐIỆN = collider tròn
         // (data rỗng -> mtvForHit dùng c.r như hl=hw), GUARDRAIL = hộp dài.
@@ -3358,6 +3605,10 @@ export class MapLoader {
                     push("bush", G.bush, M.dryBush, x, y + 0.5, z, 0.8, 0.7, 0.8, o.rot || 0);
                     break;
                 case "STREET_LIGHT": {
+                    // Sector JSON sinh đèn bằng rule urban thô và có 1.284 vị trí
+                    // trùng. Khi runtime lamp bật, chỉ giữ lại đèn facility/bến
+                    // (đi qua các case riêng), bỏ bản sector để không nhân đôi.
+                    if (this._runtimeStreetLights && !forceStreetLight) break;
                     const rot = o.rot || 0;
                     const ax = Math.sin(rot), az = Math.cos(rot);
                     push("sl_pole", G.pole, M.pole, x, y + 4.5, z, 0.8, 9.0, 0.8, 0);
@@ -4014,6 +4265,7 @@ export class MapLoader {
             white: new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.8 }),
             orange: new THREE.MeshStandardMaterial({ color: 0xe8720c, roughness: 0.7 })
         };
+        for (const m of Object.values(this._csgtMats)) applyNightColorFloor(m);
         return this._csgtMats;
     }
 
@@ -4842,6 +5094,9 @@ export class MapLoader {
 
     _unloadChunk(key, chunk) {
         if (!chunk) return;
+        // Đèn runtime đi theo chunk; xóa cache để chunk load lại không trả đèn ma.
+        if (this._lampByChunk) this._lampByChunk.delete(key);
+        this._lampLast = null;
         // Bug 8: gỡ collider tĩnh (nhà/cây/cột) của chunk unload — nếu không,
         // collider còn kẹt trong collisionSystem: xạ hàng vô hình chặn xe khi
         // lái quay lại vùng đã tải (collider "ma") + phình Map mỗi lần lặp.
@@ -5051,12 +5306,18 @@ export class MapLoader {
                 task.stage = 3;
             } else if (task.stage === 3) {
                 if (e.data) this._addChunkObjects(e.data.objects, g, dist > 1100, e);
+                // Sinh đèn từ roadGraph sau khi đã có buildings/objects để chặn
+                // cột cắm vào nhà/cây/cột điện. Chạy trong budget có sẵn.
+                this._addRuntimeStreetLights(e.cx, e.cz, g, e, dist > 1100);
                 task.stage = 4;
             } else {
                 // Giai doan cuoi: gan vao scene + bounding box cho frustum culling.
                 // Tối đa 1 chunk attach/frame: LAN GPU upload (first-draw) của
                 // chunk mới được chia đều ra các frame thay vì dồn cùng 1 render.
                 if (attachedThisCall >= 1) return;
+                if (typeof this.prepareChunkForRender === "function") {
+                    try { this.prepareChunkForRender(g); } catch (e) { /* best-effort */ }
+                }
                 this.chunkRoot.add(g);
                 this.freezeStaticMeshes(g);
                 e.group.boundingBox = new THREE.Box3().setFromObject(g);
@@ -5091,6 +5352,7 @@ export class MapLoader {
             const far = cd > 1100;
             this._addChunkBuildings(entry.data.buildings, g, cd > 900, entry);
             this._addChunkObjects(entry.data.objects, g, far, entry);
+            this._addRuntimeStreetLights(entry.cx, entry.cz, g, entry, far);
             // facilities (tram xang/nghi) da render toan cuc 1 lan trong
             // _buildStations -> khong render lai o day (tranh nhan ban + z-fighting)
         }

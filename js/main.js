@@ -21,9 +21,15 @@ import { CollisionSystem } from "./collisionSystem.js";
 import { updatePhysicsState, PHYSICS_STATE, registerImpact, computeYawRate, updateRoadRoughness, applySurfaceFromSegment, computeVehicleMass, computeVehicleForces, rectContactMTV, computeEnginePower, configureVehicleGeometry, selectGear } from "./physics_step.js"; // vật lý cảm giác (roll/pitch/heave + nhíp bánh + RPM)
 
 let renderer, scene, camera, canvas, map, lighting, npc, bus, interior, passengerSystem, trafficManager, trafficDebug, ui, cameraSystem;
+// Đèn bến/facility nạp 1 lần lúc startup; đèn đường lấy từ MapLoader theo vị trí xe.
+let baseStreetLamps = [], lastRoadLamps = null;
 let travelClock = null;   // ước lượng giờ game từ lái xe thật (js/TravelClock.js)
 const clock = new THREE.Clock();
 let gameState = "menu", paused = false;
+// Chặn renderer.render() trong lúc boot/loading: render đầu tiên trên scene đang
+// dựng dở phải biên dịch toàn bộ shader program (đo được 5955.7ms ở menu).
+// Compile xong ở cuối startGame() mới bật flag này — stall nằm hẳn trong loading.
+let renderReady = false;
 let doorProgress = 0, doorTarget = 0, doorServiceStarted = false;
 let playerColId = -1;
 let playerStuckT = 0;   // đếm thời gian bị chặn hoàn toàn liên tục (Bug "dính cứng")
@@ -145,6 +151,7 @@ let wheelSpinAngle = 0;   // rad — góc quay cộng dồn của bánh (theo qu
 const KEY_BY_NAME = new Map();
 const LEGACY_BY_KEYCODE = new Map();
 const keysPressed = new Map();
+let ledChordUsed = false;   // L+1..4 đã xử lý trong lần giữ L này chưa
 const steerReleaseAt = new Map();
 const physicalSteerKeys = new Set();
 const imeSteerKeys = new Set();
@@ -339,6 +346,7 @@ function pruneStaleKeys(now) {
 
 function clearPressedKeys() {
     keysPressed.clear();
+    ledChordUsed = false;
     steerReleaseAt.clear();
     physicalSteerKeys.clear();
     imeSteerKeys.clear();
@@ -739,7 +747,11 @@ function updateVehiclePhysics(dt) {
     // thực tế) và nghiêng kép khi có motion group.
     
     if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z, bus.group.position.y);
-    bus.group.updateMatrixWorld(true);
+    // Chỉ cập nhật matrix của ROOT. Camera system cũng đọc root matrix này;
+    // renderer sẽ update world matrix đầy đủ 1 lần trước khi render. Dùng
+    // updateMatrixWorld(true) ở đây từng recompose cả 415 mesh nội thất mỗi
+    // substep (đã freeze) -> multiplyMatrices thành hotspot.
+    bus.group.updateWorldMatrix(false, false);
 }
 
 // ===== PHÍM CỨU HỘ (R) — đưa xe về điểm ĐƯỜNG HỢP LỆ gần nhất =====
@@ -954,14 +966,13 @@ function initInput() {
         }
         if (code === "KeyL" && bus) {
             const heldDigit = LED_GROUP_NAMES.findIndex((_, i) => keysPressed.has(`Digit${i + 1}`));
-            if (heldDigit >= 0) {
-                toggleLedGroup(heldDigit);
-            } else {
-                bus.setInteriorLed?.(!bus.interiorLedOn);
-                ui?.toast(`[icon:light] LED xe ${bus.interiorLedOn ? 'BẬT' : 'TẮT'}`);
-            }
+            ledChordUsed = heldDigit >= 0;
+            if (heldDigit >= 0) toggleLedGroup(heldDigit);
+            // Master on/off chuyển sang lúc NHẢ L. Nếu bấm L rồi mới bấm số,
+            // toggle master ở keydown sẽ làm L+1 vừa đổi nhóm vừa tắt cả đèn.
         }
         if (/^Digit[1-4]$/.test(code) && bus && keysPressed.has("KeyL")) {
+            ledChordUsed = true;
             toggleLedGroup(Number(code.slice(-1)) - 1);
         }
         if (code === "KeyT" && bus) {
@@ -992,6 +1003,11 @@ function initInput() {
                 keysPressed.delete(code);
                 steerReleaseAt.delete(code);
             }
+            if (code === "KeyL" && bus && !ledChordUsed) {
+                bus.setInteriorLed?.(!bus.interiorLedOn);
+                ui?.toast(`[icon:light] LED xe ${bus.interiorLedOn ? 'BẬT' : 'TẮT'}`);
+            }
+            if (code === "KeyL") ledChordUsed = false;
             return;
         }
 
@@ -1907,6 +1923,38 @@ async function startGameFromMenu() {
         ui.setLoading("Đang tải dữ liệu bản đồ (JSON)...", 0.4);
         await new Promise(r => setTimeout(r, 50));
         map = new MapLoader(scene);
+        // Chunk mới có material/texture chưa từng render. Để first-draw tự làm thì
+        // render() phải upload hàng chục texture + link shader trong CÙNG 1 frame
+        // (đo được 1815ms khi xe chạy vào khu đô thị dày: texture 44→70, program
+        // 26→28, draw call 729→1621). Đẩy sang lúc attach chunk, dùng initTexture
+        // + compileAsync — trình duyệt có KHR_parallel_shader_compile nên link
+        // shader chạy nền, không chặn main thread. Không bỏ object/chi tiết nào.
+        const CHUNK_TEX_SLOTS = [
+            'map', 'normalMap', 'bumpMap', 'displacementMap', 'roughnessMap', 'metalnessMap',
+            'alphaMap', 'aoMap', 'emissiveMap', 'lightMap', 'envMap', 'specularMap',
+            'clearcoatMap', 'clearcoatNormalMap', 'clearcoatRoughnessMap',
+            'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap', 'transmissionMap', 'thicknessMap'
+        ];
+        map.prepareChunkForRender = (group) => {
+            if (!renderer || !camera || !scene) return;
+            const materials = new Set(), textures = new Set();
+            group.traverse((o) => {
+                const m = o.material;
+                if (!m) return;
+                if (Array.isArray(m)) { for (const x of m) if (x) materials.add(x); }
+                else materials.add(m);
+            });
+            for (const mat of materials) {
+                for (const slot of CHUNK_TEX_SLOTS) {
+                    const t = mat[slot];
+                    if (t && t.isTexture) textures.add(t);
+                }
+            }
+            for (const t of textures) {
+                try { renderer.initTexture(t); } catch (e) { /* best-effort */ }
+            }
+            try { renderer.compileAsync(group, camera, scene); } catch (e) { /* best-effort */ }
+        };
         // Apply render distance
         map.renderRadius = gameSettings.renderDist;
         const success = await map.loadInitialData();
@@ -1914,7 +1962,21 @@ async function startGameFromMenu() {
         ui.setupMinimap(map);
         // Nap vi tri cot den cho street lights pool (chi thuc hien MOT LAN, truoc
         // frame render dau tien -> numPointLights co dinh, khong recompile shader).
-        lighting.setStreetLamps(collectStreetLampPositions(scene));
+        baseStreetLamps = collectStreetLampPositions(scene);
+        lighting.setStreetLamps(baseStreetLamps);
+        // Pre-warm chunk quanh spawn NGAY TRONG LOADING. updateWorld() chỉ chạy
+        // sau gameState='playing', nên trước đây chunk đầu tiên mới bắt đầu build
+        // ~1.7s sau khi vào game -> cú render 679ms đầu chuyến. Chạy vài chu kỳ
+        // stream ở đây (đã có camera + light pool ổn định) để mọi material được
+        // compile ở bước cuối boot, không đụng logic chơi hay bỏ object.
+        if (map.spawn && Number.isFinite(map.spawn.x) && Number.isFinite(map.spawn.z)) {
+            camera.updateMatrixWorld(true);
+            camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+            for (let i = 0; i < 12; i++) {
+                map.updateChunks(map.spawn.x, map.spawn.z, 0.3, null, camera);
+                if ((i & 1) === 0) await new Promise(r => setTimeout(r, 0));
+            }
+        }
         await new Promise(r => setTimeout(r, 100));
         
         ui.setLoading("Xe khách 3D...", 0.6);
@@ -2059,6 +2121,21 @@ async function startGameFromMenu() {
         passengerSystem = createPassengerSystem({ scene, map, npc, bus, ui, interiorType: gameSettings.interior });
         await new Promise(r => setTimeout(r, 10));
         
+        // Dồn chi phí biên dịch shader "lần đầu" vào màn hình loading. Trên
+        // Pentium N5000, getProgram/getParameters khi render material mới có
+        // thể stall hàng trăm ms -> 2s ngay giữa lúc đang lái (đỉnh [PERF]
+        // 2033.9ms từng ghi nhận). renderer.compile() đi qua mọi material đang
+        // có trong scene và tạo program trước, không đổi chất lượng hay bỏ object.
+        try {
+            const tCompile = performance.now();
+            renderer.compile(scene, camera);
+            console.log(`[PERF] precompile shaders ${(performance.now() - tCompile).toFixed(0)}ms, programs ${renderer.info.programs?.length || 0}`);
+        } catch (e) {
+            console.warn('[PERF] precompile shaders skipped:', e?.message || e);
+        }
+        // Mở render SAU khi compile xong: frame đầu tiên của game vì thế chỉ
+        // bind program có sẵn, không còn cú stall 2–6s giữa lúc đang lái.
+        renderReady = true;
         ui.setLoading("Hoàn tất...", 1.0);
         await new Promise(r => setTimeout(r, 100));
         ui.hideLoading();
@@ -2072,6 +2149,10 @@ async function startGameFromMenu() {
         canvas?.focus?.();
         clock.start();
         lastTime = performance.now();
+        // perfWindowStart khởi tạo lúc import module (trước khi boot ~40s). Nếu
+        // không đặt lại ở đây, cửa sổ [PERF] đầu tiên chụp nhầm mấy frame lúc
+        // menu/loading (log cũ: "Spikes 2/4 frame", "đỉnh 21754.6ms").
+        perfWindowStart = lastTime;
     } catch (error) {
         console.error("❌ Lỗi chi tiết:", error);
         alert("Lỗi tải game:\n" + error.message + "\n\nStack: " + error.stack);
@@ -2099,8 +2180,18 @@ function updateWorld(delta) {
         lighting.timeScale = r.timeScale;
         if (r.delayMinutes > 0) lighting.addGameMinutes(r.delayMinutes);
     }
-    // Pass busGroup for shadow cascade updates
-    lighting.update(delta, bus?.group || null);
+    // Đèn đường runtime theo chunk: chỉ đổi danh sách khi xe đi đủ xa (MapLoader
+    // đã cache reference), giữ nguyên 6 PointLight + visible=true.
+    if (bus?.group && map?.getStreetLampPositions) {
+        const roadLamps = map.getStreetLampPositions(bus.group.position.x, bus.group.position.z);
+        if (roadLamps && roadLamps !== lastRoadLamps) {
+            lastRoadLamps = roadLamps;
+            lighting.setStreetLamps(baseStreetLamps.concat(roadLamps));
+        }
+    }
+    // Ánh sáng/giờ game là visual work: gom delta các substep, gọi 1 lần/frame
+    // trong loop(). Tổng delta vẫn bằng nhau nên đồng hồ không trôi.
+    if (lighting) pendingLightingDelta += delta;
     if (bus && bus.setDoor) {
         doorProgress += (doorTarget - doorProgress) * Math.min(1, 3.0 * delta);
         bus.setDoor?.(doorProgress);
@@ -2334,17 +2425,30 @@ const MAX_HISTORY = 60;
 // Thống kê spike theo cửa sổ 10s (xem loop() — KHÔNG warn từng frame nữa)
 let perfWindowStart = performance.now();
 let perfWindowSum = 0, perfWindowCount = 0;
-let perfSpikeCount = 0, perfPeakMs = 0, perfMaxMs = 0;
+let perfSpikeCount = 0, perfPeakMs = 0;
+// Snapshot của CHÍNH frame đỉnh. Trước đây log lấy TB cả cửa sổ 10s cho đỉnh
+// của 1 frame nên cú 2033.9ms bị hòa ra "updateWorld 0.0ms · render 8.3ms" —
+// nhìn như game không làm gì mà vẫn giật 2 giây.
+let perfPeakFrame = null;
 // Instrumentation chi tiết từng section (ms accumulated trong cửa sổ 10s)
-const perfSection = { physics: 0, traffic: 0, chunk: 0, shadow: 0, render: 0, other: 0 };
+const perfSection = { physics: 0, traffic: 0, chunk: 0, lighting: 0, shadow: 0, render: 0, other: 0 };
+let pendingLightingDelta = 0;
 
 function loop() {
     try {
         if (webglLost) return;
         const frameStart = performance.now();
         if (webglLost) return;
+        // Chụp bộ đếm section TRƯỚC frame để tính riêng chi phí của frame này.
+        const secBefore = {
+            physics: perfSection.physics, chunk: perfSection.chunk, traffic: perfSection.traffic,
+            lighting: perfSection.lighting, shadow: perfSection.shadow, render: perfSection.render
+        };
         const now = performance.now();
-        let rawDelta = (now - lastTime) / 1000;
+        // gap = khoảng cách rAF thực, CHƯA clamp. rawDelta bị clamp 250ms nên
+        // stall giữa 2 frame (tab nền, GC, DevTools) trước đây hoàn toàn vô hình.
+        const rawGapMs = now - lastTime;
+        let rawDelta = rawGapMs / 1000;
         lastTime = now;
         if (rawDelta > MAX_FRAME_DELTA) rawDelta = MAX_FRAME_DELTA;
         if (gameState === "playing" && !paused && !isConsoleOpen) {
@@ -2363,7 +2467,16 @@ function loop() {
             if (accumulator < 0) accumulator = 0;
         }
         if (trafficDebug && trafficDebug.enabled) trafficDebug.update(rawDelta);
-        
+
+        // Lighting/atmosphere/shadow cascade/đèn xe — chạy 1 lần/frame thay vì
+        // mỗi physics substep. Bus đã đứng yên ở vị trí cuối cùng của frame.
+        if (lighting && pendingLightingDelta > 0) {
+            const t0 = performance.now();
+            lighting.update(pendingLightingDelta, bus?.group || null);
+            perfSection.lighting += performance.now() - t0;
+            pendingLightingDelta = 0;
+        }
+
         // Render shadows BEFORE main scene render
         if (lighting && gameState === "playing") {
             const t0 = performance.now();
@@ -2371,7 +2484,7 @@ function loop() {
             perfSection.shadow += performance.now() - t0;
         }
         
-        if (renderer && scene && camera) {
+        if (renderReady && renderer && scene && camera) {
             const t0 = performance.now();
             renderer.render(scene, camera);
             if (gameState === "playing" && lighting?.atmosphereSystem) {
@@ -2381,39 +2494,62 @@ function loop() {
         }
         if (gameState === "playing") updateHUD(rawDelta);
         
-        // Frame time monitoring
+        // Frame time monitoring — CHỈ khi đang chơi. Lúc loading, pre-warm
+        // chunk + compile shader là chi phí có chủ đích và đã được log riêng
+        // ([PERF] precompile shaders); gộp vào warning gameplay chỉ tạo nhiễu
+        // kiểu "đỉnh 7493ms lúc menu" như trước. Không tắt đo trong gameplay.
+        if (gameState === "playing") {
         const frameTime = performance.now() - frameStart;
         frameTimeHistory[frameTimeIndex] = frameTime;
         frameTimeIndex = (frameTimeIndex + 1) % MAX_HISTORY;
         if (frameTimeCount < MAX_HISTORY) frameTimeCount++;
 
-        // [PERF] frame spike — GOM THỐNG KÊ thay vì warn từng frame.
-        // Trước đây: mỗi frame >50ms in 1 dòng warn -> máy N5000 (mọi frame đều
-        // >50ms) spam console liên tục, mỗi dòng còn kèm stack trace. Cách mới:
-        // đếm spike trong cửa sổ 10s, chỉ in 1 dòng tổng hợp mỗi cửa sổ (giữ đủ
-        // thông tin chẩn đoán: đỉnh, trung bình, % spike). Cảnh báo vẫn ilgilen
-        // hoạt động — không tắt hệ thống đo, chỉ bỏ lặp vô nghĩa.
+        // [PERF] GOM THỐNG KÊ 10s + lưu riêng chi tiết của CHÍNH frame đỉnh.
+        // Vẫn không warn từng frame (N5000 spam đặc), nhưng sửa chỗ cũ gán TB
+        // cả cửa sổ vào đỉnh: log "đỉnh 2033.9ms · updateWorld 0.0ms" tự mâu
+        // thuẫn, không truy vết được. rawGapMs giúp tách stall TRONG loop và
+        // stall GIỮA 2 frame (tab nền / GC / DevTools — rawDelta cũ bị clamp
+        // 250ms nên hoàn toàn vô hình).
         perfWindowSum += frameTime;
         perfWindowCount++;
-        if (frameTime > MAX_FRAME_TIME) {
+        if (frameTime > MAX_FRAME_TIME || rawGapMs > MAX_FRAME_TIME) {
             perfSpikeCount++;
-            if (frameTime > perfPeakMs) perfPeakMs = frameTime;
+            const worst = Math.max(frameTime, rawGapMs);
+            if (worst > perfPeakMs) {
+                perfPeakMs = worst;
+                const fPhysics = perfSection.physics - secBefore.physics;
+                const fLighting = perfSection.lighting - secBefore.lighting;
+                const fShadow = perfSection.shadow - secBefore.shadow;
+                const fRender = perfSection.render - secBefore.render;
+                perfPeakFrame = {
+                    frame: frameTime, gap: rawGapMs, state: gameState,
+                    physics: fPhysics,
+                    chunk: perfSection.chunk - secBefore.chunk,
+                    traffic: perfSection.traffic - secBefore.traffic,
+                    lighting: fLighting, shadow: fShadow, render: fRender,
+                    other: Math.max(0, frameTime - fPhysics - fLighting - fShadow - fRender)
+                };
+            }
         }
-        perfMaxMs = Math.max(perfMaxMs, frameTime);
         const nowLoop = performance.now();
         if (nowLoop - perfWindowStart >= 10000) {
             if (perfSpikeCount > 0) {
                 const avg = perfWindowSum / Math.max(1, perfWindowCount);
                 const n = Math.max(1, perfWindowCount);
                 const s = perfSection;
-                console.warn(`[PERF] Spikes ${perfSpikeCount}/${perfWindowCount} frame trong 10s — đỉnh ${perfMaxMs.toFixed(1)}ms, TB ${avg.toFixed(1)}ms`
-                    + ` | updateWorld ${(s.physics / n).toFixed(1)}ms (chunk ${(s.chunk / n).toFixed(1)}, traffic ${(s.traffic / n).toFixed(1)})`
-                    + ` · shadow ${(s.shadow / n).toFixed(1)}ms · render ${(s.render / n).toFixed(1)}ms`);
+                const p = perfPeakFrame || { frame: 0, gap: 0, state: gameState, physics: 0, chunk: 0, traffic: 0, lighting: 0, shadow: 0, render: 0, other: 0 };
+                console.warn(`[PERF] Spikes ${perfSpikeCount}/${perfWindowCount} frame trong 10s — đỉnh ${perfPeakMs.toFixed(1)}ms`
+                    + ` (loop ${p.frame.toFixed(1)} / gap ${p.gap.toFixed(1)}, ${p.state}), TB ${avg.toFixed(1)}ms`
+                    + ` | FRAME ĐỈNH: updateWorld ${p.physics.toFixed(1)}ms (chunk ${p.chunk.toFixed(1)}, traffic ${p.traffic.toFixed(1)})`
+                    + ` · lighting ${p.lighting.toFixed(1)}ms · shadow ${p.shadow.toFixed(1)}ms · render ${p.render.toFixed(1)}ms · other ${p.other.toFixed(1)}ms`
+                    + ` | TB10s: render ${(s.render / n).toFixed(1)}ms`);
             }
             perfWindowStart = nowLoop;
-            perfWindowSum = 0; perfWindowCount = 0; perfSpikeCount = 0; perfPeakMs = 0; perfMaxMs = 0;
+            perfWindowSum = 0; perfWindowCount = 0; perfSpikeCount = 0; perfPeakMs = 0;
+            perfPeakFrame = null;
             perfSection.physics = 0; perfSection.traffic = 0; perfSection.chunk = 0;
-            perfSection.shadow = 0; perfSection.render = 0; perfSection.other = 0;
+            perfSection.lighting = 0; perfSection.shadow = 0; perfSection.render = 0; perfSection.other = 0;
+        }
         }
     } catch (e) {
         console.error("Loop Error:", e);

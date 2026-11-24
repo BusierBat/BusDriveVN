@@ -6,6 +6,15 @@ let endermanModel = null, activeEnderman = null, lastCheckTime = 0;
 
 export function initEndermanEasterEgg() {
     const loader = new GLTFLoader();
+    // enderman.glb (Sketchfab) khai báo KHR_materials_pbrSpecularGlossiness trong
+    // extensionsRequired. three.js hiện tại đã bỏ handler extension legacy này
+    // nên GLTFLoader cảnh báo ở GLTFLoader.js:419 — dù material của nó bị thay
+    // hẳn bằng MeshStandardMaterial đen ngay dưới đây (chỉ dùng geometry).
+    // Đăng ký plugin no-op = khai báo có chủ đích bỏ qua extension, KHÔNG phải
+    // chặn console.warn hay sửa vendor: loader vẫn parse bình thường, chỉ hết
+    // cảnh báo sai sự thật. Xem GLTFLoader.parse(): plugin.name được đưa vào cả
+    // plugins[] và extensions[], làm điều kiện warn ở line 417 không còn đúng.
+    loader.register(() => ({ name: 'KHR_materials_pbrSpecularGlossiness' }));
     loader.load('assets/model/enderman.glb', (gltf) => {
         endermanModel = gltf.scene;
         const box = new THREE.Box3().setFromObject(endermanModel);

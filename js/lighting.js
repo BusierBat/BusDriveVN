@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { TimeSystem, getTimeOfDayLabel } from "./time_system.js";
 import { ShadowSystem, SHADOW_QUALITY, ContactShadowShader } from "./shadows.js";
 import { AtmosphereSystem, AtmosphericPostProcess } from "./atmosphere.js";
-import { clamp, lerp } from "./utils.js";
+import { clamp, lerp, nightColorFloorUniform } from "./utils.js";
 
 export const LIGHTING_QUALITY_PRESETS = {
     LOW: {
@@ -213,7 +213,8 @@ export class LightingSystem {
         }
     }
 
-    // Nhap danh sach cot den (toa do theo WORLD) — goi MOT LAN sau khi map xay xong.
+    // Nhap danh sach cot den (toa do WORLD). Tuong thich ca {x,y,z} cu va
+    // {x,y,z,weight,cls,median} do MapLoader.getStreetLampPositions() sinh ra.
     setStreetLamps(positions) {
         this.streetLamps = (Array.isArray(positions) && positions.length) ? positions : [];
         this._streetLampTimer = STREET_LIGHT_REFRESH;   // chon lai cot ngay
@@ -240,7 +241,9 @@ export class LightingSystem {
             // tich lien tuong, khong can doi cot).
             for (let k = 0; k < N; k++) {
                 const pl = this.streetLights[k];
-                pl.intensity = (pl.userData.lampIdx >= 0) ? STREET_LIGHT_INTENSITY * nf : 0;
+                const L = pl.userData.lampIdx >= 0 ? lamps[pl.userData.lampIdx] : null;
+                const w = L && Number.isFinite(L.weight) ? clamp(L.weight, 0.35, 1.25) : 1;
+                pl.intensity = L ? STREET_LIGHT_INTENSITY * nf * w : 0;
             }
             return;
         }
@@ -272,7 +275,8 @@ export class LightingSystem {
             const L = lamps[li];
             pl.userData.lampIdx = li;
             pl.position.set(L.x, L.y, L.z);
-            pl.intensity = STREET_LIGHT_INTENSITY * nf;
+            const w = Number.isFinite(L.weight) ? clamp(L.weight, 0.35, 1.25) : 1;
+            pl.intensity = STREET_LIGHT_INTENSITY * nf * w;
         }
     }
 
@@ -392,6 +396,14 @@ export class LightingSystem {
 
         this.scene.background.copy(time.getSkyColor());
         this.renderer.toneMappingExposure = time.getExposure() * (mix?.exposure ?? 1);
+
+        // Giữ nhận diện màu vật liệu ban đêm KHÔNG bằng cách nâng ambient/exposure.
+        // Floor này nằm trong shader của từng material (diffuseColor riêng), nên
+        // đường vẫn xám, cỏ vẫn xanh, nhà vẫn có màu — dù AmbientLight vẫn 0.035.
+        // NoToneMapping không nén sáng như ACES nên dùng hệ số thấp hơn.
+        const nightAmount = clamp(1 - sunInt / 0.12, 0, 1);
+        const toneScale = this.renderer.toneMapping === THREE.NoToneMapping ? 0.55 : 1;
+        nightColorFloorUniform.value = 0.055 * nightAmount * toneScale;
     }
 
     _getForwardVector(object) {

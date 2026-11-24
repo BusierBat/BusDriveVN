@@ -631,6 +631,42 @@ export function createObjectPool(createFn, resetFn = null, maxSize = 64) {
     };
 }
 
+// ===== ĐÊM: GIỮ MÀU VẬT LIỆU MÀ KHÔNG NÂU AMBIENT/EXPOSURE =====
+// Mọi material được mark ở đây dùng CHUNG 1 uniform. LightingSystem chỉ đổi
+// uniform này theo nightFactor; không đổi AmbientLight/toneMappingExposure nên
+// độ tối tổng thể của đêm không bị đẩy lên. Shader cộng thêm 1 thành phần
+// indirectDiffuse = diffuseColor * floor — tức màu gốc (kể cả map texture và
+// instanceColor) tự phát lại 1 lượng rất nhỏ khi trời tối.
+export const nightColorFloorUniform = { value: 0 };
+
+export function applyNightColorFloor(material) {
+    if (!material || !material.isMaterial || material.userData?.nightFloorPatched) return material;
+    const lit = material.isMeshLambertMaterial || material.isMeshStandardMaterial || material.isMeshPhongMaterial;
+    if (!lit || material.toneMapped === false) return material;
+    const em = material.emissive;
+    if (em && (em.r || em.g || em.b) && material.emissiveIntensity > 0) return material;
+
+    const prevCompile = material.onBeforeCompile;
+    const prevKey = material.customProgramCacheKey;
+    material.onBeforeCompile = function (shader, renderer) {
+        if (prevCompile) prevCompile.call(this, shader, renderer);
+        const marker = "#include <lights_fragment_end>";
+        if (!shader.fragmentShader.includes(marker)) return;
+        shader.uniforms.uNightColorFloor = nightColorFloorUniform;
+        shader.fragmentShader = "uniform float uNightColorFloor;\n" + shader.fragmentShader.replace(
+            marker,
+            marker + "\n\treflectedLight.indirectDiffuse += diffuseColor.rgb * uNightColorFloor;"
+        );
+    };
+    material.customProgramCacheKey = function () {
+        const base = prevKey ? prevKey.call(this) : "";
+        return base + "|nightFloor1";
+    };
+    material.userData.nightFloorPatched = true;
+    material.needsUpdate = true;
+    return material;
+}
+
 // Pre-allocated temp objects for hot paths (singleton pattern)
 export const Temp = {
     vec3: () => getVec3(),

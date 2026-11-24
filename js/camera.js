@@ -332,7 +332,10 @@ export class CameraSystem {
 
   update(deltaTime) {
     if (!this.busGroup) return;
-    this.busGroup.updateMatrixWorld(true);
+    // Camera chỉ cần matrixWorld của ROOT xe. updateMatrixWorld(true) ở đây
+    // recompose toàn bộ con (nội thất đã freeze) mỗi substep — lãng phí và
+    // từng là hotspot multiplyMatrices trong trace.
+    this.busGroup.updateWorldMatrix(false, false);
     const busWorldMatrix = this.busGroup.matrixWorld;
     const mode = this.modes[this.currentIndex];
 

@@ -123,38 +123,64 @@ function makeInteriorLedApplier(groups, options = {}) {
         .map(name => groups.Lights?.getObjectByName(name));
     const stripLights = groups.ledStripLights || [];
     const stripFactors = [0.7, 0.9, 1.0, 1.0, 1.0, 0.9, 0.7];
+
+    // Mỗi nhóm LED có ĐÈN RIÊNG. Không dùng max() chung như trước — bật L+2
+    // mà đèn trần cũng sáng lên chính là lỗi cần sửa ở đây.
+    const groupLights = [
+        { name: 'trim', x: 0, y: CEILING_Y - 0.55, z: 3.2, distance: 16, base: 4.0 },
+        { name: 'exterior', x: 0, y: CEILING_Y - 0.25, z: 0, distance: 18, base: 4.0 },
+        { name: 'body', x: 0, y: 2.20, z: -3.2, distance: 16, base: 4.0 }
+    ].map(def => {
+        let pl = groups.Lights?.getObjectByName(`${def.name}GroupLight`);
+        if (!pl) {
+            pl = new THREE.PointLight(0x88ccff, 0, def.distance, 1.0);
+            pl.name = `${def.name}GroupLight`;
+            pl.position.set(def.x, def.y, def.z);
+            pl.userData.ledGroup = def.name;
+            pl.userData.base = def.base;
+            groups.Lights.add(pl);
+        }
+        return pl;
+    });
+
     const level = (state, name) => state.master === false
         ? 0
         : Math.max(0, Math.min(1, Number(state[name]) || 0));
     return function applyLedGroups(state) {
         const ceiling = level(state, 'ceiling');
         const trim = level(state, 'trim');
-        // Bất kỳ nhóm LED nào sáng cũng cấp nguồn cho dàn PointLight cabin —
-        // L+2/L+3/L+4 không chỉ tự phát sáng trên mat mà chiếu thật vào ghế/lối đi.
-        const lightLevel = Math.max(ceiling, trim, level(state, 'exterior'), level(state, 'body'));
         matLEDBlue.emissiveIntensity = ceiling * 5.0;
         matLEDBlueTrim.emissiveIntensity = trim * 5.0;
         matLEDNude.emissiveIntensity = ceiling * 5.5;
         matLEDRib.emissiveIntensity = ceiling * 3.5;
-        matCluster.emissiveIntensity = state.master === false ? 0.1 : 0.3 + 0.7 * lightLevel;
-        if (named[0]) named[0].intensity = lightLevel * 6.0;
-        if (named[1]) named[1].intensity = lightLevel * 5.0;
-        if (named[2]) named[2].intensity = lightLevel * 5.0;
-        if (named[3]) named[3].intensity = lightLevel * 4.5;
-        if (named[4]) named[4].intensity = lightLevel * 4.5;
+        // Cụm đồng hồ là đèn nền táp-lô, không nằm trong 4 nhóm LED — chỉ nghe master.
+        matCluster.emissiveIntensity = state.master === false ? 0.1 : 1.0;
+
+        // 5 đèn trần + dải LED + đèn phụ CHỈ nghe L+1.
+        if (named[0]) named[0].intensity = ceiling * 6.0;
+        if (named[1]) named[1].intensity = ceiling * 5.0;
+        if (named[2]) named[2].intensity = ceiling * 5.0;
+        if (named[3]) named[3].intensity = ceiling * 4.5;
+        if (named[4]) named[4].intensity = ceiling * 4.5;
         for (let i = 0; i < stripLights.length; i++) {
             const pl = stripLights[i];
             if (!pl) continue;
             pl.intensity = options.stripFromBase
-                ? lightLevel * pl.userData.base
-                : lightLevel * 5.0 * (stripFactors[i] || 0.8);
+                ? ceiling * pl.userData.base
+                : ceiling * 5.0 * (stripFactors[i] || 0.8);
             pl.visible = true;
         }
         if (options.extraLights) {
             for (const pl of options.extraLights) {
-                pl.intensity = lightLevel * pl.userData.base * 1.5;
+                pl.intensity = ceiling * pl.userData.base * 1.5;
                 pl.visible = true;
             }
+        }
+        // L+2/L+3/L+4: mỗi nhóm một PointLight, chỉ sáng theo level của chính nó.
+        // Giữ visible=true dù level=0 để không đổi số light trong shader lúc bấm phím.
+        for (const pl of groupLights) {
+            pl.intensity = level(state, pl.userData.ledGroup) * pl.userData.base;
+            pl.visible = true;
         }
         groups.Led?.traverse(o => {
             if (o.isMesh && (o.material === matLEDBlue || o.material === matLEDNude || o.material === matLEDRib)) {
@@ -1430,7 +1456,9 @@ export function optimizeInteriorLights(root) {
     // 5 đèn chính (được đặt tên) giữ nguyên; phần còn lại gộp.
     const KEEP = new Set(['centerLedLight', 'leftLedLight', 'rightLedLight', 'frontLedLight', 'rearLedLight']);
     const main = all.filter((l) => KEEP.has(l.name));
-    const extra = all.filter((l) => !KEEP.has(l.name));
+    // 3 đèn riêng của L+2/L+3/L+4 phải sống sót qua bước gộp đèn.
+    const groupOnly = all.filter((l) => !!l.userData.ledGroup);
+    const extra = all.filter((l) => !KEEP.has(l.name) && !l.userData.ledGroup);
 
     // Giữ 4 đèn đại diện, dời dọc lối đi (trục z), tăng công suất + tầm với.
     const kept = extra.slice(0, 4);
@@ -1448,7 +1476,7 @@ export function optimizeInteriorLights(root) {
         if (l.parent) l.parent.remove(l);
         out.merged++;
     }
-    out.after = main.length + kept.length;
+    out.after = main.length + groupOnly.length + kept.length;
     return out;
 }
 
