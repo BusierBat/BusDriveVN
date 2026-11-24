@@ -1,5 +1,5 @@
 // physics_step.js 
-const BUS_WHEELBASE = 6.35;           // m — giữa cầu trước và cầu sau
+let BUS_WHEELBASE = 6.25;            // m — mặc định khớp geometry bus.js (frontAxleZ - rearAxleZ)
 const BUS_MASS_EMPTY = 12000;         // kg — xe không tải
 const BUS_MASS_FULL = 16000;          // kg — xe đầy khách + hành lý
 const MAX_STEER_ANGLE = 0.55;         // rad — chặn cứng góc lái nhận vào
@@ -126,9 +126,23 @@ const MASS_MAX = 16000;           // kg — giới hạn tải trọng
 const CG_FRONT_RATIO = 0.45;      // tỉ lệ tĩnh trên cầu trước
 const CG_REAR_RATIO = 0.55;       // tỉ lệ tĩnh trên cầu sau
 const CG_HEIGHT = 1.80;           // m — trọng tâm theo Y
-const TRACK_WIDTH = 2.05;         // m — khe giữa hai bánh cùng trục
-const WHEELBASE_PH2 = BUS_WHEELBASE;  // m — giữa hai trục
-const WHEEL_RADIUS = 0.525;       // m — bán kính bánh
+let TRACK_WIDTH = 2.05;           // m — khe giữa hai bánh cùng trục (override từ bus.js)
+export let WHEEL_RADIUS = 0.525;  // m — bán kính bánh (live binding cho main.js)
+
+/**
+ * Đồng bộ geometry thật của xe vào physics — MỘT nguồn sự thật là bus.dimensions.
+ * Gọi từ main.js ngay sau createBus(). Test/node dùng giá trị mặc định ở trên.
+ */
+export function configureVehicleGeometry({ wheelbase, wheelRadius, trackWidth } = {}) {
+  if (Number.isFinite(wheelbase) && wheelbase > 0) BUS_WHEELBASE = wheelbase;
+  if (Number.isFinite(wheelRadius) && wheelRadius > 0) WHEEL_RADIUS = wheelRadius;
+  if (Number.isFinite(trackWidth) && trackWidth > 0) TRACK_WIDTH = trackWidth;
+  return getVehicleGeometry();
+}
+
+export function getVehicleGeometry() {
+  return { wheelbase: BUS_WHEELBASE, wheelRadius: WHEEL_RADIUS, trackWidth: TRACK_WIDTH };
+}
 
 // --- ENGINE MODEL ---
 // Vùng thấp nâng lên sát diesel thật: xe khách THACO/AM bus diesel ở 800-1000
@@ -142,13 +156,48 @@ const ENGINE_TORQUE_CURVE = [
   [3800, 180], [4000, 140], [4200, 110], [4500, 80]
 ];
 const ENGINE_IDLE_RPM = 800;
-const ENGINE_MAX_RPM = 4500;
+export const ENGINE_MAX_RPM = 4500;
 
 // --- GEARBOX ---
 export const GEAR_RATIOS_PH2 = [0, 3.80, 2.40, 1.50, 1.00, 0.75];
 const REVERSE_RATIO = 3.40;
-const FINAL_DRIVE = 4.10;
+export const FINAL_DRIVE = 4.10;
 const DRIVETRAIN_EFFICIENCY = 0.92;
+
+// --- HỘP SỐ TỰ ĐỘNG DÙNG CHUNG (player + NPC) ---
+// Trước đây main.js giữ 3 hằng + 3 hàm riêng, TrafficAI tự chặn 12/28/52/82 km/h
+// rồi ghi comment "cùng ngưỡng với player" — SAI. Đưa về một nguồn để NPC và
+// người chơi cùng ngưỡng RPM + vùng trễ, không còn 2 định nghĩa lệch nhau.
+export const GEAR_UPSHIFT_RPM = 3400;
+export const GEAR_DOWNSHIFT_RPM = 1500;
+export const GEAR_HYSTERESIS_KMH = 2;
+
+/** RPM ứng với tốc độ + cấp số (bánh ↔ động cơ, hộp số cơ khí). */
+export function rpmForGear(speedMs, gear) {
+  const ratio = GEAR_RATIOS_PH2[gear] || 1;
+  return (Math.abs(speedMs) / WHEEL_RADIUS) * ratio * FINAL_DRIVE * (60 / (2 * Math.PI));
+}
+
+/** Tốc độ (km/h) mà RPM ứng với `rpm` ở `gear`. */
+export function gearSpeedForRpm(rpm, gear) {
+  return (rpm * 2 * Math.PI / 60) * WHEEL_RADIUS / ((GEAR_RATIOS_PH2[gear] || 1) * FINAL_DRIVE) * 3.6;
+}
+
+/**
+ * Chọn cấp số theo tốc độ, có vùng trễ lên/xuống + chặn vòng tua tối đa.
+ * stateful theo currentGear — caller phải giữ gear giữa các lần gọi.
+ */
+export function selectGear(speedKmh, currentGear) {
+  const v = Math.abs(speedKmh || 0);
+  if (v < 0.5) return 1;
+  let gear = Math.min(5, Math.max(1, currentGear || 1));
+  const upKmh = gearSpeedForRpm(GEAR_UPSHIFT_RPM, gear) + GEAR_HYSTERESIS_KMH;
+  if (gear < 5 && v > upKmh) gear++;
+  const downKmh = gearSpeedForRpm(GEAR_DOWNSHIFT_RPM, gear) - GEAR_HYSTERESIS_KMH;
+  if (gear > 1 && v < downKmh) gear--;
+  while (gear > 1 && rpmForGear(v / 3.6, gear) > ENGINE_MAX_RPM) gear--;
+  return gear;
+}
 
 // --- AERODYNAMICS & ROLLING ---
 const CD = 0.65;
@@ -159,7 +208,11 @@ const ROLLING_RESISTANCE_WET = 0.010;
 
 // --- BRAKING ---
 const BRAKE_BIAS_FRONT = 0.60;
-const BRAKE_MAX_FORCE = 80000;
+// Trước đây cap 80kN khiến xe 13.4t chỉ giảm 6.15m/s² VÀ friction ellipse
+// không bao giờ chạm (remainingN*0.9 > 80kN cả khi cua gắt) — phanh trong cua
+// và phanh thẳng giảm hệt nhau, vô lý. Để cap cao để mu·Fz + BRAKE_MAX_DECEL
+// mới là giới hạn thật (ABS/grip), đúng vật lý.
+const BRAKE_MAX_FORCE = 140000;
 // Deceleration limit (m/s²) — prevents instant-stop at any speed.
 // A real bus decelerates at ~6-8 m/s² under full brake. Above this the
 // ABS would modulate; we hard-cap so brake force scales with speed.
@@ -198,8 +251,11 @@ export function computeVehicleMass(passengerCount = 0, luggageWeight = 0, interi
 
   // --- CG cao (Y): khách tầng trên đội CG lên (theo vị trí giường THẬT);
   //     xe rỗng không còn bị cộng cứng +0.9m khi chưa có khách
+  // Trần cũ 1.8m kẹp NHẦM khách tầng trên về độ cao giường dưới: giường trên
+  // thực tế 2.70m (+0.05 vị trí mô hình). Để trần 3.0m — đủ cho mọi giường thật
+  // mà vẫn chặn dữ liệu hỏng, không để CG bị nén sai khi xe chở full tầng trên.
   const meanTierY = (berthStats && Number.isFinite(berthStats.meanY))
-    ? Math.max(0.6, Math.min(1.8, berthStats.meanY))
+    ? Math.max(0.6, Math.min(3.0, berthStats.meanY))
     : (interiorType === 'BED34' ? 1.17 : 0.95);
   const upperDeckFraction = (berthStats && Number.isFinite(berthStats.upperDeckFraction))
     ? Math.max(0, Math.min(1, berthStats.upperDeckFraction))
@@ -383,7 +439,7 @@ export function computeVehicleForces(speedMs, throttle, brake, gearIndex, isReve
   const staticLoads = computeStaticWheelLoads(massInfo);
   const accelLong = netForce / Math.max(1, mass);
   const cgHeightEff = Number.isFinite(massInfo?.cgHeight) ? massInfo.cgHeight : CG_HEIGHT;
-  const longTransfer = mass * accelLong * cgHeightEff / WHEELBASE_PH2;
+  const longTransfer = mass * accelLong * cgHeightEff / BUS_WHEELBASE;
 
   const wheelLoads = {
     fl: staticLoads.fl - longTransfer * 0.5,
@@ -416,6 +472,11 @@ export function computeVehicleForces(speedMs, throttle, brake, gearIndex, isReve
     finalNetForce = netForce - tractionForce + Math.sign(tractionForce) * maxTraction;
   }
 
+  // Space/S giữ phanh khi xe đã đứng yên: lực cản lăn + lực phanh không được
+  // đẩy vận tốc sang âm (bug "đạp phanh thì xe lùi"), trừ khi đang có lệnh lùi
+  // (wantReverse). Giữ net = 0 chứ không cắt riêng từng lực để không phá wheelLoads.
+  if (v < 0.05 && brake > 0 && throttle <= 0 && !isReverse) finalNetForce = 0;
+
   return {
     netForce: finalNetForce, traction: tractionForce, rolling, aero: Math.abs(aero), grade: Math.abs(gradeForce),
     brakeForce: Math.abs(brakeForce),
@@ -425,9 +486,13 @@ export function computeVehicleForces(speedMs, throttle, brake, gearIndex, isReve
   };
 }
 
-const ROUGH_BASE = 0.10;    // biên độ nền (chưa có dữ liệu gờ từ generator)
+const ROUGH_BASE = 0.10;    // biên độ nền khi chưa biết segment (ngoài đường)
 let _roughPhase = 0;        // m — quãng đường tích lũy (dùng cho rung định tính)
 let _roughOverride = null;  // 0..1 — do setRoadSurface() đặt
+// Biên độ THEO LOẠI MẶT ĐƯỜNG: lấy từ segment.class/type thật (SURFACE_PROPS).
+// Trước đây updateRoadRoughness luôn dùng ROUGH_BASE → mọi mặt đường rung y hệt
+// nhau dù applySurfaceFromSegment đã tính đúng 0.08 nhựa / 0.50 đường đất.
+let _surfaceRoughBase = ROUGH_BASE;
 
 export function updateRoadRoughness(dt, speedMs = 0) {
   const s = PHYSICS_STATE;
@@ -444,7 +509,7 @@ export function updateRoadRoughness(dt, speedMs = 0) {
   // Hai tần số lệch nhau → nhịp gờ không đều, nhưng vẫn tất định (không random).
   const wob = 0.55 + 0.45 * Math.sin(_roughPhase * 1.7) * Math.cos(_roughPhase * 0.31 + 1.7);
   const speedRamp = Math.min(1, v / 16.7); // 0 khi đứng yên, đủ ở ~60 km/h
-  s.surfaceRoughness = ROUGH_BASE * speedRamp * wob;
+  s.surfaceRoughness = _surfaceRoughBase * speedRamp * wob;
   s.roughPhase = _roughPhase;
   return s.surfaceRoughness;
 }
@@ -523,7 +588,7 @@ export function integrateBodyMotion(body, dt, params = {}) {
 
   // --- Roll: nghiêng theo lực ngang (ngoài cua) — spring-damper
   const rollTarget = Math.max(-MAX_ROLL, Math.min(MAX_ROLL,
-    (latA / GRAV) * ROLL_FILL * massNorm * (tireGrip || 1.0) + rollTerrain));
+    (latA / GRAV) * ROLL_FILL * massNorm + rollTerrain));
   body.rollVel += (rollTarget - body.roll) * 6.0 * dt - body.rollVel * 3.5 * dt;
   body.roll = Math.max(-MAX_ROLL, Math.min(MAX_ROLL, body.roll + body.rollVel * dt));
 
@@ -710,11 +775,10 @@ export function updatePhysicsState(dt, speedKmh = 0, steerAngle = 0, throttleInp
 
   // Trước trái/trước phải: bên ngoài cua nén, bên trong giãn.
   // fl là trước-TRÁI: cua trái (latSign=+) → fl GIẢN (x -latLoad)
-  const latLoadMod = latLoad * (s.tireGrip || 1.0);
-  let flLoad = -latSign * latLoadMod + diveLoad;
-  let frLoad = +latSign * latLoadMod + diveLoad;
-  let rlLoad = -latSign * latLoadMod - diveLoad * 0.5;
-  let rrLoad = +latSign * latLoadMod - diveLoad * 0.5;
+  let flLoad = -latSign * latLoad + diveLoad;
+  let frLoad = +latSign * latLoad + diveLoad;
+  let rlLoad = -latSign * latLoad - diveLoad * 0.5;
+  let rrLoad = +latSign * latLoad - diveLoad * 0.5;
 
   // PHASE 3 — lực lò xo do cao độ mặt đường lệch (signed: gờ đẩy bánh lên,
   // ổ gà để bánh trôi xuống — xả tải). Hệ số 0.5: chỉ một phần lỗi cao độ
@@ -848,14 +912,10 @@ export function setRoadSurface({ wet, roughness } = {}) {
 //   - Alley/service: 0.50 (very rough)
 // =====================================================================
 const SURFACE_PROPS = {
-  // Smooth asphalt — highways, QL1, expressway
-  ASPHALT_DRY: { friction: 0.8, roughness: 0.08, wet: false },
-  // Wet asphalt — bridges, tunnels (always wet in this sim)
-  ASPHALT_WET: { friction: 0.5, roughness: 0.10, wet: true },
-  // Concrete — rural roads, agricultural
-  CONCRETE: { friction: 0.6, roughness: 0.35, wet: false },
-  // Dirt/gravel — alleys, service roads
-  DIRT: { friction: 0.35, roughness: 0.50, wet: false },
+  ASPHALT_DRY: { friction: 0.8, roughness: 0.08, wet: false, grip: 1.0 },
+  ASPHALT_WET: { friction: 0.5, roughness: 0.10, wet: true, grip: 0.65 },
+  CONCRETE: { friction: 0.6, roughness: 0.35, wet: false, grip: 0.75 },
+  DIRT: { friction: 0.35, roughness: 0.50, wet: false, grip: 0.44 },
 };
 
 // Map segment class/type to surface type
@@ -923,7 +983,14 @@ export function getSurfaceProperties(segment) {
 
   const segClass = segment.class;
   const segType = segment.type;
-  const surfaceType = SEGMENT_SURFACE_MAP[segClass] || SEGMENT_SURFACE_MAP[segType] || 'ASPHALT_DRY';
+  const typeSurface = SEGMENT_SURFACE_MAP[segType];
+  // Cầu/hầm là bề mặt NGUY HIỂM → phải thắng class. Trước đây ưu tiên class
+  // (NATIONAL/EXPRESSWAY luôn có trong map) nên ASPHALT_WET của bridge/tunnel
+  // KHÔNG BAO GIỜ áp dụng: 51 cầu + 3 hầm trong roads.json đều trả nhựa khô.
+  const isHazard = segType === 'bridge' || segType === 'tunnel' || segType === 'TUNNEL';
+  const surfaceType = (isHazard && typeSurface)
+    ? typeSurface
+    : (SEGMENT_SURFACE_MAP[segClass] || typeSurface || 'ASPHALT_DRY');
   const props = SURFACE_PROPS[surfaceType];
 
   return {
@@ -931,7 +998,7 @@ export function getSurfaceProperties(segment) {
     friction: props.friction,
     roughness: props.roughness,
     wet: props.wet,
-    tireGrip: props.wet ? 0.65 : 1.0,
+    tireGrip: props.grip,
     // Additional properties for future use
     roadBank: 0,        // Cross-slope (not in map data yet)
     slope: 0,           // Longitudinal slope (from node heights)
@@ -951,6 +1018,9 @@ export function applySurfaceFromSegment(segment) {
   PHYSICS_STATE.surfaceType = props.surfaceType;
   PHYSICS_STATE.surfaceWet = props.wet;
   PHYSICS_STATE.surfaceRoughness = props.roughness;
+  // Giữ biên độ riêng: updateRoadRoughness() chạy MỖI FRAME sẽ nhân biên độ này
+  // với vận tốc/nhịp gờ. Không giữ lại ở đây thì giá trị vừa gán bị ghi đè ngay.
+  _surfaceRoughBase = props.roughness;
   PHYSICS_STATE.tireGrip = props.tireGrip;
   PHYSICS_STATE.surfaceFriction = props.friction;
   return props;
@@ -982,11 +1052,13 @@ export function resetPhysicsState() {
   s.throttleInput = 0; s.brakeInput = 0;
   s.massFactor = 1.0; s.passengerCount = 0; s.luggageWeight = 0;
   s.tireGrip = 1.0; s.surfaceWet = false; s.surfaceRoughness = 0;
+  _surfaceRoughBase = ROUGH_BASE;
   s.roughPhase = 0;
   s.brakeSqueal = 0;
   _lastSpeedSigned = 0;
   _accLong = 0;
   _roughPhase = 0;
+  _roughOverride = null;
   for (const key of ["fl", "fr", "rl", "rr"]) {
     _wheels[key].pos = 0;
     _wheels[key].vel = 0;

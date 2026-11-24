@@ -344,11 +344,12 @@ export class LightingSystem {
 
     _syncLightsFromTimeSystem() {
         const time = this.timeSystem;
+        const mix = this.atmosphereSystem.getWeatherMix?.();
 
         // Sun light (managed by shadow system)
         if (this.shadowSystem.sunLight) {
             this.shadowSystem.sunLight.color.copy(time.getSunColor());
-            this.shadowSystem.sunLight.intensity = time.getSunIntensity();
+            this.shadowSystem.sunLight.intensity = time.getSunIntensity() * (mix?.sunMul ?? 1);
         }
 
         // Moon light
@@ -360,19 +361,15 @@ export class LightingSystem {
 
     _updateCompatLights() {
         const time = this.timeSystem;
-        const sunInt = time.getSunIntensity();
+        const mix = this.atmosphereSystem.getWeatherMix?.();
+        const sunInt = time.getSunIntensity() * (mix?.sunMul ?? 1);
         const moonInt = time.getMoonIntensity();
         const ambInt = time.getAmbientIntensity();
 
         // Ambient
         if (this.lights.ambient) {
             this.lights.ambient.intensity = ambInt;
-            // BUG FIX: truoc do la `color.copy(getSkyColor()).multiplyScalar(0.5 + 0.5 * sunInt)`.
-            // Ban dem sky color da toi (#2e2f3c) roi con bi nhan them 0.5 nua -> mau gan nhu den
-            // thuan, nen intensity 0.3 x mau ~0.09 = irradiance ~0.027 -> xe bus khong thay gi.
-            // Sky color chi duoc dung lam TINT (giu sac do xanh/lan), con do sang do
-            // ambient.intensity quyet dinh. Ban ngay multiplier cu = 1.0 va sky dat near-peak
-            // nen normalize khong doi gi — chi sua ban dem.
+            // Sky color chỉ làm tint; độ sáng do ambient.intensity quyết định.
             const skyTint = time.getSkyColor();
             const peak = Math.max(skyTint.r, skyTint.g, skyTint.b, 1e-3);
             this.lights.ambient.color.copy(skyTint).multiplyScalar(1 / peak);
@@ -381,27 +378,20 @@ export class LightingSystem {
         // Hemisphere - at night, use moonlight color for sky and slightly brighter ground for fill
         if (this.lights.hemisphere) {
             const isNight = sunInt < 0.1;
-            this.lights.hemisphere.intensity = isNight ? Math.max(ambInt * 0.6, 0.08) : ambInt * 0.8;  // Reduced min intensity at night
+            // Đêm: hemisphere chỉ là fill cực nhẹ để mặt dưới xe vẫn có chút màu.
+            // Không để floor 0.08 như cũ — floor đó tự nó phát sáng đêm.
+            this.lights.hemisphere.intensity = isNight ? Math.max(ambInt * 0.5, 0.012) : ambInt * 0.8;
             if (isNight) {
-                // At night: sky color from moonlight, ground color slightly brighter for ambient bounce
-                this.lights.hemisphere.color.copy(time.getMoonColor()).multiplyScalar(0.25);  // Reduced multiplier
-                this.lights.hemisphere.groundColor.setHSL(0.6, 0.1, 0.1);  // Darker ground bounce
+                this.lights.hemisphere.color.copy(time.getMoonColor()).multiplyScalar(0.2);
+                this.lights.hemisphere.groundColor.setHSL(0.6, 0.1, 0.04);
             } else {
                 this.lights.hemisphere.color.copy(time.getSkyColor());
                 this.lights.hemisphere.groundColor.copy(time.getFogColor()).multiplyScalar(0.5);
             }
         }
 
-        // Scene background & fog (handled by AtmosphereSystem, but keep sync)
         this.scene.background.copy(time.getSkyColor());
-        if (this.scene.fog) {
-            this.scene.fog.color.copy(time.getFogColor());
-            this.scene.fog.near = time.getFogNear();
-            this.scene.fog.far = time.getFogFar();
-        }
-
-        // Renderer tone mapping exposure
-        this.renderer.toneMappingExposure = time.getExposure();
+        this.renderer.toneMappingExposure = time.getExposure() * (mix?.exposure ?? 1);
     }
 
     _getForwardVector(object) {
@@ -438,40 +428,46 @@ export class LightingSystem {
     // ===== SHADOW RENDERING =====
     // Gọi từ main.js TRƯỚC renderer.render(scene, camera)
     renderShadows(busGroup = null) {
-        if (!this.shadowSystem || !this.shadowSystem.sunLight || this.shadowSystem.sunLight.intensity <= 0) return;
+        if (!this.shadowSystem) return;
+        const sunOn = (this.shadowSystem.sunLight?.intensity || 0) > 0;
+        const moonOn = !sunOn && (this.shadowSystem.moonLight?.intensity || 0) > 0.01;
+        if (!sunOn && !moonOn) return;
 
         // Throttle shadow updates based on quality and player movement
         this._shadowFrameCounter++;
-        
-        // On LOW quality, update shadows every 2 frames
-        if (this.quality === "LOW" && this._shadowFrameCounter % 2 !== 0) {
-            return;
-        }
-        
-        // On MEDIUM/HIGH, throttle based on player movement (update every 3-5 frames if player stationary)
-        if (this.quality !== "LOW" && busGroup) {
-            const dx = busGroup.position.x - this._lastShadowPlayerPos.x;
-            const dz = busGroup.position.z - this._lastShadowPlayerPos.z;
-            const distMoved = Math.sqrt(dx * dx + dz * dz);
-            const throttleFrames = this.quality === "HIGH" ? 5 : 3;
-            
-            if (distMoved < this._shadowPosThreshold && this._shadowFrameCounter % throttleFrames !== 0) {
+
+        // LOW: nặng nhất trên iGPU yếu (N5000) — chỉ render shadow mỗi 3 frame,
+        // và nếu xe gần đứng yên thì dãn thêm để giảm pass shadow thừa.
+        if (this.quality === "LOW") {
+            if (this._shadowFrameCounter % 3 !== 0) return;
+            if (busGroup) {
+                const dx = busGroup.position.x - this._lastShadowPlayerPos.x;
+                const dz = busGroup.position.z - this._lastShadowPlayerPos.z;
+                const distMoved = Math.sqrt(dx * dx + dz * dz);
+                if (distMoved < this._shadowPosThreshold && this._shadowFrameCounter % 6 !== 0) {
+                    return;
+                }
+                this._lastShadowPlayerPos.copy(busGroup.position);
+            }
+        } else {
+            // MEDIUM/HIGH: throttle theo di chuyển (5 frame khi đứng yên ở HIGH)
+            if (busGroup) {
+                const dx = busGroup.position.x - this._lastShadowPlayerPos.x;
+                const dz = busGroup.position.z - this._lastShadowPlayerPos.z;
+                const distMoved = Math.sqrt(dx * dx + dz * dz);
+                const throttleFrames = this.quality === "HIGH" ? 5 : 3;
+
+                if (distMoved < this._shadowPosThreshold && this._shadowFrameCounter % throttleFrames !== 0) {
+                    return;
+                }
+                this._lastShadowPlayerPos.copy(busGroup.position);
+            } else if (this._shadowFrameCounter % 3 !== 0) {
                 return;
             }
-            this._lastShadowPlayerPos.copy(busGroup.position);
-        }
-        
-        // On MEDIUM/HIGH without busGroup, fall back to frame counter
-        if (this.quality !== "LOW" && !busGroup && this._shadowFrameCounter % 3 !== 0) {
-            return;
         }
 
-        this.shadowSystem.renderShadows();
-        
-        // Moon shadow at night - only render if moon is visible and has intensity
-        if (this.timeSystem.getSunIntensity() < 0.1 && this.timeSystem.getMoonIntensity() > 0.5) {
-            this.shadowSystem.renderMoonShadow();
-        }
+        if (sunOn) this.shadowSystem.renderShadows();
+        else this.shadowSystem.renderMoonShadow();
     }
 
     // ===== HEADLIGHT CONTROL =====
@@ -602,6 +598,8 @@ export class LightingSystem {
         if (this.headlightTargetLeft) this.scene.remove(this.headlightTargetLeft);
         if (this.headlightTargetRight) this.scene.remove(this.headlightTargetRight);
         if (this.taillightGlow) this.scene.remove(this.taillightGlow);
+        for (const pl of this.streetLights || []) this.scene.remove(pl);
+        this.streetLights = [];
 
         this._removeLightHelpers();
     }

@@ -109,6 +109,12 @@ export class CameraSystem {
     this.orbitYaw = Math.PI;
     this.orbitPitch = 0.2;
     this.orbitDistance = this.settings.outsideDistance;
+    this._localCamPos = new THREE.Vector3();
+    this._localLookAt = new THREE.Vector3();
+    this._outsideTarget = new THREE.Vector3(0, 1.5, 0);
+    this._outsideCam = new THREE.Vector3();
+    this._worldCam = new THREE.Vector3();
+    this._worldLook = new THREE.Vector3();
 
     this.bedLookYaw = 0;
     this.bedLookPitch = 0;
@@ -234,14 +240,8 @@ export class CameraSystem {
             this.orbitPitch -= sensY;
             this.orbitPitch = Math.max(-Math.PI / 1.7, Math.min(Math.PI / 1.7, this.orbitPitch));
         } else if (mode.startsWith('seat_')) {
-            this.bedLookYaw -= sensX;
-            this.bedLookPitch -= sensY;
-            // Kẹp quanh pivot hướng aisle (setMode seat_) — hết nhìn xuyên
-            // divider đầu/đuôi giường + rèm aisle = hết "vật cản vô hình";
-            // pitch hẹp ±0.8 tránh dính trần/sàn buồng.
-            const pivot = this.seatPivotYaw || 0;
-            this.bedLookYaw = Math.max(pivot - 1.0, Math.min(pivot + 1.0, this.bedLookYaw));
-            this.bedLookPitch = Math.max(-0.8, Math.min(0.8, this.bedLookPitch));
+            this.bedLookYaw = wrapAngle(this.bedLookYaw - sensX);
+            this.bedLookPitch = Math.max(-0.9, Math.min(0.9, this.bedLookPitch - sensY));
         } else {
             this.cabinYaw = wrapAngle(this.cabinYaw - sensX);
             this.cabinPitch -= sensY;
@@ -266,11 +266,11 @@ export class CameraSystem {
     this.orbitYaw = Math.PI;
     this.orbitPitch = 0.2;
 
-    // MẮT NGƯỜI THẬT theo interior.js (cabin nâng +0.64m): RHD — ghế tài xế x=+0.65 z=4.5
-    // TAY LÁI PHẢI (RHD): tài xế + vô-lăng bên PHẢI, ghế phụ bên TRÁI (-0.35).
-    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 2.62, 4.38);
-    // copilot: mắt ghế phụ bên kia dash.
-    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 2.62, 4.38);
+    // MẮT NGƯỜI THẬT theo interior.js (cabin nâng +0.64m): LHD — ghế tài xế x=+0.65 z=4.5.
+    // Quy ước: đầu xe +z, phải xe = -x (TrafficAI._frame.r = (-uz, ux)) ⇒ +x = TRÁI xe.
+    // TAY LÁI TRÁI (LHD, đúng xe Việt): tài xế + vô-lăng bên TRÁI (+0.65), ghế phụ bên PHẢI (-0.35).
+    if (mode === 'driver') this.targetPos = new THREE.Vector3(0.65, 2.56, 4.86);
+    else if (mode === 'copilot') this.targetPos = new THREE.Vector3(-0.35, 2.56, 4.86);
     else if (mode === 'cabin') this.targetPos = new THREE.Vector3(0, 2.64, 3.2);
     else if (mode === 'outside') { /* nhanh orbit: update() dung orbitYaw/Pitch/Distance, khong dung targetPos */ }
     else if (mode.startsWith('seat_')) {
@@ -278,20 +278,8 @@ export class CameraSystem {
       const seat = this.seats[idx % this.seats.length];
       this.targetPos = seat.localPos.clone();
       this.targetPos.y += 0.15;
-      // Lùi 0.35 -> 0.22: camera lìa tường đầu giường 0.30m (bản cũ chỉ cách
-      // 0.30m tổng, các row cuối còn sát ~0.15m) — thoáng hơn mà vẫn giữ
-      // tầm nhìn ra aisle. Điều chỉnh CHỈ camera, không dựng thêm mesh.
-      this.targetPos.z += 0.22;
-      // Pivot = hướng lối đi (aisle): trái nhìn +x, phải nhìn −x. Camera
-      // ngồi trong buồng giường có divider đầu giường trước mặt và rèm
-      // aisle sát phía +z — quay 360° là đâm mesh ("vật cản vô hình") →
-      // khoá yaw quanh pivot ±1.0 rad là phạm vi nhìn hữu dụng của buồng.
-      // DÃY GIỮA (34 giường) giờ CÓ vách ngăn đầu/cuối khoang (full-height,
-      // cách mắt đúng 0.28m = 0.70 − 0.42) nên pivot 0 (nhìn thẳng +z) là
-      // nhìn ĐẦY màn hình vào vách -> đổi sang hướng lối đi và nới 0.65 →
-      // 1.13 rad (≈65°): vách dãy giữa gần mắt hơn vách dãy bên (0.28 vs
-      // 0.43m), ở 65° mép vách chỉ chiếm ~1/4 khung nhìn bên thay vì ~3/5.
-      // Xen kẽ ±theo row: mỗi giường nhìn ra lối đi bên mình (2 lối đi).
+      this.targetPos.z += 0.11;
+      // Pivot = hướng lối đi (aisle): trái nhìn +x, phải nhìn −x.
       if (seat.side === 'center') this.seatPivotYaw = seat.row % 2 === 1 ? 1.13 : -1.13;
       else this.seatPivotYaw = seat.side === 'left' ? 0.65 : -0.65;
       this.bedLookYaw = this.seatPivotYaw;
@@ -352,11 +340,11 @@ export class CameraSystem {
       const x = this.orbitDistance * Math.cos(this.orbitPitch) * Math.sin(this.orbitYaw);
       const y = this.orbitDistance * Math.sin(this.orbitPitch);
       const z = this.orbitDistance * Math.cos(this.orbitPitch) * Math.cos(this.orbitYaw);
-      const localTarget = new THREE.Vector3(0, 1.5, 0);
-      const localCamPos = new THREE.Vector3(x, y + 1.5, z);
+      const localTarget = this._outsideTarget;
+      const localCamPos = this._outsideCam.set(x, y + 1.5, z);
 
-      const worldTargetPos = localCamPos.clone().applyMatrix4(busWorldMatrix);
-      const worldTargetLook = localTarget.clone().applyMatrix4(busWorldMatrix);
+      const worldTargetPos = this._worldCam.copy(localCamPos).applyMatrix4(busWorldMatrix);
+      const worldTargetLook = this._worldLook.copy(localTarget).applyMatrix4(busWorldMatrix);
 
       const smoothFactor = Math.min(1, 20 * deltaTime);
       this.currentPos.lerp(worldTargetPos, smoothFactor);
@@ -366,8 +354,8 @@ export class CameraSystem {
       this.camera.lookAt(this.currentLook);
     } else if (mode.startsWith('seat_')) {
       const lookDistance = 5.2;
-      const localCamPos = this.targetPos.clone();
-      const localLookAt = new THREE.Vector3(
+      const localCamPos = this._localCamPos.copy(this.targetPos);
+      const localLookAt = this._localLookAt.set(
         localCamPos.x + lookDistance * Math.cos(this.bedLookPitch) * Math.sin(this.bedLookYaw),
         localCamPos.y + lookDistance * Math.sin(this.bedLookPitch),
         localCamPos.z + lookDistance * Math.cos(this.bedLookPitch) * Math.cos(this.bedLookYaw)
@@ -392,8 +380,8 @@ export class CameraSystem {
       }
     } else {
       const lookDistance = 11;
-      const localCamPos = this.targetPos.clone();
-      const localLookAt = new THREE.Vector3(
+      const localCamPos = this._localCamPos.copy(this.targetPos);
+      const localLookAt = this._localLookAt.set(
         localCamPos.x + lookDistance * Math.sin(this.cabinYaw) * Math.cos(this.cabinPitch),
         localCamPos.y + lookDistance * Math.sin(this.cabinPitch),
         localCamPos.z + lookDistance * Math.cos(this.cabinYaw) * Math.cos(this.cabinPitch)

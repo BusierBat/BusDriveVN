@@ -7,7 +7,8 @@ export function createUI({ map = null, callbacks = {} } = {}) {
     let minimapData = null;
     let minimapMap = null;
     let mainMenuAnimation = null;
-    let _lastMinimapX = Infinity, _lastMinimapZ = Infinity, _lastHeading = Infinity;
+    let _lastMinimapX = Infinity, _lastMinimapZ = Infinity;
+    let _minimapAngle = 0, _minimapDrawnAngle = 0, _minimapAngleReady = false;
     let _lastMoney = NaN;
     let _lastFuel = NaN;
     const els = {
@@ -85,9 +86,10 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         };
     }
 
-    // Khôi phục slider settings
-    els.rngNpcDensity?.addEventListener('input', () => els.valNpcDensity.textContent = els.rngNpcDensity.value);
-    els.rngCamSens?.addEventListener('input', () => els.valCamSens.textContent = els.rngCamSens.value);
+    const updateNpcDensityLabel = () => { if (els.valNpcDensity) els.valNpcDensity.textContent = els.rngNpcDensity.value; };
+    const updateCamSensLabel = () => { if (els.valCamSens) els.valCamSens.textContent = els.rngCamSens.value; };
+    els.rngNpcDensity?.addEventListener('input', updateNpcDensityLabel);
+    els.rngCamSens?.addEventListener('input', updateCamSensLabel);
 
     function setupMinimap(mapInstance) {
         if (mapInstance && typeof mapInstance.getMinimapData === 'function') {
@@ -109,6 +111,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         ctx.clearRect(0, 0, 200, 200);
         ctx.save();
         ctx.beginPath(); ctx.arc(100, 100, 100, 0, Math.PI * 2); ctx.clip();
+        ctx.translate(100, 100); ctx.rotate(_minimapAngle); ctx.translate(-100, -100);
         ctx.fillStyle = '#1a1a24'; ctx.fillRect(0, 0, 200, 200);
         
         // Vẽ lưới tham chiếu nhẹ (500m spacing) — bám WORLD, không bám xe:
@@ -171,13 +174,7 @@ export function createUI({ map = null, callbacks = {} } = {}) {
             const dx = p2.x - p1.x, dz = p2.z - p1.z;
             const len = Math.hypot(dx, dz);
             if (len > 5) {
-                // Mũi tên route phải chỉ theo hướng đoạn đường trên minimap
-                // WORLD-FIXED (roads không rotate theo heading). Tam giác hước
-                // LÊN (−y) + rotate(π − angle) với angle = atan2(dx, dz):
-                //   a = π − angle → local (0,−4) → màn hình (4·sin a, −4·cos a)
-                //   = (dx, dz)/len · 4 → TRÙNG hướng đoạn đường.
-                // (rotate(−heading + angle) cũ vừa xoay theo heading — sai vì
-                // map north-up — vừa ngược trục z.)
+                // Mũi tên đi cùng đoạn đường; lớp xoay ngoài xoay chung.
                 const angle = Math.atan2(dx, dz);
                 const mx = 100 + (p1.x - playerX) * scale;
                 const mz = 100 + (p1.z - playerZ) * scale;
@@ -197,12 +194,15 @@ export function createUI({ map = null, callbacks = {} } = {}) {
             ctx.beginPath();
             ctx.arc(100 + (p.x - playerX) * scale, 100 + (p.z - playerZ) * scale, 3, 0, Math.PI * 2);
             ctx.fill();
-            // Tên POI
             if (p.name) {
+                ctx.save();
+                ctx.translate(100 + (p.x - playerX) * scale, 100 + (p.z - playerZ) * scale);
+                ctx.rotate(-_minimapAngle);
                 ctx.fillStyle = '#fff';
                 ctx.font = '9px sans-serif';
                 ctx.textAlign = 'center';
-                ctx.fillText(p.name, 100 + (p.x - playerX) * scale, 100 + (p.z - playerZ) * scale - 5);
+                ctx.fillText(p.name, 0, -5);
+                ctx.restore();
                 ctx.fillStyle = '#fbbf24';
             }
         }
@@ -241,16 +241,9 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         ctx.textAlign = 'center';
         ctx.fillText(dirs[dirIdx], 100, 24);   // trên tâm, bán kính 76px < 100px
 
-        // Vẽ icon xe người chơi (tam giác trắng, quay theo heading).
-        // forward thật của xe = (sin h, cos h) (main.js: (0,0,1) quaternion).
-        // Màn hình: sx ∝ +X, sy ∝ +Z (không flip). Tam giác hước LÊN (−y) +
-        // rotate(π − h) cho mũi TRÙNG (sin h, cos h):
-        //   a = π − h → local (0,−7) → màn hình (7·sin a, −7·cos a)
-        //   = (7·sin h, 7·cos h) = forward. ✓
-        // (rotate(−h) cũ cho (−sin h, −cos h) = ngược 180°.)
-        // Kiểm chứng: h = π/2 (đi +X = Đông) → a = π/2 → mũi (7, 0) = SANG PHẢI. ✓
+        // Lớp bản đồ đã xoay theo xe, nên mũi xe luôn hướng lên.
         ctx.save();
-        ctx.translate(100, 100); ctx.rotate(Math.PI - h);
+        ctx.translate(100, 100);
         ctx.fillStyle = '#fff'; ctx.beginPath();
         ctx.moveTo(0, -6); ctx.lineTo(-4, 4); ctx.lineTo(4, 4); ctx.closePath(); ctx.fill();
         // PHAI co restore() tai day: save() o tren luu trang thai transform, neu
@@ -331,11 +324,24 @@ export function createUI({ map = null, callbacks = {} } = {}) {
     }
 
     let toastTimer = null;
+    // Toast dùng icon SVG/CSS qua marker nội bộ "[icon:name]" — không nhận HTML
+    // từ caller ( év injection ), vẫn giữ nguyên chữ ký toast(msg, isError).
     function toast(msg, isError = false) {
         if (!els.notification) return;
-        els.notification.innerText = msg;
+        const text = String(msg ?? '');
+        const match = text.match(/^\[icon:([a-z-]+)\]\s*/i);
+        const iconName = match?.[1];
+        const body = match ? text.slice(match[0].length) : text;
+        els.notification.replaceChildren();
+        if (iconName) {
+            const icon = document.createElement('span');
+            icon.className = `ui-icon ui-icon--${iconName}`;
+            icon.setAttribute('aria-hidden', 'true');
+            els.notification.appendChild(icon);
+        }
+        els.notification.appendChild(document.createTextNode(body));
         els.notification.style.color = isError ? '#ff4d4d' : '#00ff99';
-        els.notification.style.display = 'block';
+        els.notification.style.display = 'flex';
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => { els.notification.style.display = 'none'; }, 3000);
     }
@@ -403,18 +409,36 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         if (els.z) els.z.textContent = state.z !== undefined ? state.z.toFixed(0) : '0';
         if (els.warning) { els.warning.style.display = state.warning ? 'block' : 'none'; if (state.warning) els.warning.innerText = state.warning; }
         
-        const dx = Math.abs((state.x || 0) - _lastMinimapX);
-        const dz = Math.abs((state.z || 0) - _lastMinimapZ);
-        const dh = Math.abs((state.heading || 0) - _lastHeading);
-        if (dx > 5 || dz > 5 || dh > 0.087) {
-            drawMinimap(state.x, state.z, state.heading || 0, state.npcZones || [], state.passengerZones || []);
-            _lastMinimapX = state.x || 0; _lastMinimapZ = state.z || 0; _lastHeading = state.heading || 0;
+        const px = state.x || 0, pz = state.z || 0;
+        const rawHeading = state.heading || 0;
+        const TAU = Math.PI * 2;
+        let nh = rawHeading % TAU;
+        if (nh < 0) nh += TAU;
+        const targetAngle = nh - Math.PI;
+        if (!_minimapAngleReady) {
+            _minimapAngle = targetAngle;
+            _minimapAngleReady = true;
+        } else {
+            const diff = targetAngle - _minimapAngle;
+            _minimapAngle += Math.atan2(Math.sin(diff), Math.cos(diff)) * 0.25;
+        }
+        const dx = Math.abs(px - _lastMinimapX);
+        const dz = Math.abs(pz - _lastMinimapZ);
+        const angleDiff = _minimapAngle - _minimapDrawnAngle;
+        const dh = Math.abs(Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff)));
+        if (dx > 5 || dz > 5 || dh > 0.012) {
+            drawMinimap(px, pz, nh, state.npcZones || [], state.passengerZones || []);
+            _lastMinimapX = px; _lastMinimapZ = pz; _minimapDrawnAngle = _minimapAngle;
         }
         drawSpeedometer(state.speedKmh || 0, state.speedLimit || null);
     }
 
     return { 
         els, setupMinimap, update, toast, setMoney: setMoneyDisplay, setFuel: setFuelDisplay,
+        dispose() {
+            els.rngNpcDensity?.removeEventListener('input', updateNpcDensityLabel);
+            els.rngCamSens?.removeEventListener('input', updateCamSensLabel);
+        },
         showMainMenu() { setMainMenuVisible(true); },
         hideMainMenu() { setMainMenuVisible(false); },
         showConsole() { if (els.console) { els.console.style.display = 'flex'; els.consoleInput.focus(); } },

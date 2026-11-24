@@ -26,7 +26,7 @@ import { createSeededRandom, lerpAngle, clamp } from "../utils.js";
 import { deriveLaneMeta } from "../RuntimeRoadGraph.js";
 import { hypot2 } from "../utils.js";
 import { BUS_DIMENSIONS } from "../bus.js";
-import { computeYawRate, computeVehicleForces, makeSimpleMassInfo, integrateBodyMotion, getSurfaceProperties } from "../physics_step.js";
+import { computeYawRate, computeVehicleForces, makeSimpleMassInfo, integrateBodyMotion, getSurfaceProperties, selectGear } from "../physics_step.js";
 
 const TWO_PI = Math.PI * 2;
 const DEF_BUS_LEN = (BUS_DIMENSIONS && BUS_DIMENSIONS.length) || 12.8;
@@ -71,9 +71,9 @@ const DRIVER_TYPES = {
 // Lời thoại của con "trốn tiết GDCD" — chỉ xuất hiện đúng khoảnh khắc tình
 // huống được kích hoạt, đẩy qua manager._emitDialogue (throttle 1.5s) -> HUD.
 const GDCD_QUOTES = {
-    HIT_RUN: '🚌 NPC: "Tao không biết gì hết!"',
-    OVERDRIVE: '🚌 NPC: "An toàn giao thông là hạnh phúc của mọi nhà. Nhưng nhà tao ở phía trước."',
-    OWNER: '🚌 NPC: "Đường này bố tao xây nên bố mày thích đi kiểu gì kệ tao."'
+    HIT_RUN: '[icon:bus] NPC: "Tao không biết gì hết!"',
+    OVERDRIVE: '[icon:bus] NPC: "An toàn giao thông là hạnh phúc của mọi nhà. Nhưng nhà tao ở phía trước."',
+    OWNER: '[icon:bus] NPC: "Đường này bố tao xây nên bố mày thích đi kiểu gì kệ tao."'
 };
 // Tên cũ (CAREFUL) vẫn chạy được — TrafficManager/ngoài kia có thể gọi tới.
 DRIVER_TYPES.CAREFUL = DRIVER_TYPES.CAUTIOUS;
@@ -1151,10 +1151,12 @@ export class TrafficAI {
         let throttle = 0, brake = 0;
         if (aDes >= 0.05) throttle = clamp(aDes / Math.max(acc, 0.5), 0, 1);
         else if (aDes <= -0.05) brake = clamp(-aDes / Math.max(this.profile.emergencyDecel, 0.5), 0, 1);
-        // Hộp số tự động — cùng ngưỡng tốc độ với xe người chơi
+        // Hộp số tự động — CÙNG hàm selectGear với player (RPM + vùng trễ).
+        // gear được giữ trong engine → có trạng thái hysteresis giữa các frame,
+        // không còn chặn cứng 12/28/52/82 km/h riêng lẻ như trước.
         const kmh = Math.abs(this.speed) * 3.6;
-        const gear = kmh < 12 ? 1 : kmh < 28 ? 2 : kmh < 52 ? 3 : kmh < 82 ? 4 : 5;
-        this.engine.gear = gear;
+        this.engine.gear = selectGear(kmh, this.engine.gear || 1);
+        const gear = this.engine.gear;
         const forces = computeVehicleForces(
             this.speed, throttle, brake, gear, false,
             this.engine.massInfo, gradeRad, this.engine.wet, this.engine.grip, null,

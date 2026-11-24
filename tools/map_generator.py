@@ -9124,9 +9124,9 @@ class MapGenerator:
         def _in_zone(zn, x, z, pad=6.0):
             dx, dz = x - zn["x"], z - zn["z"]
             r = zn.get("rot") or 0.0
-            ca, sa = math.cos(-r), math.sin(-r)
-            lx = dx * ca - dz * sa
-            lz = dx * sa + dz * ca
+            ca, sa = math.cos(r), math.sin(r)
+            lx = dx * sa + dz * ca
+            lz = dx * ca - dz * sa
             return (abs(lx) <= zn["w"] * 0.5 + pad and
                     abs(lz) <= zn["d"] * 0.5 + pad)
 
@@ -11421,14 +11421,18 @@ class MapGenerator:
         # truc px,pz). Cong thuc cu `cx - px*(d*0.5)` dat cong o PHIA XA DUONG
         # -> access road di vao ben qua ben kia.
         gate_x, gate_z = cx + px * (w * 0.5 - 4.0), cz + pz * (w * 0.5 - 4.0)
+        yard_y = self.get_road_datum(cx, cz)
+        anchor_y = self.nodes[access_anchor]["y"]
         prev = access_anchor
         steps = 3
         for k in range(1, steps + 1):
             t = k / steps
             gx = lerp(self.nodes[access_anchor]["x"], gate_x, t)
             gz = lerp(self.nodes[access_anchor]["z"], gate_z, t)
+            fy = yard_y if k == steps else anchor_y + (yard_y - anchor_y) * t
             nid = self.add_node(gx, gz, "URBAN",
-                                n_type="station_gate" if k == steps else "junction")
+                                n_type="station_gate" if k == steps else "junction",
+                                force_y=fy)
             self.add_segment(prev, nid, "STATION_ACCESS")
             prev = nid
         gate_node = prev
@@ -11460,7 +11464,8 @@ class MapGenerator:
         cids = []
         for (ox, oz) in corners:
             wx, wz = w2(ox, oz)
-            cids.append(self.add_node(wx, wz, "URBAN", n_type="internal"))
+            cids.append(self.add_node(wx, wz, "URBAN", n_type="internal",
+                                      force_y=yard_y))
         for i in range(4):
             self.add_segment(cids[i], cids[(i + 1) % 4], "INTERNAL",
                              width=12.0, lanes=1)
@@ -11563,9 +11568,9 @@ class MapGenerator:
         for k in range(len(spine) - 1):
             self.add_segment(spine[k], spine[k + 1], "INTERNAL",
                              width=13.0, lanes=2)
-        # 2 dau luong thang noi vao 2 GOC KHAC NHAU
-        self.add_segment(cids[3], spine[0], "INTERNAL", width=12.0, lanes=1)
-        self.add_segment(cids[0], spine[-1], "INTERNAL", width=12.0, lanes=1)
+        # 2 dau luong thang noi vao 2 GOC CUNG PHIA (khong cat ngang cac bai)
+        self.add_segment(cids[0], spine[0], "INTERNAL", width=12.0, lanes=1)
+        self.add_segment(cids[3], spine[-1], "INTERNAL", width=12.0, lanes=1)
 
         # --- BAI DO: moi mui xe la 1 node rieng, noi vao 1 node spine rieng ---
         bays = []
@@ -11624,12 +11629,13 @@ class MapGenerator:
             print("      ! san %s chi dat %d/%d bai (n_side=%d per_row=%d)"
                   % (sd["id"], placed, bay_count, n_side, per_row))
 
-        # --- khu do xe / staging : SAI DAU `+sa` DA SUA THANH `-sa` ---
-        sx_ox, sz_oz = hw * 0.62, -hd * 0.15
+        # --- khu do xe / staging: dat GAN CONG, khong cat ngang hang bai ---
+        sx_ox, sz_oz = hw * 0.78, 0.0
         sx_x = cx + sx_ox * sa + sz_oz * ca
         sx_z = cz + sx_ox * ca - sz_oz * sa
-        stg = self.add_node(sx_x, sx_z, "URBAN", n_type="staging")
-        self.add_segment(cids[3], stg, "INTERNAL", width=8.0, lanes=1)
+        stg = self.add_node(sx_x, sx_z, "URBAN", n_type="staging",
+                            force_y=yard_y)
+        self.add_segment(gate_node, stg, "INTERNAL", width=8.0, lanes=1)
 
         # --- danh sach cong trinh theo TOA DO CUC BO (ox,oz) ---
         # JS ve san + nha ga + cong trinh tu data nay. Truoc day JS tu tinh
@@ -11687,9 +11693,8 @@ class MapGenerator:
             "access_node": gate_node, "anchor_node": access_anchor,
             "is_spawn": bool(sd.get("spawn")),
             "bays": bay_count,
-            # busBays để trống — TrafficManager.setupStationTraffic() sẽ return
-            # ngay (nếu populate, static bus ăn hết traffic budget của
-            # maxActive => Traffic AI chết). Xe tĩnh dùng baySlots ở dưới.
+            # RuntimeRoadGraph lấy xe tĩnh từ baySlots bên dưới; `buses` giữ
+            # rỗng để tương thích dữ liệu cũ, không phải để tắt station queue.
             "buses": [],
             "baySlots": bays,
             # KHUNG SAN BEN theo toa do cuc bo (ox, oz) — JS DUNG THANG, khong

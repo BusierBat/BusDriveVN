@@ -134,23 +134,11 @@ class World {
     }
 
     // ----------------------------------------------------------------------
-    // DẰN SÂN BẾN — sửa gốc "nửa sân bê tông nửa cỏ"
-    //
-    // VÌ SAO: sân bến là MỘT MẶT PHẲNG phẳng tại `st.y + yardLift`, còn
-    // địa hình quanh nó thì không ai san. Đo runtime 03/10 trên 18 bến:
-    //   dau_giay       đất cao hơn mặt sân tới  7.10 m -> CỎ MỌC XUYÊN BÊ TÔNG
-    //   mien_dong_moi  đất cao hơn mặt sân       0.78 m
-    //   dong_hoa 0.27 / phan_thiet 0.09 m         -> lấm tấm
-    //   song_cau       sân NỔI 13.09 m TRÊN KHÔNG TRUNG (đất thấp hơn sân 13m)
-    // `validate()` của generator chỉ kiểm NODE bến nằm trên mặt đất, KHÔNG
-    // kiểm cả mảng 100–340 m của sân ⇒ lỗi này không bao giờ được báo.
-    //
-    // KHÔNG sửa bằng cách cho sân bám địa hình: bến, bay, vạch ranh, nhà ga
-    // đều đặt theo `yardLift` PHẲNG, sân bám địa hình sẽ làm chúng lệch hàng
-    // chục mét. Sửa đúng chỗ là DẰN ĐỊA HÌNH quanh bến về đúng cao độ sân.
-    //
-    // Bề rộng dằn = hình chữ nhật sân + 45m vát dốc ra ngoài (bến thật có
-    // sân bằng phẳng rồi vát mái ra đường nội bộ, không bị bậc thấp thụp).
+    // DẰN SÂN BẾN: sân là mặt phẳng tại `st.y + yardLift`, địa hình quanh
+    // không tự san nên có thể lấp vào sân hoặc để sân bị nổi. validate() của
+    // generator chỉ kiểm node bến, không kiểm toàn bộ diện tích sân.
+    // Không cho sân bám địa hình (bến, bay, vạch, nhà ga sẽ lệch nhau); dằn
+    // địa hình quanh bến. Bề rộng = sân + 45m vát dốc ra đường nội bộ.
     setYards(stations) {
         const out = [];
         for (const s of (stations || [])) {
@@ -479,9 +467,7 @@ class World {
             //   Ca_Na (x=-33678.74): d2_228 − d2_227 = −2.33e-5 m² — KHÔNG phải
             //     tie; phải chọn min (228, biển) để khớp Python.
             //   => ngưỡng nằm giữa 1.1e-6 và 2.3e-5; 1e-5 khớp cả 2.
-            // Ngưỡng 0.01 (10cm) cũ nuốt Ca_Na (2.33e-5) => chọn sai => h lệch
-            // 34m; ngưỡng 1e-6 cũ nuốt... chính cả Phan Rang khi d2 qua ngưỡng
-            // sắp等原因重排序。 debug bằng probe uzytkownik verified.
+            // Ngưỡng 0.01 (10cm) cũ nuốt Ca_Na; ngưỡng 1e-6 cũ lại nuốt Phan Rang.
             if (d2 < best - SPACE_TIE_EPS ||
                 (Math.abs(d2 - best) <= SPACE_TIE_EPS && i < bi)) {
                 best = d2; bi = i; bt = t;
@@ -1665,11 +1651,10 @@ export class MapLoader {
                         : Math.abs(rawY - yHint) + d * 0.02;
                     if (score < bestScore) {
                         bestScore = score;
-                        // KHÔNG `+ roadLift`: `roadLift` chỉ nâng MẶT ĐƯỜNG
-                        // (hình học) để tránh z-fighting, không phải cao độ xe.
-                        // Xe chạy ở `bus.y = road.y + BUS_AXLE` (đo được:
-                        // 2.883 = road.y 2.383 + 0.5). Cộng roadLift ở đây
-                        // làm lệch 0.12m so với `_nearestRoad` cũ.
+                        // `_surfaceAt` trả node.y THÔ (đúng dữ liệu graph).
+                        // `roadLift` được cộng ở `getTerrainHeight()` — đầu ra
+                        // duy nhất dùng để đặt xe — khớp mặt mesh (node.y+lift).
+                        // Cộng lift ngay đây sẽ đếm đôi ở caller.
                         best = { y: rawY, rawY, dist: d, width, sid, seg };
                     }
                 }
@@ -3201,7 +3186,6 @@ export class MapLoader {
             // VÕNG — khung cọc + lưới phơi ven đường (đặc trưng miền Trung).
             // 5 khối hộp (2 cọc + 2 tấm lưới + 1 thanh giữ) đi vào CHUNG
             // InstancedMesh `bldTrim` ở cuối hàm => KHÔNG tốn thêm draw call.
-            // (Đo runtime 03/10 renderRadius=1: 307 draw call, 32.8 FPS.)
             if (!far && (fl & H_VONG)) {
                 const netW = Math.min(d * 0.80, 8.5);
                 const netX = cy, netZ = -sy;            // hướng vuông góc mặt tiền
@@ -4901,10 +4885,17 @@ export class MapLoader {
                 if (!res.ok) return null;
                 const json = await res.json();
                 this._sectorCache.set(key, json);
-                // giu toi da 6 sector (6 MB data) -> bo keo de khong phinh RAM
-                while (this._sectorCache.size > 6) {
-                    const first = this._sectorCache.keys().next().value;
-                    this._sectorCache.delete(first);
+                while (this._sectorCache.size > 12) {
+                    const S = this.sectorSize || 1;
+                    const active = new Set();
+                    for (const ck of this.inProgress) {
+                        const [cx, cz] = ck.split(",").map(Number);
+                        active.add(Math.floor(cx / S) + "_" + Math.floor(cz / S));
+                    }
+                    const victim = [...this._sectorCache.keys()].find(
+                        k => !this._sectorPending.has(k) && !active.has(k));
+                    if (!victim) break;
+                    this._sectorCache.delete(victim);
                 }
                 return json;
             } catch (e) {
@@ -5112,12 +5103,18 @@ export class MapLoader {
     }
 
     // ----------------------------------------------------------------- API
-    // getTerrainHeight: trên đường -> node.y - BUS_AXLE (để bus.y == mặt đường),
-    // ngoài đường -> terrain thật. Đây là hàm main.js gọi MỖI FRAME.
-    // `roadLift` / `yardLift` được set trên lớp `WorldTerrain`
-    // (`this.world`), KHÔNG có trên `MapLoader`. Dùng `this.roadLift` ở đây
-    // là `undefined` ⇒ phép cộng ra NaN ⇒ xe đứng ở NaN. Đo được:
-    // `loaderRoadLift = UNDEFINED` còn `worldRoadLift = 0.12`.
+    // getTerrainHeight: trên đường -> (node.y + roadLift) - BUS_AXLE
+    // (để bus.y == MẶT MESH ĐƯỜNG), ngoài đường -> terrain thật.
+    // Đây là hàm main.js gọi MỖI FRAME rồi cộng lại BUS_AXLE (0.5).
+    //
+    // BUG LÚN XE (22/11): mesh đường dựng ở `node.y + roadLift` (map.js:2186)
+    // trong khi collision box và `_surfaceAt` giữ node.y thô. Trả node.y thô
+    // làm bánh xe chạy THẤP hơn mặt asphalt đúng 0.12m — lún ở mọi đoạn,
+    // rõ nhất ở ngã tư (viền +0.14 + roadLift). Cộng lift ở ĐÂY (điểm duy
+    // nhất quyết định cao độ xe) để mọi caller — main.js, npc.js,TravelClock,
+    // spawn — tự khớp mà không đụng physics hay dữ liệu sinh.
+    // `roadLift` nằm trên `this.world` (WorldTerrain); `_roadLift()` đã fallback
+    // an toàn, không dùng `this.roadLift` (có thể undefined -> NaN).
     _roadLift() { return (this.world && this.world.roadLift) || ROAD_LIFT; }
     _yardLift() { return (this.world && this.world.yardLift) || YARD_LIFT; }
 
@@ -5130,12 +5127,12 @@ export class MapLoader {
         if (window.collisionSystem) {
             const roadY = window.collisionSystem.getRoadSurfaceY(x, z, yHint);
             if (roadY !== null) {
-                return roadY - BUS_AXLE;
+                return roadY + this._roadLift() - BUS_AXLE;
             }
         }
         
         const road = this._surfaceAt(x, z, yHint);
-        if (road) return road.y - BUS_AXLE;
+        if (road) return road.y + this._roadLift() - BUS_AXLE;
         return this.world.getElevation(x, z);
     }
     getHeight(x, z) { return this.getTerrainHeight(x, z); }
@@ -5222,12 +5219,19 @@ export class MapLoader {
                 throw new Error("Không tìm thấy bến cuối tuyến có vị trí đỗ để khởi hành chiều Nam.");
             }
 
-            const slot = slots.reduce((best, candidate) =>
+            const blocked = this._reservedSpawnBays || [];
+            const isFree = (s) => !s.occupied &&
+                !blocked.some(b => hypot2(b.x - s.x, b.z - s.z) < 4.5);
+            const freeSlots = slots.filter(isFree);
+            const pool = freeSlots.length ? freeSlots : slots;
+            const slot = pool.reduce((best, candidate) =>
                 hypot2(candidate.x - endpoint.x, candidate.z - endpoint.z) <
                     hypot2(best.x - endpoint.x, best.z - endpoint.z)
                     ? candidate
                     : best
             );
+            if (!this._reservedSpawnBays) this._reservedSpawnBays = [];
+            this._reservedSpawnBays.push({ x: slot.x, z: slot.z });
             return {
                 x: slot.x,
                 z: slot.z,
@@ -5457,10 +5461,10 @@ export class MapLoader {
         return this.stationsData.some(station => {
             if (station.type !== "BUS_STATION" && station.type !== "MAJOR_BUS_TERMINAL") return false;
             const dx = x - station.x, dz = z - station.z;
-            const angle = -(station.rot || 0);
+            const angle = station.rot || 0;
             const cos = Math.cos(angle), sin = Math.sin(angle);
-            const localX = dx * cos - dz * sin;
-            const localZ = dx * sin + dz * cos;
+            const localX = dx * sin + dz * cos;
+            const localZ = dx * cos - dz * sin;
             return Math.abs(localX) <= Math.max(6, (station.w || 20) * 0.5) &&
                 Math.abs(localZ) <= Math.max(6, (station.d || 20) * 0.5);
         });
@@ -5598,8 +5602,8 @@ export class MapLoader {
         return out;
     }
 
-    setPlayerPosition(x, z, dt = 1 / 60, camDir = null) {
-        this.updateChunks(x, z, dt, camDir);
+    setPlayerPosition(x, z, dt = 1 / 60, camDir = null, camera = null) {
+        this.updateChunks(x, z, dt, camDir, camera);
     }
 
     dispose() {
@@ -5644,7 +5648,7 @@ export function createMap(options) {
         group: loader.group,
         loader,
         ready: loader.loadInitialData(),
-        setPlayerPosition: (x, z, dt, camDir) => loader.setPlayerPosition(x, z, dt, camDir),
+        setPlayerPosition: (x, z, dt, camDir, camera) => loader.setPlayerPosition(x, z, dt, camDir, camera),
         getHeight: (x, z) => loader.getHeight(x, z),
         getTerrainHeight: (x, z) => loader.getTerrainHeight(x, z),
         getSpawnPoint: (direction) => loader.getSpawnPoint(direction),
@@ -5659,7 +5663,7 @@ export function createMap(options) {
         // tại bến) — dùng bởi npc.js; dữ liệu cũ đã có trong loader.stationsData.
         getStationsData: () => loader.stationsData,
         getCSGTCheckpoints: () => loader.csgtCheckpoints || [],
-        updateChunks: (x, z, dt, camDir) => loader.updateChunks(x, z, dt, camDir),
+        updateChunks: (x, z, dt, camDir, camera) => loader.updateChunks(x, z, dt, camDir, camera),
         dispose: () => loader.dispose()
     };
     return api;

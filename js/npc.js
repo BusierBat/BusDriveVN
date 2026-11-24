@@ -365,6 +365,7 @@ export class BusStationManager {
                                        BusStationManager.MAX_STATIC_BUSES);
         this.spawnTimer = 0;
         this.spawnQueue = [];
+        this.spawnCandidates = [];
         // ref TrafficManager — dùng để hỏi bãi CHUNG (isBayFree/markBayBusy).
         // main.js gán sau khi createNPC() xong, nên `traffic` còn null lúc
         // constructor chạy.
@@ -372,40 +373,49 @@ export class BusStationManager {
         this.prepareStationSpawns();
     }
 
-    setTrafficManager(tm) { this.traffic = tm || null; }
+    setTrafficManager(tm) {
+        this.traffic = tm || null;
+        if (this.traffic) this.prepareStationSpawns();
+    }
     prepareStationSpawns() {
-        const availableSlots = this.parkingSlots.filter(s => !s.occupied);
-        let selectedSlots = availableSlots.slice(0, this.maxStaticBuses);
-        if (this.playerSpawnPos) {
-            const spawnX = this.playerSpawnPos.x, spawnZ = this.playerSpawnPos.z;
-            selectedSlots = selectedSlots.filter(slot => hypot2(slot.position.x - spawnX, slot.position.z - spawnZ) > 20);
+        const spawnX = this.playerSpawnPos ? this.playerSpawnPos.x : 0;
+        const spawnZ = this.playerSpawnPos ? this.playerSpawnPos.z : 0;
+        this.spawnCandidates = this.parkingSlots.filter(s => {
+            if (!s || s.occupied || !s.position) return false;
+            if (!Number.isFinite(s.position.x) || !Number.isFinite(s.position.z)) return false;
+            return !this.playerSpawnPos ||
+                hypot2(s.position.x - spawnX, s.position.z - spawnZ) > 20;
+        });
+        this.spawnQueue.length = 0;
+        if (!this.traffic) return;
+        for (const slot of this.spawnCandidates) {
+            if (this.spawnQueue.length >= this.maxStaticBuses) break;
+            if (!this.traffic.isBayFree(slot.position.x, slot.position.z)) continue;
+            this.spawnQueue.push(slot);
         }
-        for (const slot of selectedSlots) { this.spawnQueue.push(slot); }
-        // KHÔNG xả hàng ngay tại đây: lúc constructor chạy thì main.js chưa
-        // gọi `setTrafficManager()` -> không hỏi được bãi chung với
-        // TrafficManager, và 3 xe đầu sẽ đâm thẳng vào xe queue kia (đo được
-        // 10/15 slot có 2 xe chồng nhau). Hàng đợi xả ở lần update() sau.
     }
     _spawnOneBus(slot) {
-        if (!slot) return;
-        // Không chồng lên xe TrafficManager đã đỗ đúng slot này. Hai hệ thống
-        // giờ cùng một registry -> mỗi slot đúng 1 xe.
-        if (this.traffic) {
-            if (!this.traffic.isBayFree(slot.position.x, slot.position.z, 7)) {
-                slot.occupied = true;
-                return;
-            }
-            this.traffic.markBayBusy(slot.position.x, slot.position.z);
+        if (!slot || !this.traffic) return;
+        let chosen = slot;
+        const candidates = this.spawnCandidates.map(s => s.position);
+        const free = this.traffic.findFreeBay(slot.position, candidates);
+        if (free) {
+            chosen = this.spawnCandidates.find(s => s.position === free) || slot;
         }
+        if (chosen.occupied || !this.traffic.isBayFree(chosen.position.x, chosen.position.z)) {
+            slot.occupied = true;
+            return;
+        }
+        this.traffic.markBayBusy(chosen.position.x, chosen.position.z);
         const bus = createNpcBus({ skinPath: pickNpcSkinPath(), ledColor: pickLedColor() });
         // Y lấy từ data (generator/MapLoader) để xe tĩnh bám mặt sân bến thật
-        const sy = (slot.position && typeof slot.position.y === "number") ? slot.position.y : 0.5;
-        bus.group.position.set(slot.position.x, sy, slot.position.z);
+        const sy = (chosen.position && typeof chosen.position.y === "number") ? chosen.position.y : 0.5;
+        bus.group.position.set(chosen.position.x, sy, chosen.position.z);
         // slot.rotation là heading CỦA GENERATOR (baySlots[].heading), khác
         // quy ước rotation.y đúng 90° — cùng chỗ thiếu `+ Math.PI/2` như
         // TrafficManager. Xe không cộng sẽ nằm dọc hàng rồi chồng lên nhau.
-        bus.group.rotation.y = (slot.rotation || 0) + Math.PI / 2;
-        slot.occupied = true;
+        bus.group.rotation.y = (chosen.rotation || slot.rotation || 0) + Math.PI / 2;
+        chosen.occupied = true;
         this.busGroup.add(bus.group);
         // Bug 8: xe bãi tĩnh PHẢI cản xe người chơi — trước đây bãi bến
         // "trống trơn" với collisionSystem nên xe lái xuyên qua cả dãy xe
@@ -417,7 +427,7 @@ export class BusStationManager {
             if (!bus.userData) bus.userData = {};
             if (bus.userData.colId === undefined) {
                 bus.userData.colId = window.collisionSystem.register(
-                    slot.position.x, slot.position.z, 7.0, 'static',
+                    chosen.position.x, chosen.position.z, 7.0, 'static',
                     { ai: { heading: bus.group.rotation.y } },
                     sy, 4.0
                 );
@@ -437,6 +447,12 @@ export class BusStationManager {
             for (const sb of this.stationBuses) {
                 const id = sb.bus && sb.bus.userData && sb.bus.userData.colId;
                 if (id !== undefined) window.collisionSystem.remove(id);
+            }
+        }
+        if (this.traffic) {
+            for (const sb of this.stationBuses) {
+                const p = sb.bus && sb.bus.group && sb.bus.group.position;
+                if (p) this.traffic.releaseBay(p.x, p.z);
             }
         }
         if (this.busGroup.parent) this.busGroup.parent.remove(this.busGroup);
@@ -695,17 +711,13 @@ export function createNPC({ scene, map, seed = 2027, playerBus = null, playerSpa
             if (hypot2(p.group.position.x - sx, p.group.position.z - sz) < 6) return false;
         }
 
-        const gy = map.getTerrainHeight ? map.getTerrainHeight(sx, sz, playerScratch.y) : 0.5;
+        const gy = map.getTerrainHeight ? map.getTerrainHeight(sx, sz, playerScratch.y) + 0.5 : 0.5;
         if (typeof window !== "undefined" && window.collisionSystem?.check(
             sx, sz, 0.5, -1, ["static"], gy + 0.9, 1.8
         )) return false;
 
         const npc = pedPool.pop() || createHumanoidNPC(seed + (pedIdCounter++));
         if (!npc) return false;
-        // yHint = cao độ người chơi (bus.y = mặt đường): khi player đang chạy
-        // trên cầu/hầm, pedestrian spawn xung quanh phải bám mặt CÙNG MỨC
-        // player thay vì nhảy lên surface cao nhất trong vùng. Trả vềspace
-        // node (surfaceY − 0.5) khớp cách dùng gy hiện có.
         npc.group.position.set(sx, gy, sz);
         npc.group.rotation.y = pedRandom() * TWO_PI;
         npc.group.visible = true;
