@@ -1456,6 +1456,8 @@ async function requestCloseSettings() {
 }
 
 let hudTimer = 0;
+let hudHeavyTimer = 0;
+let csgtTimer = 0;
 let fuelFlushTimer = 0;   // đếm thời gian giữa các lần flushFuel() xuống localStorage
 let strandedT = 0;         // đếm thời gian xe hết xăng + đứng yên liên tục
 let lowFuelWarned = false; // tránh spam cảnh báo sắp hết nhiên liệu
@@ -2341,23 +2343,34 @@ function updateWorld(delta) {
 function updateHUD(delta) {
     hudTimer += delta;
     if (hudTimer < 0.1) return;
+    const dtHud = hudTimer;
     hudTimer = 0;
     if (gameState !== "playing" || !bus || !ui) return;
-    const zones = passengerSystem?.getActiveZones?.() || [];    if (!window._npcZonesCache) window._npcZonesCache = [];
+    hudHeavyTimer += dtHud;
+    csgtTimer += dtHud;
+    const zones = passengerSystem?.getActiveZones?.() || [];
+    if (!window._npcZonesCache) window._npcZonesCache = [];
     const npcZones = window._npcZonesCache;
-    npcZones.length = 0;
-    if (trafficManager?.aiVehicles) {
-        for (let i = 0; i < trafficManager.aiVehicles.length; i++) {
-            const c = trafficManager.aiVehicles[i].collider;
-            if (c) npcZones.push(c);
+    if (hudHeavyTimer >= 0.5 || npcZones.length === 0) {
+        hudHeavyTimer = 0;
+        npcZones.length = 0;
+        if (trafficManager?.aiVehicles) {
+            for (let i = 0; i < trafficManager.aiVehicles.length; i++) {
+                const c = trafficManager.aiVehicles[i].collider;
+                if (c) npcZones.push(c);
+            }
         }
     }
     // Giới hạn tốc độ + CSGT (lấy seg.speed thật của đoạn đường đang chạy)
-    csgtManager?.update(0.1, {
-        x: bus.group.position.x,
-        z: bus.group.position.z,
-        speedKmh: vehiclePhysics.currentSpeedKmh
-    });
+    if (csgtTimer >= 0.25) {
+        const dtCsgt = csgtTimer;
+        csgtTimer = 0;
+        csgtManager?.update(dtCsgt, {
+            x: bus.group.position.x,
+            z: bus.group.position.z,
+            speedKmh: vehiclePhysics.currentSpeedKmh
+        });
+    }
     // ===== HỆ THỐNG NHIÊN LIỆU (B) =====
     // 1) Flush mức xăng xuống localStorage định kỳ (tránh ghi mỗi tick 30Hz).
     fuelFlushTimer += delta;
@@ -2373,7 +2386,7 @@ function updateHUD(delta) {
     // 3) Hết xăng + xe đứng yên > 30s liên tục -> cứu hộ về trạm gần nhất.
     if (fuelNow <= 0) {
         if (Math.abs(vehiclePhysics.speed) < 0.5) {
-            strandedT += delta;
+            strandedT += dtHud;
             if (strandedT >= 30) {
                 strandedT = 0;
                 const g = map?.getRoadGraph?.();
@@ -2410,10 +2423,19 @@ function updateHUD(delta) {
     }
     // 4) Đổ xăng tự động khi trong bán kính 35 m của trạm xăng (FUEL_STATION).
     if (fuelNow < FUEL_CAPACITY - 0.5) {
+        const bx = bus.group.position.x, bz = bus.group.position.z;
+        let nearStation = fuelNow <= 0; // hết xăng thì vẫn scan để cứu hộ/refuel logic giữ nguyên
         const g = map?.getRoadGraph?.();
         const pois = g?.pois;
-        if (pois) {
-            const bx = bus.group.position.x, bz = bus.group.position.z;
+        if (!nearStation && pois) {
+            for (let i = 0; i < pois.length; i++) {
+                const p = pois[i];
+                if (p.type !== 'FUEL_STATION') continue;
+                const dx = p.position.x - bx, dz = p.position.z - bz;
+                if (dx * dx + dz * dz <= 80 * 80) { nearStation = true; break; }
+            }
+        }
+        if (nearStation && pois) {
             for (let i = 0; i < pois.length; i++) {
                 const p = pois[i];
                 if (p.type !== 'FUEL_STATION') continue;
@@ -2466,10 +2488,6 @@ const MAX_FRAME_DELTA = 0.25;   // tab ẩn/breakpoint: không nhảy quá 250ms
 const MAX_SUBSTEPS = 15;        // 15 × 33.3ms = 0.5s mô phỏng/frame (đủ cho 2 FPS)
 const MAX_FRAME_TIME = 50; // ms - if frame takes longer, log warning
 let accumulator = 0;
-let frameTimeHistory = new Array(60);
-let frameTimeIndex = 0;
-let frameTimeCount = 0;
-const MAX_HISTORY = 60;
 // Thống kê spike theo cửa sổ 10s (xem loop() — KHÔNG warn từng frame nữa)
 let perfWindowStart = performance.now();
 let perfWindowSum = 0, perfWindowCount = 0;
@@ -2567,9 +2585,6 @@ function loop() {
         // kiểu "đỉnh 7493ms lúc menu" như trước. Không tắt đo trong gameplay.
         if (gameState === "playing") {
         const frameTime = performance.now() - frameStart;
-        frameTimeHistory[frameTimeIndex] = frameTime;
-        frameTimeIndex = (frameTimeIndex + 1) % MAX_HISTORY;
-        if (frameTimeCount < MAX_HISTORY) frameTimeCount++;
 
         // [PERF] GOM THỐNG KÊ 10s + lưu riêng chi tiết của CHÍNH frame đỉnh.
         // Vẫn không warn từng frame (N5000 spam đặc), nhưng sửa chỗ cũ gán TB

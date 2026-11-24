@@ -11,6 +11,13 @@ export function createUI({ map = null, callbacks = {} } = {}) {
     let _minimapAngle = 0, _minimapDrawnAngle = 0, _minimapAngleReady = false;
     let _lastMoney = NaN;
     let _lastFuel = NaN;
+    let _lastHud = { fps: NaN, passengers: '', time: '', trip: '', x: '', z: '', warning: '', npcSig: '', zoneSig: '' };
+    const setTextIfChanged = (el, value, key) => {
+        if (!el) return;
+        if (_lastHud[key] === value) return;
+        _lastHud[key] = value;
+        el.textContent = value;
+    };
     const els = {
         hud: document.getElementById('hud'),
         fps: document.getElementById('hud-fps'),
@@ -380,11 +387,11 @@ export function createUI({ map = null, callbacks = {} } = {}) {
     }
 
     function update(state = {}) {
-        if (els.fps) els.fps.textContent = Math.round(state.fps || 0);
+        setTextIfChanged(els.fps, Math.round(state.fps || 0), 'fps');
         setMoneyDisplay(state.money);
         setFuelDisplay(state.fuel);
-        if (els.passengers) els.passengers.textContent = `${state.passengers ?? 0}/${state.passengerCapacity ?? 24}`;
-        if (els.time) els.time.textContent = formatTime(state.timeMinutes || 0);
+        setTextIfChanged(els.passengers, `${state.passengers ?? 0}/${state.passengerCapacity ?? 24}`, 'passengers');
+        setTextIfChanged(els.time, formatTime(state.timeMinutes || 0), 'time');
         if (els.trip && state.trip) {
             const t = state.trip;
             // độ dốc có dấu: lên (↑) / xuống (↓), làm tròn 0.1%
@@ -393,10 +400,10 @@ export function createUI({ map = null, callbacks = {} } = {}) {
             // `avgKmh` là km/h THỰC; `gameAvgKmh` là km trên giờ game (nhỏ hơn
             // nhiều vì đồng hồ game chạy nhanh thực). Ghi nhầm hai cái này ra
             // "1.1 km/h" khi xe đang chạy 70 km/h.
-            els.trip.textContent =
+            const tripText =
                 `${t.distanceKm.toFixed(1)} km · TB ${t.avgKmh.toFixed(0)} km/h` +
                 ` · ${t.roadClass.toLowerCase()}${grade}`;
-            els.trip.title =
+            const tripTitle =
                 `Đồng hồ game chạy ${t.timeScale.toFixed(2)}x thực\n` +
                 `Quãng đường / giờ game: ${t.gameAvgKmh.toFixed(1)} km\n` +
                 `Thời gian thực đã chạy: ${Math.round(t.elapsedRealS)}s | ` +
@@ -404,10 +411,19 @@ export function createUI({ map = null, callbacks = {} } = {}) {
                 `Giao lộ đã qua: ${t.junctionsPassed}\n` +
                 `Bến đã ghé: ${t.stationsServed}` +
                 (t.dwellReason ? `\nĐang dừng: ${t.dwellReason}` : '');
+            setTextIfChanged(els.trip, tripText, 'trip');
+            if (_lastHud.tripTitle !== tripTitle) { _lastHud.tripTitle = tripTitle; els.trip.title = tripTitle; }
         }
-        if (els.x) els.x.textContent = state.x !== undefined ? state.x.toFixed(0) : '0';
-        if (els.z) els.z.textContent = state.z !== undefined ? state.z.toFixed(0) : '0';
-        if (els.warning) { els.warning.style.display = state.warning ? 'block' : 'none'; if (state.warning) els.warning.innerText = state.warning; }
+        setTextIfChanged(els.x, state.x !== undefined ? String(state.x.toFixed(0)) : '0', 'x');
+        setTextIfChanged(els.z, state.z !== undefined ? String(state.z.toFixed(0)) : '0', 'z');
+        if (els.warning) {
+            const w = state.warning || '';
+            if (_lastHud.warning !== w) {
+                _lastHud.warning = w;
+                els.warning.style.display = w ? 'block' : 'none';
+                if (w) els.warning.innerText = w;
+            }
+        }
         
         const px = state.x || 0, pz = state.z || 0;
         const rawHeading = state.heading || 0;
@@ -422,13 +438,28 @@ export function createUI({ map = null, callbacks = {} } = {}) {
             const diff = targetAngle - _minimapAngle;
             _minimapAngle += Math.atan2(Math.sin(diff), Math.cos(diff)) * 0.25;
         }
+        const npcs = state.npcZones || [];
+        const zones = state.passengerZones || [];
+        let npcSig = String(npcs.length);
+        const npcStep = Math.max(1, (npcs.length / 10) | 0);
+        for (let i = 0; i < npcs.length; i += npcStep) {
+            const n = npcs[i];
+            npcSig += '|' + (n.x | 0) + ',' + (n.z | 0);
+        }
+        let zoneSig = String(zones.length);
+        for (let i = 0; i < zones.length; i++) {
+            const z = zones[i];
+            zoneSig += '|' + (z.x | 0) + ',' + (z.z | 0) + ',' + (z.active ? 1 : 0);
+        }
         const dx = Math.abs(px - _lastMinimapX);
         const dz = Math.abs(pz - _lastMinimapZ);
         const angleDiff = _minimapAngle - _minimapDrawnAngle;
         const dh = Math.abs(Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff)));
-        if (dx > 5 || dz > 5 || dh > 0.012) {
-            drawMinimap(px, pz, nh, state.npcZones || [], state.passengerZones || []);
+        const dataChanged = npcSig !== _lastHud.npcSig || zoneSig !== _lastHud.zoneSig;
+        if (dx > 5 || dz > 5 || dh > 0.012 || dataChanged) {
+            drawMinimap(px, pz, nh, npcs, zones);
             _lastMinimapX = px; _lastMinimapZ = pz; _minimapDrawnAngle = _minimapAngle;
+            _lastHud.npcSig = npcSig; _lastHud.zoneSig = zoneSig;
         }
         drawSpeedometer(state.speedKmh || 0, state.speedLimit || null);
     }
