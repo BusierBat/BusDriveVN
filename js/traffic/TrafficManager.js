@@ -26,6 +26,9 @@ import {
 
 const BUS_LEN_APPROX = 12.8;   // xe NPC dùng chung mesh bus (bus.js BUS_DIMENSIONS)
 const BUS_W_APPROX = 2.53;
+const BAY_FREE_RADIUS = 4.5;
+const STATION_SPAWN_RANGE = 900;
+const STATIC_DESPAWN_RANGE = 1300;
 
 // Class đường KHÔNG bao giờ spawn NPC chạy (hẻm/nội bộ/sân bến/nông nghiệp/dân cư).
 // Hằng số dùng chung cho _segOk — trước đây tạo Set mới mỗi lần gọi.
@@ -133,14 +136,14 @@ export class TrafficManager {
         this.activeCount = 0;
         // XE TĨNH (xe đỗ trong bãi bến, `isStatic`) KHÔNG được tính vào ngân
         // sách "xe đang chạy". Trước đây `activeCount` gộp cả hai, trong khi
-        // spawn gate dùng nó -> 223 xe đỗ bến làm `activeCount=224` vượt
-        // `maxActive=3` => slider "Mật độ NPC" chết, xe cộ không còn chạy.
+        // spawn gate dùng nó -> xe đỗ bến làm `activeCount` vượt `maxActive`
+        // => slider "Mật độ NPC" chết, xe cộ không còn chạy.
         // Số đếm tách riêng để gate chỉ nhìn số xe CHẠY.
         this.staticCount = 0;
         this.seed = Date.now();
         this.random = createSeededRandom(this.seed);
         this.graphics = getGraphicsSettings();
-        this.graphics.onChange(() => this._onSettingsChanged());
+        this._unsubscribeGraphics = this.graphics.onChange(() => this._onSettingsChanged());
         loadNpcSkinList();
 
         // Cửa sổ spawn/despawn suy từ preset đồ hoạ (máy yếu = vòng nhỏ hơn)
@@ -450,21 +453,17 @@ export class TrafficManager {
     // ---------------------------------------------------------------- station
     setupStationTraffic(stationNode) {
         if (!stationNode || !stationNode.busBays || stationNode.busBays.length === 0) return;
-        for (const bay of stationNode.busBays) {
-            this.stationSpawnQueue.push({ transform: bay });
+        const center = stationNode.position || null;
+        const bays = stationNode.busBays;
+        for (const bay of bays) {
+            this.stationSpawnQueue.push({ transform: bay, center, bays });
         }
     }
 
     // ------------------------------------------------- bãi đỗ: 1 slot = 1 xe
-    // HAI HỆ THỐNG cùng đỗ một bãi: BusStationManager (npc.js) và queue
-    // `setupStationTraffic` này. Trước đây mỗi bên chỉ nhìn danh sách của
-    // MÌNH (cái này chỉ so `aiVehicles`, cái kia chỉ so `slot.occupied` của
-    // một mảng copy khác) -> đo được 10/15 slot có 2 xe chồng nhau đúng một
-    // vị trí. Một registry chung => mỗi slot đúng 1 xe, cả hai API giữ nguyên.
-    isBayFree(x, z, r = 7) {
+    isBayFree(x, z, r = BAY_FREE_RADIUS) {
         const busy = this._bayBusy || [];
         for (const b of busy) if (hypot2(b.x - x, b.z - z) < r) return false;
-        // Dùng spatial grid O(1)
         const nearby = this._getNearbyVehicles(x, z, r + 5);
         for (const v of nearby) {
             if (hypot2(v.collider.x - x, v.collider.z - z) < r) return false;
@@ -477,18 +476,50 @@ export class TrafficManager {
         this._bayBusy.push({ x, z });
     }
 
+    releaseBay(x, z) {
+        const busy = this._bayBusy || [];
+        for (let i = busy.length - 1; i >= 0; i--) {
+            if (hypot2(busy[i].x - x, busy[i].z - z) < 0.5) { busy.splice(i, 1); break; }
+        }
+    }
+
+    findFreeBay(preferred, candidates, r = BAY_FREE_RADIUS) {
+        if (preferred && Number.isFinite(preferred.x) && Number.isFinite(preferred.z) &&
+            this.isBayFree(preferred.x, preferred.z, r)) return preferred;
+        if (!Array.isArray(candidates)) return null;
+        let best = null;
+        let bestD = Infinity;
+        const px = preferred ? preferred.x : 0;
+        const pz = preferred ? preferred.z : 0;
+        for (const b of candidates) {
+            if (!b || !Number.isFinite(b.x) || !Number.isFinite(b.z)) continue;
+            const d = hypot2(b.x - px, b.z - pz);
+            if (d >= bestD || !this.isBayFree(b.x, b.z, r)) continue;
+            best = b;
+            bestD = d;
+        }
+        return best;
+    }
+
     processStationQueue(deltaTime) {
         if (this.stationSpawnQueue.length === 0) return;
         this.stationSpawnTimer += deltaTime;
         if (this.stationSpawnTimer < 0.2) return;
+        const player = this.playerRef?.group?.position;
+        let pick = -1;
+        for (let i = 0; i < this.stationSpawnQueue.length; i++) {
+            const c = this.stationSpawnQueue[i].center;
+            if (!c || !player || hypot2(c.x - player.x, c.z - player.z) <= STATION_SPAWN_RANGE) {
+                pick = i;
+                break;
+            }
+        }
+        if (pick < 0) return;
         this.stationSpawnTimer = 0;
-
-        const req = this.stationSpawnQueue.shift();
-        const tx = req.transform.x, tz = req.transform.z;
-        // slot này đã có người đỗ (BusStationManager hoặc một xe khác) -> bỏ,
-        // không spawn chồng lên. Trả về chứ không `continue` là đúng: shift()
-        // đã lấy mất yêu cầu, mà lý do bỏ chính là "đã có xe ở đó".
-        if (!this.isBayFree(tx, tz, 7)) return;
+        const req = this.stationSpawnQueue.splice(pick, 1)[0];
+        const bay = this.findFreeBay(req.transform, req.bays);
+        if (!bay) return;
+        const tx = bay.x, tz = bay.z;
         this.markBayBusy(tx, tz);
 
         // Xe đỗ bến LUÔN là xe khách (BUS_DRIVER) — lấy từ pool nếu có sẵn.
@@ -507,14 +538,9 @@ export class TrafficManager {
         ai.vehicleColorIndex = -1;
         ai.collider.x = tx;
         ai.collider.z = tz;
-        ai.collider.y = req.transform.y || 0;
-        // heading CỦA GENERATOR (baySlots[].heading = rot ± PI/2) khác quy ước
-        // rotation.y mà TrafficAI đang dùng (`_getSegmentHeading` =
-        // atan2(ux,uz)) đúng 90°. main.js:616 đã cộng `+ Math.PI/2` cho xe
-        // player; đây là chỗ duy nhất quên. Hệ quả đo được: xe bãi nằm DỌC
-        // hàng (AABB 8.4 x 12.9) thay vì xoay mũi vào (12.6 x 7.8), trong khi
-        // khe bãi chỉ 11m cho xe dài 12.8m -> xe chồng lên nhau.
-        const bayHeading = (req.transform.heading || 0) + Math.PI / 2;
+        ai.collider.y = bay.y || 0;
+        ai._bay = { x: tx, z: tz, y: bay.y || 0, heading: bay.heading || 0, center: req.center, bays: req.bays };
+        const bayHeading = (bay.heading || 0) + Math.PI / 2;
         ai.heading = bayHeading;
         ai.targetHeading = bayHeading;
         ai.vehicle.group.position.set(ai.collider.x, ai.collider.y, ai.collider.z);
@@ -600,9 +626,18 @@ export class TrafficManager {
 
         for (let i = this.aiVehicles.length - 1; i >= 0; i--) {
             const ai = this.aiVehicles[i];
-            if (ai.isStatic) continue;
-
             const dist = hypot2(ai.collider.x - playerPos.x, ai.collider.z - playerPos.z);
+            if (ai.isStatic) {
+                if (dist > STATIC_DESPAWN_RANGE) {
+                    const bay = ai._bay;
+                    this._retireVehicle(i, ai);
+                    if (bay) {
+                        this.releaseBay(bay.x, bay.z);
+                        this.stationSpawnQueue.unshift({ transform: bay, center: bay.center, bays: bay.bays });
+                    }
+                }
+                continue;
+            }
 
             // --- TRỐN HIỆN TRƯỞNG (GDCD case 1): despawn SỚM = "biến mất",
             // chạy đủ xa (0.8*spawn) hoặc hết TTL 12-18s -> xoá, không đợi
@@ -810,6 +845,8 @@ export class TrafficManager {
     }
 
     dispose() {
+        this._unsubscribeGraphics?.();
+        this._unsubscribeGraphics = null;
         this.aiVehicles.forEach(ai => {
             if (window.collisionSystem && ai.colId) window.collisionSystem.remove(ai.colId);
             ai.dispose();

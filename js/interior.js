@@ -17,6 +17,12 @@ function wallBoxSide(w, h, d, mat, x, y, zCenter, group, side, doorCut) {
 
 import * as THREE from "three";
 
+// ===== QUY ƯỚC TỌA ĐỘ BUỒNG LÁI (đọc KỸ trước khi dời ghế/vô-lăng) =====
+// Đầu xe = local +z (NOSE_Z ≈ 6.40). Với hướng đi +z, vectơ PHẢI xe = (-z, +x)
+// tức (-uz, ux) — chính là công thức _frame.rx/rz trong TrafficAI.js.
+// => +x = TRÁI xe, -x = PHẢI xe. Cửa lên khách ở -x (phải, sát lề theo RHT
+// Việt Nam), ghế lái +0.65 (trái), ghế phụ -0.35 (phải). Đây là cabin LHD
+// đúng xe khách Việt. Các comment cũ ghi "RHD" SAI — đừng mirror theo đó.
 const L = 12, W = 2.4, H = 3.3;
 // ===== TÁI CẤU TRÚC CHIỀU CAO HAI TẦNG (Thaco Mobihome — neo theo texture vỏ xe) =====
 // Texture vỏ xe (bus.js, PX.sideR) định nghĩa 2 dải kính CỐ ĐỊNH trong texture:
@@ -72,6 +78,9 @@ const matLEDBlue = new THREE.MeshStandardMaterial({
     emissive: 0x2fb6ff,
     emissiveIntensity: 2.5
 });
+// Dải viền/lối đi cần chỉnh sáng riêng — cùng màu, khác material để không làm
+// dải trần sáng theo khi bật/yếu từng nhóm.
+const matLEDBlueTrim = matLEDBlue.clone();
 // Ban dau la 0xe8c9a0 (kem/kho mo) - tach lam 2 ton: giua kem, hai ben xanh.
 // That te thi matLEDNude chi chiem 1 day (centerLed) nhung chinh no la day to nhat
 // va nam ngay tren aisle, trong khi cac diem chieu cung mau kem la nhung diem manh nhat
@@ -100,6 +109,60 @@ const matBtn = new THREE.MeshStandardMaterial({ color: 0x333344 });
 const matFloorPax = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.9 });
 const matScreen = new THREE.MeshStandardMaterial({ color: 0x0a0a1a, emissive: 0x2f6fbf, emissiveIntensity: 0.5 });
 
+function makeInteriorLedApplier(groups, options = {}) {
+    const trimLeds = [];
+    for (const name of ["Aisle", "Dashboard"]) {
+        groups[name]?.traverse(o => {
+            if (o.isMesh && o.material === matLEDBlue) {
+                o.material = matLEDBlueTrim;
+                trimLeds.push(o);
+            }
+        });
+    }
+    const named = ["centerLedLight", "leftLedLight", "rightLedLight", "frontLedLight", "rearLedLight"]
+        .map(name => groups.Lights?.getObjectByName(name));
+    const stripLights = groups.ledStripLights || [];
+    const stripFactors = [0.7, 0.9, 1.0, 1.0, 1.0, 0.9, 0.7];
+    const level = (state, name) => state.master === false
+        ? 0
+        : Math.max(0, Math.min(1, Number(state[name]) || 0));
+    return function applyLedGroups(state) {
+        const ceiling = level(state, 'ceiling');
+        const trim = level(state, 'trim');
+        const maxLevel = Math.max(ceiling, trim, level(state, 'exterior'), level(state, 'body'));
+        matLEDBlue.emissiveIntensity = ceiling * 5.0;
+        matLEDBlueTrim.emissiveIntensity = trim * 5.0;
+        matLEDNude.emissiveIntensity = ceiling * 5.5;
+        matLEDRib.emissiveIntensity = ceiling * 3.5;
+        matCluster.emissiveIntensity = state.master === false ? 0.1 : 0.3 + 0.7 * maxLevel;
+        if (named[0]) named[0].intensity = ceiling * 6.0;
+        if (named[1]) named[1].intensity = ceiling * 5.0;
+        if (named[2]) named[2].intensity = ceiling * 5.0;
+        if (named[3]) named[3].intensity = ceiling * 4.5;
+        if (named[4]) named[4].intensity = ceiling * 4.5;
+        for (let i = 0; i < stripLights.length; i++) {
+            const pl = stripLights[i];
+            if (!pl) continue;
+            pl.intensity = options.stripFromBase
+                ? ceiling * pl.userData.base
+                : ceiling * 5.0 * (stripFactors[i] || 0.8);
+            pl.visible = true;
+        }
+        if (options.extraLights) {
+            for (const pl of options.extraLights) {
+                pl.intensity = ceiling * pl.userData.base * 1.5;
+                pl.visible = true;
+            }
+        }
+        groups.Led?.traverse(o => {
+            if (o.isMesh && (o.material === matLEDBlue || o.material === matLEDNude || o.material === matLEDRib)) {
+                o.visible = ceiling > 0;
+            }
+        });
+        for (const o of trimLeds) o.visible = trim > 0;
+    };
+}
+
 function box(w, h, d, mat, x, y, z, group) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(x, y, z);
@@ -107,6 +170,43 @@ function box(w, h, d, mat, x, y, z, group) {
     m.matrixAutoUpdate = false;
     group.add(m);
     return m;
+}
+
+function createPaxTvs(groups, entries) {
+    const material = new THREE.MeshBasicMaterial({ color: 0x05060a, side: THREE.DoubleSide, toneMapped: false });
+    const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.34, 0.20), material, Math.max(1, entries.length));
+    mesh.name = "paxTvs";
+    mesh.frustumCulled = false;
+    const dummy = new THREE.Object3D();
+    const positions = [];
+    const on = [];
+    entries.forEach((e, i) => {
+        dummy.position.set(e.x, e.y, e.z);
+        dummy.rotation.set(0, Math.PI, 0);
+        dummy.scale.setScalar(1);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        positions.push(dummy.position.clone());
+        on.push(true);
+    });
+    mesh.count = entries.length;
+    mesh.instanceMatrix.needsUpdate = true;
+    groups.Cabins.add(mesh);
+    return {
+        material, positions, count: entries.length,
+        setOn(i, value) {
+            if (i < 0 || i >= entries.length) return;
+            on[i] = !!value;
+            dummy.position.copy(positions[i]);
+            dummy.rotation.set(0, Math.PI, 0);
+            dummy.scale.setScalar(on[i] ? 1 : 0);
+            dummy.updateMatrix();
+            mesh.setMatrixAt(i, dummy.matrix);
+            mesh.instanceMatrix.needsUpdate = true;
+        },
+        getOn(i) { return on[i] === true; },
+        setAll(value) { for (let i = 0; i < entries.length; i++) this.setOn(i, value); }
+    };
 }
 
 // Dùng cho táp-lô rebuild: như box() nhưng hỗ trợ nghiêng quanh trục X
@@ -154,8 +254,8 @@ function buildCabin(groups) {
     // y 0.31..2.75 trong vỏ xe (bus.js wallQuad). Kính/khung lẻ bên -x đứng
     // NGUYÊN tại z 5.5 (y 0.8..2.4) sẽ chặn lối đi BẤT KỂ cửa đóng/mở — cửa
     // trượt mở vẫn bị tấm "kính giả" bịt lại. Lối vào CHỈ còn thông thoáng khi
-    // bỏ cặp kính-khung BÊN TRÁI (bề mặt cửa đã có kínhhình vẽ trên texture
-    // + door mesh bus.js). Bên +x giữ nguyên (cửa sổ ghế lái, RHD).
+    // bỏ cặp kính-khung BÊN -X (bề mặt cửa đã có kính hình vẽ trên texture
+    // + door mesh bus.js). Bên +x giữ nguyên (cửa sổ ghế lái — LHD: +x = TRÁI xe).
     for (const side of [1, -1]) {
         if (side < 0) continue;   // cửa bên -x: không dựng kính/khung tĩnh
         const xGlass = side * (WALL_X + 0.01);
@@ -269,7 +369,7 @@ function buildCabin(groups) {
         // nổi trên táp-lô như màn tablet (đúng kiểu THACO Mobihome).
         dashPiece(0.5, 0.25, 0.05, matScreen, 0, 2.08, 5.83, Dashboard, 0);                 // màn trung tâm
 
-        // Cụm đồng hồ (RHD: trước tài xế bên PHẢI)
+        // Cụm đồng hồ (LHD: trước tài xế bên TRÁI, +x = trái xe)
         // x 0.50 (không phải 0.45): màn hình scale runtime 1.2 → nửa rộng 0.30,
         // cluster scale 1.05 → 0.316..0.684. Đặt 0.45 thì 2 mesh lồng nhau 47mm.
         dashPiece(0.35, 0.2, 0.05, matCluster, 0.50, 2.13, 5.83, Dashboard, 0);             // cluster tốc độ
@@ -279,15 +379,16 @@ function buildCabin(groups) {
         // LỖI CŨ: 4 nút ở x 0.30..-0.15, y 1.94 bị MẶT TÁP-LÔ (khối 0.83×0.055 phủ
         // x 0.30..1.13, z 4.87..5.76, đỉnh ~2.014 ở mép trước) che khuất: tia từ mắt
         // tài xế (0.65,2.62,4.38) tới nút cắt mặt táp-lô tại (0.36,2.06,5.58).
-        // Nay dời sang dải trống bên phải cụm đồng hồ (x 0.75..0.975) và nâng lên
+        // Nay dời sang dải trống bên trái cụm đồng hồ (phía +x, 0.75..0.975) và nâng lên
         // y 2.05 để tia ngắm đi TRÊN mép mặt táp-lô (2.014 tại z 5.76).
         for (let i = 0; i < 4; i++) {
             dashPiece(0.04, 0.04, 0.04, matBtn, 0.75 + i * 0.075, 2.05, 5.83, Dashboard, 0);
         }
 
-        // Cần gạt (gương theo trục)
-        dashPiece(0.015, 0.25, 0.015, matDark, -0.25, 2.04, 5.83, Dashboard, 0);
-        dashPieceSphere(0.025, matDark, -0.25, 2.195, 5.83, Dashboard);
+        // Cần gạt: đặt CÙNG PHÍA TÀI XẾ (+x = trái xe), ngay cột vô-lăng.
+        // Bản cũ đặt -0.25 (phía ghế phụ) nên tài xế nhìn ra thấy cần lạ ở đầu kia.
+        dashPiece(0.015, 0.22, 0.015, matDark, 0.70, 1.94, 5.83, Dashboard, 0);
+        dashPieceSphere(0.025, matDark, 0.70, 2.06, 5.83, Dashboard);
 
         // --- Cửa gió điều hòa (THACO Mobihome style: 2 cửa giữa, 2 cửa hai bên) ---
         // Hai cửa "giữa" đặt ở x ±0.78 (ngoài màn trung tâm x ±0.3125 và cụm đồng
@@ -321,14 +422,14 @@ function buildCabin(groups) {
             dashPiece(0.03, 0.03, 0.03, matBtn, gx, gy, gz, Dashboard, 0);
         }
 
-        // --- Bàn đạp (ga, phanh, côn — phía chân tài xế, RHD bên phải) ---
-        // RHD: bàn đạp bên phải (+0.65)
+        // --- Bàn đạp (ga, phanh, côn — phía chân tài xế, LHD bên trái) ---
+        // LHD: bàn đạp bên trái (+x, dưới chân tài xế +0.65)
         dashPiece(0.12, 0.08, 0.03, matDark, 0.58, 1.49, 5.70, DriverArea, 0);   // bàn ga
         dashPiece(0.12, 0.06, 0.03, matDark, 0.42, 1.52, 5.72, DriverArea, 0);   // bàn phanh
         dashPiece(0.10, 0.06, 0.03, matDark, 0.28, 1.52, 5.74, DriverArea, 0);   // bàn côn
         dashPiece(0.25, 0.02, 0.15, matDark, 0.65, 1.22, 5.85, DriverArea, 0);   // tấm đệm chân (sát mặt sàn lái 1.21)
 
-        // --- Cần số (giữa hai ghế, bên phải tài xế RHD: x=+0.28) ---
+        // --- Cần số (giữa hai ghế, bên phải tài xế LHD: x=+0.28, lệch về -x) ---
         // Đặt ĐẾ TRÊN CHIẾU NGHỈ (mặt sàn 1.64) thay vì lơ lửng ở y 1.72 giữa
         // trời — quét hộp bao trước sửa: đáy cần số 1.72, mặt đỡ gần nhất = 0.
         dashPieceSphere(0.032, matDark, 0.28, 1.90, 4.90, DriverArea);            // tay nắm cần số
@@ -365,37 +466,43 @@ function buildCabin(groups) {
         // chân tấm trùng đỉnh mặt táp-lô (2.256) và chừa ~2cm trên đỉnh đồng hồ.
         dashPiece(2.26, 0.05, FRONT_Z - 5.76, matDashboardPanel, 0, 2.283, (5.76 + FRONT_Z) / 2, Dashboard, 0);
 
+        // Hai ghế trước kéo sát táp-lô/kính để nhìn đường rõ hơn; vô lăng trong
+        // bus.js dời cùng 0.30m, camera tài xế trong camera.js cũng dời theo.
+        const frontSeats = new THREE.Group();
+        frontSeats.name = 'frontSeats';
+        frontSeats.position.z = 0.30;
+        DriverArea.add(frontSeats);
+
         // --- Ghế tài xế (nâng cấp: đệm, tựa lưng, tựa đầu, chân ghế) ---
-        // RHD: ghế lái bên PHẢI (+0.65)
-        // LỖI CŨ: đệm ngồi 1.55..1.69 nằm LỌT trong tấm sàn khách (1.60..1.64) →
-        // chỉ nhô 5cm, nhìn như ghế bị chôn. Nay nâng cụm nhìn thấy +0.09 để đáy
-        // đệm trùng mặt sàn 1.64; đế/khung nằm dưới sàn (khuất, không đổi hình).
-        // Đệm sâu 0.42 (mép trước 4.32) để thân người rẽ vào làn 34P tại z 4.01
-        // (bán kính 0.17 → tới z 4.18) không cấn góc đệm (trước đây 4.25 → lấn).
-        box(0.52, 0.10, 0.52, matDark, 0.65, 1.38, 4.50, DriverArea);            // đế trượt ghế
-        box(0.40, 0.06, 0.40, matDark, 0.65, 1.58, 4.50, DriverArea);            // khung ghế
+        // LHD: ghế lái bên TRÁI (+0.65) — đúng xe Việt (cửa lên -x = phải xe/lề).
+        box(0.52, 0.10, 0.52, matDark, 0.65, 1.38, 4.68, frontSeats);            // đế trượt ghế
+        box(0.40, 0.06, 0.40, matDark, 0.65, 1.58, 4.68, frontSeats);            // khung ghế
 
         // Đệm ngồi (dày hơn, có hỗ trợ thắt lưng)
-        box(0.50, 0.14, 0.42, matSeatCushion, 0.65, 1.71, 4.53, DriverArea);    // đệm ngồi chính
-        box(0.50, 0.06, 0.12, matSeatCushion, 0.65, 1.73, 4.75, DriverArea);     // hỗ trợ thắt lưng
+        box(0.50, 0.14, 0.42, matSeatCushion, 0.65, 1.71, 4.71, frontSeats);    // đệm ngồi chính
+        box(0.50, 0.06, 0.12, matSeatCushion, 0.65, 1.73, 4.93, frontSeats);     // hỗ trợ thắt lưng
+        // Bolster 2 bên — đệm phẳng kiểu hộp nhìn rất "prototype"; 2 gờ nhỏ
+        // là đủ gợi ghế xe khách có ôm lưng mà không thêm draw call đáng kể.
+        box(0.05, 0.11, 0.40, matSeat, 0.43, 1.78, 4.71, frontSeats);
+        box(0.05, 0.11, 0.40, matSeat, 0.87, 1.78, 4.71, frontSeats);
 
         // Tựa lưng (có độ nghiêng nhẹ)
-        box(0.50, 0.55, 0.08, matSeatCushion, 0.65, 2.03, 4.25, DriverArea);    // tựa lưng chính
-        box(0.42, 0.20, 0.06, matSeatCushion, 0.65, 2.21, 4.27, DriverArea);     // đệm tựa lưng trên
+        box(0.50, 0.55, 0.08, matSeatCushion, 0.65, 2.03, 4.43, frontSeats);    // tựa lưng chính
+        box(0.42, 0.20, 0.06, matSeatCushion, 0.65, 2.21, 4.45, frontSeats);     // đệm tựa lưng trên
 
         // Tựa đầu
-        box(0.30, 0.16, 0.06, matSeatCushion, 0.65, 2.37, 4.28, DriverArea);     // tựa đầu
+        box(0.30, 0.16, 0.06, matSeatCushion, 0.65, 2.37, 4.46, frontSeats);     // tựa đầu
 
         // Tay vịn + cần điều chỉnh
-        box(0.03, 0.08, 0.30, matSeat, 0.92, 1.81, 4.50, DriverArea);            // tay vịn phải
-        box(0.03, 0.08, 0.30, matSeat, 0.38, 1.81, 4.50, DriverArea);            // tay vịn trái
+        box(0.03, 0.08, 0.30, matSeat, 0.92, 1.81, 4.68, frontSeats);            // tay vịn phải
+        box(0.03, 0.08, 0.30, matSeat, 0.38, 1.81, 4.68, frontSeats);            // tay vịn trái
 
-        // --- Ghế phụ (copilot, nâng cấp tương tự) — RHD: copilot bên TRÁI (-0.35) ---
-        box(0.45, 0.08, 0.45, matDark, -0.35, 1.38, 4.50, DriverArea);           // đế ghế phụ
-        box(0.06, 0.18, 0.06, matDark, -0.35, 1.52, 4.50, DriverArea);           // chân ghế phụ
-        box(0.45, 0.12, 0.40, matSeatCushion, -0.35, 1.70, 4.53, DriverArea);    // đệm ghế phụ
-        box(0.45, 0.45, 0.06, matSeatCushion, -0.35, 1.96, 4.30, DriverArea);    // tựa lưng ghế phụ
-        box(0.25, 0.12, 0.04, matSeatCushion, -0.35, 2.19, 4.31, DriverArea);    // tựa đầu ghế phụ
+        // --- Ghế phụ (copilot, nâng cấp tương tự) — LHD: copilot bên PHẢI (-0.35) ---
+        box(0.45, 0.08, 0.45, matDark, -0.35, 1.38, 4.68, frontSeats);           // đế ghế phụ
+        box(0.06, 0.18, 0.06, matDark, -0.35, 1.52, 4.68, frontSeats);           // chân ghế phụ
+        box(0.45, 0.12, 0.40, matSeatCushion, -0.35, 1.70, 4.71, frontSeats);    // đệm ghế phụ
+        box(0.45, 0.45, 0.06, matSeatCushion, -0.35, 1.96, 4.48, frontSeats);    // tựa lưng ghế phụ
+        box(0.25, 0.12, 0.04, matSeatCushion, -0.35, 2.19, 4.49, frontSeats);    // tựa đầu ghế phụ
 
         // Tủ đựng đồ phụ: trước đây lơ lửng ở (x -1.10..-0.60, y 1.74..1.94,
         // z 4.97..5.22) giữa lối vào, không có mặt đỡ; lần sửa trước dời xuống
@@ -408,17 +515,19 @@ function buildCabin(groups) {
 
     const steerGroup = new THREE.Group();
     steerGroup.name = "legacySteeringWheel";
-    steerGroup.position.set(-0.35, 2.24, 5.1);   // RHD: vô lăng gốc bên trái (bị ẩn runtime)
+    steerGroup.position.set(0.65, 2.24, 5.1);    // LHD: vô lăng dự phòng bên trái (+0.65), bị bus.js ẩn runtime
+    // Nghiêng đặt TRÊN GROUP (cùng quy ước bus.js): ring/spokes nằm mặt XY.
+    // Bản cũ gán π/2−0.25 ngay ring ⇒ vành nằm ngang như cái đĩa (đã đo).
+    steerGroup.rotation.x = 0.35;
     // Vô-lăng xe khách: dày hơn, tỷ lệ thực tế, đúng góc nghiêng
     const ring = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.055, 12, 24), matSteeringWheel);
-    ring.rotation.x = Math.PI / 2 - 0.25;
     ring.rotation.z = 0.05;
     steerGroup.add(ring);
     for (let i = 0; i < 4; i++) {
         const angle = (i / 4) * Math.PI * 2;
         const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.035, 0.035), matSteeringWheel);
-        spoke.position.set(Math.sin(angle) * 0.14, 0, Math.cos(angle) * 0.14);
-        spoke.rotation.y = -angle;
+        spoke.position.set(Math.sin(angle) * 0.14, Math.cos(angle) * 0.14, 0);
+        spoke.rotation.z = -angle;
         steerGroup.add(spoke);
     }
     // Cột vô-lăng dày, nghiêng đúng
@@ -761,6 +870,15 @@ function buildPassengerCabin(groups) {
         }
     }
 
+    groups.paxTvEntries = [];
+    for (const side of [1, -1]) {
+        for (const z of BED_Z_POSITIONS) {
+            for (const y of [LOWER_BED_Y, UPPER_BED_Y]) {
+                groups.paxTvEntries.push({ x: side * xPosAbs, y: y + 0.55, z: z + BED_LENGTH / 2 - 0.045 });
+            }
+        }
+    }
+
     const rearZ = BED_Z_POSITIONS[BED_Z_POSITIONS.length - 1] - BED_LENGTH / 2;
     addPartition(-xPosAbs, rearZ);
     addPartition(xPosAbs, rearZ);
@@ -865,6 +983,7 @@ export function createBusInterior() {
 
     buildCabin(groups);
     buildPassengerCabin(groups);
+    root.paxTv = createPaxTvs(groups, groups.paxTvEntries || []);
 
     const lights = [];
     const mkLight = (x, y, z, intensity) => {
@@ -880,88 +999,10 @@ export function createBusInterior() {
     mkLight(0, 2.2, -3.0, 0.8);
     mkLight(0, 3.0, 5.0, 1.8);
 
-    function setInteriorLed(on) {
-        // Emissive materials cho dải LED mesh
-        matLEDBlue.emissiveIntensity = on ? 5.0 : 0;
-        matLEDNude.emissiveIntensity = on ? 5.5 : 0;
-        matLEDRib.emissiveIntensity = on ? 3.5 : 0;
-        matCluster.emissiveIntensity = on ? 1.0 : 0.1;
-
-        // --- PointLights chính ---
-        const centerLight = groups.Lights.getObjectByName('centerLedLight');
-        const leftLight = groups.Lights.getObjectByName('leftLedLight');
-        const rightLight = groups.Lights.getObjectByName('rightLedLight');
-        const frontLight = groups.Lights.getObjectByName('frontLedLight');
-        const rearLight = groups.Lights.getObjectByName('rearLedLight');
-
-        const baseIntensity = on ? 1.0 : 0;
-
-        // BUG 6 FIX (game khuyng vai giay khi bam F/L):
-        // Truoc do moi lan `setInteriorLed()` de `light.visible = on` cho ~15 PointLight
-        // (center/left/right/front/rear + 7 ledStrip + mkLight). Trong Three.js r160
-        // (vendor/three), `numPointLights` + `numSpotLights` nam TRONG program cache key
-        // (three.module.js:20870, 21000) va `lights.state.version` tang khi length doi
-        // (:21927) -> `needsProgramChange = true` cho TOAN BO MeshStandardMaterial
-        // (:30188) -> `gl.linkProgram()` DONG BO ngay frame do (:20269, khong dung
-        // KHR_parallel_shader_compile). Tren Intel UHD N5000 = dot 1-3 giay.
-        // Giai thich "khong phai lan nao cung xay": chi tinh config nao chua co trong
-        // program cache -> lan dau xay dung dot, lan sau da cache thi menh.
-        // CACH SUA: GIU `visible = true` moi luc, chi tat bang `intensity = 0`.
-        //   - Den van duoc hien thi/bat tat binh thuong (khong loai bo hieu ung den)
-        //   - Light count CO DINH -> khong recompile -> khong dot
-        //   - Per-frame khong te hon baseline vi luc load toan bo den da visible = true
-        //   - Mesh LED (`obj.visible = on` o duoi) van GIU NGUYEN: mesh visibility
-        //     khong nam trong program key nen khong gay recompile.
-        const vis = true;   // giu den luon co trong render list (chi intensity moi doi)
-
-        // Đèn chính giữa (trắng ấm) - mạnh nhất
-        if (centerLight) { centerLight.intensity = baseIntensity * 6.0; centerLight.visible = vis; }
-        // Đèn hai bên (xanh dương nhẹ)
-        if (leftLight) { leftLight.intensity = baseIntensity * 5.0; leftLight.visible = vis; }
-        if (rightLight) { rightLight.intensity = baseIntensity * 5.0; rightLight.visible = vis; }
-        // Đèn đầu/đuôi cabin
-        if (frontLight) { frontLight.intensity = baseIntensity * 4.5; frontLight.visible = vis; }
-        if (rearLight) { rearLight.intensity = baseIntensity * 4.5; rearLight.visible = vis; }
-
-        // --- LED Strip Lights dọc cabin ---
-        if (groups.ledStripLights) {
-            groups.ledStripLights.forEach((pl, i) => {
-                if (!pl) return;
-                const factor = [0.7, 0.9, 1.0, 1.0, 1.0, 0.9, 0.7][i] || 0.8;
-                pl.intensity = baseIntensity * 5.0 * factor;
-                pl.visible = vis;
-            });
-        }
-
-        // --- Đèn đầu/đuôi cabin ---
-        if (frontLight) { frontLight.intensity = baseIntensity * 4.5; frontLight.visible = vis; }
-        if (rearLight) { rearLight.intensity = baseIntensity * 4.5; rearLight.visible = vis; }
-
-        // --- Emissive materials cho dải LED mesh ---
-        matLEDBlue.emissiveIntensity = on ? 5.0 : 0;
-        matLEDNude.emissiveIntensity = on ? 5.5 : 0;
-        matLEDRib.emissiveIntensity = on ? 3.5 : 0;
-        matCluster.emissiveIntensity = on ? 1.0 : 0.1;
-
-        // --- Các đèn phụ (mkLight) ---
-        for (const pl of lights) {
-            pl.intensity = on ? pl.userData.base * 1.5 : 0;
-            pl.visible = vis;
-        }
-
-        // --- LED strip meshes (dải LED nhìn thấy được) ---
-        const ledStrips = groups.Led;
-        if (ledStrips) {
-            ledStrips.traverse((obj) => {
-                if (obj.isMesh && (obj.material === matLEDBlue || obj.material === matLEDNude || obj.material === matLEDRib)) {
-                    obj.visible = on;
-                }
-            });
-        }
-    }
-
-    root.setInteriorLed = setInteriorLed;
-    setInteriorLed(true);
+    const applyLedGroups = makeInteriorLedApplier(groups, { extraLights: lights });
+    root.setLedGroups = applyLedGroups;
+    root.setInteriorLed = (on) => applyLedGroups({ ceiling: on, trim: on, exterior: on, body: on });
+    root.setInteriorLed(true);
 
     return root;
 }
@@ -1228,6 +1269,23 @@ function buildPassengerCabin34(groups) {
             buildBed(C.CENTER_X, z, y, C.CENTER_BED_L, C.CENTER_BED_W, 0);
         }
     }
+
+    groups.paxTvEntries = [];
+    for (const side of [1, -1]) {
+        for (let i = 0; i < 5; i++) {
+            const z = C.Z_FIRST - i * C.Z_STEP;
+            for (const y of [C.LOWER_Y, C.UPPER_Y]) {
+                groups.paxTvEntries.push({ x: side * C.SIDE_X, y: y + 0.55, z: z + C.SIDE_BED_L / 2 - 0.045 });
+            }
+        }
+    }
+    for (let i = 0; i < 7; i++) {
+        const z = C.Z_CENTER_FIRST - i * C.Z_CENTER_STEP;
+        for (const y of [C.LOWER_Y, C.UPPER_Y]) {
+            groups.paxTvEntries.push({ x: C.CENTER_X, y: y + 0.50, z: z + C.CENTER_BED_L / 2 - 0.02 });
+        }
+    }
+
     // VÁCH NGĂN KHOANG GIƯỜNG DÃY GIỮA — trước đây dãy giữa KHÔNG có vách
     // (7 giường nối đuôi thành 1 khối, mất cảm giác riêng tư VIP) và chỉ có
     // 2 "vách bên" chạy dọc cao 0.55m tại x=±0.28 — tấm vách đó CẮT NGANG
@@ -1323,31 +1381,12 @@ export function createBusInterior34() {
 
     buildCabin(groups);              // cabin lái dùng chung (thân xe giống nhau)
     buildPassengerCabin34(groups);    // khoang hành khách 34 giường (MỚI)
+    root.paxTv = createPaxTvs(groups, groups.paxTvEntries || []);
 
-    // setInteriorLed riêng cho cấu hình 34: bật/tắt bằng INTENSITY
-    // (giữ visible = true -> numPointLights cố định, không recompile shader).
-    function setInteriorLed34(on) {
-        matLEDBlue.emissiveIntensity = on ? 5.0 : 0;
-        matLEDNude.emissiveIntensity = on ? 5.5 : 0;
-        matLEDRib.emissiveIntensity = on ? 3.5 : 0;
-        matCluster.emissiveIntensity = on ? 1.0 : 0.1;
-        if (groups.ledStripLights) {
-            for (const pl of groups.ledStripLights) {
-                if (pl) pl.intensity = on ? pl.userData.base : 0;
-            }
-        }
-        const ledStrips = groups.Led;
-        if (ledStrips) {
-            ledStrips.traverse((obj) => {
-                if (obj.isMesh && (obj.material === matLEDBlue || obj.material === matLEDNude || obj.material === matLEDRib)) {
-                    obj.visible = on;
-                }
-            });
-        }
-    }
-
-    root.setInteriorLed = setInteriorLed34;
-    setInteriorLed34(true);
+    const applyLedGroups = makeInteriorLedApplier(groups, { stripFromBase: true });
+    root.setLedGroups = applyLedGroups;
+    root.setInteriorLed = (on) => applyLedGroups({ ceiling: on, trim: on, exterior: on, body: on });
+    root.setInteriorLed(true);
     root.configId = "BED34";
     return root;
 }
@@ -1368,8 +1407,7 @@ export function createBusInterior34() {
 //     màu và độ sáng cabin, và `setInteriorLed` vẫn điều khiển được.
 //   - 26 đèn phụ (21 dải LED strip + 5 đèn mkLight) -> gộp còn **4 đèn đại
 //     diện** đặt dọc lối đi, TĂNG `userData.base` để tổng độ sáng tương đương
-//     (setInteriorLed vẫn tính intensity = base * 5 * factor -> vẫn bật/tắt
-//     được bằng phím F/L).
+//     (intensity nhân theo level trần: L bật/tắt, L+n đổi mạnh/yếu).
 //   - MESH dải LED (cái dải sáng nhìn thấy) GIỮ NGUYÊN -> hình ảnh không đổi.
 //   - 38 -> 16 PointLight trong scene (giảm ~58% chi phí shader).
 // LƯU Ý: đổi số PointLight làm đổi program cache key -> Three.js biên dịch lại
@@ -1398,7 +1436,7 @@ export function optimizeInteriorLights(root) {
     for (let i = 0; i < kept.length; i++) {
         const l = kept[i];
         l.position.set(pos[i][0], pos[i][1], pos[i][2]);
-        l.userData.base = 3.0;      // setInteriorLed sẽ tính intensity = base*5*factor
+        l.userData.base = 3.0;      // intensity = level trần * base * 1.5
         l.distance = 15;
         l.intensity = 15;           // áp ngay (trước lần setInteriorLed sau đó)
     }
@@ -1430,6 +1468,13 @@ export function migrateInteriorCockpit(oldRoot, newRoot) {
             newRoot.add(child);
             n++;
         }
+    }
+    // Vô-lăng nằm trong DriverArea (nhóm chuẩn) nên không nằm trong vòng trên.
+    // Chuyển riêng để không bị dispose cùng interior cũ khi đổi 20 <-> 34.
+    const wheel = oldRoot.getObjectByName("cockpitWheel");
+    if (wheel?.parent && !newRoot.getObjectByName("cockpitWheel")) {
+        (newRoot.getObjectByName("DriverArea") || newRoot).add(wheel);
+        n++;
     }
     return n;
 }

@@ -35,8 +35,19 @@ export class AtmosphereSystem {
         this.godRaysMesh = null;
         this.godRaysIntensity = 0;
         this.godRaysColor = new THREE.Color(0xFFF5E0);
-        this.godRaysResolution = 512;
+        this.godRaysResolution = this.quality === "HIGH" ? 512 : this.quality === "LOW" ? 128 : 256;
         this.godRaysRenderTarget = null;
+        this.godRaysBlurTarget = null;
+        this.godRaysOcclusionMaterial = null;
+        this.godRaysCompositeMaterial = null;
+        this.godRaysBlurScene = null;
+        this.godRaysCompositeScene = null;
+        this.godRaysMaskScene = null;
+        this.godRaysMaskMesh = null;
+        this._godRaysTargetWidth = 0;
+        this._godRaysTargetHeight = 0;
+        this._godRaysFrame = 0;
+        this._godRaysHasResult = false;
 
         // Stars (night sky)
         this.starsMesh = null;
@@ -50,7 +61,6 @@ export class AtmosphereSystem {
 
         // Weather blending
         this.weatherState = "CLEAR";
-        this.weatherTransition = 0;
         this.targetWeather = "CLEAR";
         this.weatherParams = {
             CLEAR: { fogMul: 1.0, hazeMul: 1.0, sunMul: 1.0, exposure: 1.0 },
@@ -59,10 +69,14 @@ export class AtmosphereSystem {
             HEAVY_RAIN: { fogMul: 5.0, hazeMul: 6.0, sunMul: 0.1, exposure: 0.4 },
             FOG: { fogMul: 8.0, hazeMul: 10.0, sunMul: 0.15, exposure: 0.5 },
         };
+        this.weatherMix = { fogMul: 1, hazeMul: 1, sunMul: 1, exposure: 1 };
 
         // Temp objects
         this._tmpColor = new THREE.Color();
         this._tmpVec3 = new THREE.Vector3();
+        this._tmpVec2 = new THREE.Vector2();
+        this._tmpSunScreenPosition = new THREE.Vector3();
+        this._godRaysClearColor = new THREE.Color();
 
         this._initSky();
         this._initStars();
@@ -82,11 +96,8 @@ export class AtmosphereSystem {
     }
 
     _rebuildQualityDependent() {
-        if (this.godRaysRenderTarget) {
-            this.godRaysRenderTarget.dispose();
-        }
-        const res = this.quality === "HIGH" ? 1024 : this.quality === "MEDIUM" ? 512 : 256;
-        this.godRaysResolution = res;
+        this.godRaysResolution = this.quality === "HIGH" ? 512 : this.quality === "MEDIUM" ? 256 : 128;
+        this._godRaysHasResult = false;
         this._initGodRays();
     }
 
@@ -101,6 +112,10 @@ export class AtmosphereSystem {
                 uSunDirection: { value: new THREE.Vector3(0, 1, 0) },
                 uSunColor: { value: new THREE.Color(0xFFFFFF) },
                 uSunIntensity: { value: 1.0 },
+                // Night factor theo GIỜ (1 - sunIntensity), không theo sunAltitude:
+                // lúc 18:00 mặt trời vẫn còn +2.8° trên chân trời (mùa hè VN)
+                // nhưng lighting đã chuyển đêm -> nếu dùng altitude, trời vẫn xanh.
+                uNightFactor: { value: 0.0 },
                 uSkyColor: { value: new THREE.Color(0x87CEEB) },
                 uHorizonColor: { value: new THREE.Color(0xE0E0FF) },
                 uZenithColor: { value: new THREE.Color(0x004488) },
@@ -127,6 +142,7 @@ export class AtmosphereSystem {
                 uniform vec3 uSunDirection;
                 uniform vec3 uSunColor;
                 uniform float uSunIntensity;
+                uniform float uNightFactor;
                 uniform vec3 uSkyColor;
                 uniform vec3 uHorizonColor;
                 uniform vec3 uZenithColor;
@@ -165,18 +181,15 @@ export class AtmosphereSystem {
                     float zenith = max(0.0, viewDir.y);
                     skyBase = mix(uHorizonColor, uZenithColor, pow(zenith, 0.5)) * (1.0 - horizonFade * 0.5) + skyBase * horizonFade * 0.5;
 
-                    // Night blend
-                    float sunAltitude = uSunDirection.y;
-                    // 0 = đêm, 1 = ban ngày.
-                    // BUG FIX: truoc do la smoothstep(0.1, -0.1, ...) voi edge0 > edge1 — GLSL quy uoc
-                    // "Results are undefined if edge0 >= edge1", nen ket qua phu thuoc GPU/driver.
-                    // Viet lai dung thu tu edge cho ket qua xac dinh tren moi may.
-                    float dayFactor = smoothstep(-0.1, 0.1, sunAltitude);
+                    // Night blend theo same clock với lighting/TimeSystem.
+                    // Dùng altitude ở đây từng làm trời sáng xanh lúc 18:00 dù
+                    // mọi đèn đã chuyển chế độ đêm (sun altitude vẫn dương ở VN).
+                    float dayFactor = 1.0 - clamp(uNightFactor, 0.0, 1.0);
                     skyBase = mix(uNightColor, skyBase, dayFactor);
 
-                    // Ensure night sky is sufficiently dark - clamp maximum brightness at night
-                    if (dayFactor < 0.5) {
-                        skyBase = min(skyBase, vec3(0.12));
+                    // Đêm: không để giá trị nào đẩy trời xám lại lên.
+                    if (uNightFactor > 0.5) {
+                        skyBase = min(skyBase, vec3(0.02));
                     }
 
                     // Atmospheric scattering
@@ -242,25 +255,8 @@ export class AtmosphereSystem {
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
-        // BUG FIX (nguyen nhan goc BUG 4 - "hai goc tren bi nho trang den khi co troi"):
-        // Truoc do la `size: 100` ket hop `sizeAttenuation: false`. voi sizeAttenuation:false
-        // thi three.js dua dung `gl_PointSize = size` (don vi pixel, KHONG quy tu khoang cach),
-        // nen moi ngoi sao ve thanh HINH VUONG CUNG 100x100 pixel. PointMaterial khong co map
-        // nen vuong do co vien CUNG, va blending AdditiveBlending + vertexColors -> luon ra
-        // [255,255,255]. Hau qua do thuc te:
-        //   - sao nam gan ria man hinh bi viewport CAT -> thanh hinh chu nhat dinh vao goc
-        //     (do duoc: pixel (626,109) = [255,255,255] luc 00:30, vuong 100px cat o x=610..640)
-        //   - `opacity` chi > 0 khi sunDeg < -6 -> chi xem ra luc DEM
-        //   - `depthTest: true` + renderOrder -999 -> bi geometry che -> "bi mat khi xoay camera
-        //     de goc do chua vat the". Tat ca khop 100% trieu chung bao cao.
-        // CUNG CHUNG NGUYEN (bang chung do): `scene.children[3]` = starsMesh (Points, ro -999)
-        //   base  -> TR [255,255,255]
-        //   tat no -> TR [46,47,60] = DUNG mau scene.background (#2e2f3c), bien mat hoan toan
-        //   tat ca children -> ca TL va TR [46,47,60]
-        //   bat lai -> TR [255,255,255] (trang thai khong bi ro)
-        // `size: 3` = diem sao 3px (khoang 2.4-3px trong buffer 640x366), van nhin thay sao.
-        // Note: attribute `size` o dong ~238 la DEAD CODE - PointsMaterial khong doc no
-        // (chi ShaderMaterial tu code moi doc), nen khong the dua vao day ma khong doi shader.
+        // sizeAttenuation:false dùng gl_PointSize theo pixel cố định; attribute size
+        // không được PointsMaterial đọc. Giữ điểm 3px để sao không thành ô vuông lớn ở góc màn hình.
         this.starsMaterial = new THREE.PointsMaterial({
             size: 3,
             vertexColors: true,
@@ -345,18 +341,25 @@ export class AtmosphereSystem {
 
     // ===== GOD RAYS (Light Shafts) =====
     _initGodRays() {
-        // Screen-space god rays using radial blur
-        const res = this.godRaysResolution;
-        this.godRaysRenderTarget = new THREE.WebGLRenderTarget(res, res, {
+        this._disposeGodRays();
+
+        this.godRaysRenderTarget = new THREE.WebGLRenderTarget(1, 1, {
             minFilter: THREE.LinearFilter,
             magFilter: THREE.LinearFilter,
             format: THREE.RGBAFormat,
-            type: THREE.HalfFloatType,
+            type: THREE.UnsignedByteType,
+            depthBuffer: true,
+        });
+        this.godRaysRenderTarget.texture.name = "GodRaysOcclusion";
+        this.godRaysBlurTarget = new THREE.WebGLRenderTarget(1, 1, {
+            minFilter: THREE.LinearFilter,
+            magFilter: THREE.LinearFilter,
+            format: THREE.RGBAFormat,
+            type: THREE.UnsignedByteType,
             depthBuffer: false,
         });
-        this.godRaysRenderTarget.texture.name = "GodRaysRT";
+        this.godRaysBlurTarget.texture.name = "GodRaysBlur";
 
-        // Fullscreen quad for god rays
         const geometry = new THREE.PlaneGeometry(2, 2);
         this.godRaysMaterial = new THREE.ShaderMaterial({
             uniforms: {
@@ -365,7 +368,7 @@ export class AtmosphereSystem {
                 uIntensity: { value: 0 },
                 uColor: { value: new THREE.Color(0xFFF5E0) },
                 uExposure: { value: 1.0 },
-                uSamples: { value: 32 },
+                uSamples: { value: this.quality === "HIGH" ? 32 : this.quality === "MEDIUM" ? 20 : 12 },
                 uDensity: { value: 1.0 },
                 uWeight: { value: 0.85 },
                 uDecay: { value: 0.95 },
@@ -407,19 +410,127 @@ export class AtmosphereSystem {
                         illuminationDecay *= uDecay;
                     }
 
-                    color *= uIntensity * uExposure;
+                    color *= uIntensity * uExposure / float(uSamples);
                     gl_FragColor = vec4(color * uColor, 1.0);
+                }
+            `,
+            transparent: true,
+            blending: THREE.NoBlending,
+            depthWrite: false,
+            depthTest: false,
+            toneMapped: false,
+        });
+
+        this.godRaysMesh = new THREE.Mesh(geometry, this.godRaysMaterial);
+        this.godRaysBlurScene = new THREE.Scene();
+        this.godRaysBlurScene.add(this.godRaysMesh);
+        this.godRaysCompositeMaterial = new THREE.ShaderMaterial({
+            uniforms: {
+                tDiffuse: { value: this.godRaysBlurTarget.texture },
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform sampler2D tDiffuse;
+                varying vec2 vUv;
+                void main() {
+                    gl_FragColor = texture2D(tDiffuse, vUv);
                 }
             `,
             transparent: true,
             blending: THREE.AdditiveBlending,
             depthWrite: false,
             depthTest: false,
+            toneMapped: false,
         });
+        const compositeMesh = new THREE.Mesh(geometry, this.godRaysCompositeMaterial);
+        this.godRaysCompositeScene = new THREE.Scene();
+        this.godRaysCompositeScene.add(compositeMesh);
 
-        this.godRaysMesh = new THREE.Mesh(geometry, this.godRaysMaterial);
-        this.godRaysMesh.renderOrder = 999; // Render last (post-process)
-        // Don't add to scene - we'll render manually
+        this.godRaysOcclusionMaterial = new THREE.MeshBasicMaterial({
+            color: 0x000000,
+            side: THREE.DoubleSide,
+            toneMapped: false,
+        });
+        this.godRaysMaskScene = new THREE.Scene();
+        this.godRaysMaskMesh = new THREE.Mesh(
+            this.sunMesh.geometry,
+            new THREE.ShaderMaterial({
+                uniforms: { uPosition: { value: new THREE.Vector3() } },
+                vertexShader: `
+                    uniform vec3 uPosition;
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        vec3 pos = uPosition + position.xyz * 1000.0;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        float radius = 0.5;
+                        float disc = 1.0 - smoothstep(radius - 0.02, radius, length(vUv - 0.5));
+                        gl_FragColor = vec4(vec3(disc), 1.0);
+                    }
+                `,
+                side: THREE.DoubleSide,
+                depthTest: true,
+                depthWrite: false,
+                toneMapped: false,
+            })
+        );
+        this.godRaysMaskMesh.visible = false;
+        this.godRaysMaskScene.add(this.godRaysMaskMesh);
+        this._resizeGodRaysTargets();
+    }
+
+    _resizeGodRaysTargets() {
+        if (!this.renderer || !this.godRaysRenderTarget || !this.godRaysBlurTarget) return;
+
+        this.renderer.getDrawingBufferSize(this._tmpVec2);
+        const scale = this.godRaysResolution / Math.max(this._tmpVec2.x, this._tmpVec2.y, 1);
+        const width = Math.max(1, Math.round(this._tmpVec2.x * Math.min(scale, 1)));
+        const height = Math.max(1, Math.round(this._tmpVec2.y * Math.min(scale, 1)));
+        if (width === this._godRaysTargetWidth && height === this._godRaysTargetHeight) return;
+
+        this.godRaysRenderTarget.setSize(width, height);
+        this.godRaysBlurTarget.setSize(width, height);
+        this._godRaysTargetWidth = width;
+        this._godRaysTargetHeight = height;
+        this._godRaysHasResult = false;
+    }
+
+    _disposeGodRays() {
+        this.godRaysRenderTarget?.dispose();
+        this.godRaysBlurTarget?.dispose();
+        this.godRaysMaterial?.dispose();
+        this.godRaysCompositeMaterial?.dispose();
+        this.godRaysOcclusionMaterial?.dispose();
+        this.godRaysMaskMesh?.material.dispose();
+        this.godRaysMesh?.geometry.dispose();
+
+        this.godRaysBlurScene?.remove(this.godRaysMesh);
+
+        this.godRaysRenderTarget = null;
+        this.godRaysBlurTarget = null;
+        this.godRaysMaterial = null;
+        this.godRaysCompositeMaterial = null;
+        this.godRaysOcclusionMaterial = null;
+        this.godRaysBlurScene = null;
+        this.godRaysMaskScene = null;
+        this.godRaysMaskMesh = null;
+        this.godRaysCompositeScene = null;
+        this.godRaysMesh = null;
+        this._godRaysTargetWidth = 0;
+        this._godRaysTargetHeight = 0;
+        this._godRaysFrame = 0;
+        this._godRaysHasResult = false;
     }
 
     // ===== UPDATE =====
@@ -431,7 +542,7 @@ export class AtmosphereSystem {
         const sunDeg = (sunAlt * 180) / Math.PI;
         const sunDir = time.getSunDirection();
         const moonDir = time.getMoonDirection();
-        const sunIntensity = time.getSunIntensity();
+        const sunIntensity = time.getSunIntensity() * this.weatherMix.sunMul;
         const moonIntensity = time.getMoonIntensity();
         // exposure no longer needed in sky shader - renderer handles tone mapping
 
@@ -440,8 +551,9 @@ export class AtmosphereSystem {
             this.skyMaterial.uniforms.uSunDirection.value.copy(sunDir);
             this.skyMaterial.uniforms.uSunColor.value.copy(time.getSunColor());
             this.skyMaterial.uniforms.uSunIntensity.value = sunIntensity;
+            this.skyMaterial.uniforms.uNightFactor.value = 1 - Math.min(1, Math.max(0, sunIntensity));
             this.skyMaterial.uniforms.uSkyColor.value.copy(time.getSkyColor());
-            this.skyMaterial.uniforms.uExposure.value = time.getExposure();
+            this.skyMaterial.uniforms.uExposure.value = time.getExposure() * this.weatherMix.exposure;
 
             // Horizon/zenith colors based on time
             if (sunDeg > 10) {
@@ -456,11 +568,11 @@ export class AtmosphereSystem {
                 this.skyMaterial.uniforms.uHorizonColor.value.setHSL(lerp(0.02, 0.04, t), lerp(0.8, 0.6, t), lerp(0.3, 0.6, t));
                 this.skyMaterial.uniforms.uZenithColor.value.setHSL(0.62, 0.4, lerp(0.2, 0.4, t));
             } else {
-                // Night: sắc xanh tím đậm và chuyển sắc mềm mại (Mục F)
-                this.skyMaterial.uniforms.uHorizonColor.value.setHSL(0.70, 0.40, 0.06);
-                this.skyMaterial.uniforms.uZenithColor.value.setHSL(0.72, 0.45, 0.025);
-                // Update uNightColor for the shader's night blend (deep navy purple-blue)
-                this.skyMaterial.uniforms.uNightColor.value.setHSL(0.71, 0.42, 0.018);
+                // Đêm: bầu trời đen thui. Chỉ giữ chút sắc xanh tím ở chân trời
+                // để ranh giới trời/đất không bị đen đặc một khối.
+                this.skyMaterial.uniforms.uHorizonColor.value.setHSL(0.70, 0.40, 0.012);
+                this.skyMaterial.uniforms.uZenithColor.value.setHSL(0.72, 0.45, 0.004);
+                this.skyMaterial.uniforms.uNightColor.value.setHSL(0.71, 0.42, 0.004);
             }
         }
 
@@ -512,31 +624,23 @@ export class AtmosphereSystem {
             this.scene.fog.far = this.fogFar;
         }
 
-        // God rays intensity
-        if (sunDeg > -2 && sunDeg < 30 && sunIntensity > 0.3) {
-            this.godRaysEnabled = true;
+        if (this.godRaysEnabled && sunDeg > -2 && sunDeg < 30 && sunIntensity > 0.3) {
             this.godRaysIntensity = clamp(sunIntensity * (1.0 - sunDeg / 30) * 0.5, 0, 0.4);
             this.godRaysColor.copy(time.getSunColor());
         } else {
-            this.godRaysEnabled = false;
             this.godRaysIntensity = 0;
         }
     }
 
     _applyWeather() {
-        const params = this.weatherParams[this.weatherState] || this.weatherParams.CLEAR;
-
-        // Smooth transition
-        this.weatherTransition += (1 - this.weatherTransition) * 0.02;
-        if (this.weatherState !== this.targetWeather) {
-            this.weatherTransition = 0;
-            this.weatherState = this.targetWeather;
+        const target = this.weatherParams[this.targetWeather] || this.weatherParams.CLEAR;
+        for (const key of ["fogMul", "hazeMul", "sunMul", "exposure"]) {
+            this.weatherMix[key] += (target[key] - this.weatherMix[key]) * 0.02;
         }
-
-        const p = this.weatherParams[this.weatherState];
-        this.fogNear *= p.fogMul;
-        this.fogFar = Math.min(this.fogFar * p.fogMul, 3000);
-        this.hazeDensity *= p.hazeMul;
+        this.weatherState = this.targetWeather;
+        this.fogNear *= this.weatherMix.fogMul;
+        this.fogFar = Math.min(this.fogFar * this.weatherMix.fogMul, 3000);
+        this.hazeDensity *= this.weatherMix.hazeMul;
     }
 
     // Public API for weather
@@ -548,40 +652,89 @@ export class AtmosphereSystem {
 
     getWeather() { return this.weatherState; }
 
-    // Render god rays (call after main render, before tone mapping)
-    renderGodRays(renderer, scene, camera, sunScreenPos) {
-        if (!this.godRaysEnabled || !this.godRaysMaterial) return;
+    renderGodRays(renderer = this.renderer, scene = this.scene, camera = this.camera) {
+        if (!this.godRaysEnabled || this.godRaysIntensity <= 0 || !this.godRaysMaterial ||
+            !this.sunMesh?.visible || !renderer || !scene || !camera) return;
 
-        const prevRT = renderer.getRenderTarget();
-        const prevAutoClear = renderer.autoClear;
+        const sunPosition = this.sunMesh.material.uniforms.uPosition.value;
+        this._tmpSunScreenPosition.copy(sunPosition).project(camera);
+        if (this._tmpSunScreenPosition.z < -1 || this._tmpSunScreenPosition.z > 1 ||
+            Math.abs(this._tmpSunScreenPosition.x) > 1 || Math.abs(this._tmpSunScreenPosition.y) > 1) return;
 
-        // Render scene to god rays RT (only sun-affected objects)
-        // Simplified: render a masked version
-        renderer.setRenderTarget(this.godRaysRenderTarget);
-        renderer.clear();
+        this._resizeGodRaysTargets();
+        this._godRaysFrame++;
+        const updateRays = !this._godRaysHasResult ||
+            this._godRaysFrame % (this.quality === "HIGH" ? 1 : 2) === 0;
 
-        // For now, skip full implementation - would need occlusion mask
-        // This is a placeholder for the radial blur pass
+        const previousRenderTarget = renderer.getRenderTarget();
+        const previousAutoClear = renderer.autoClear;
+        const previousOverrideMaterial = scene.overrideMaterial;
+        const previousBackground = scene.background;
+        const previousClearAlpha = renderer.getClearAlpha();
+        const previousShadowAutoUpdate = renderer.shadowMap?.autoUpdate;
+        const skyVisible = this.skyMesh?.visible;
+        const starsVisible = this.starsMesh?.visible;
+        const sunVisible = this.sunMesh.visible;
+        const moonVisible = this.moonMesh?.visible;
+        renderer.getClearColor(this._godRaysClearColor);
 
-        renderer.setRenderTarget(prevRT);
-        renderer.autoClear = prevAutoClear;
-    }
+        try {
+            renderer.autoClear = false;
+            if (updateRays) {
+                this.godRaysMaterial.uniforms.tDiffuse.value = this.godRaysRenderTarget.texture;
+                this.godRaysMaterial.uniforms.uSunScreenPos.value.set(
+                    (this._tmpSunScreenPosition.x + 1) * 0.5,
+                    (this._tmpSunScreenPosition.y + 1) * 0.5
+                );
+                this.godRaysMaterial.uniforms.uIntensity.value = this.godRaysIntensity;
+                this.godRaysMaterial.uniforms.uColor.value.copy(this.godRaysColor);
+                this.godRaysMaterial.uniforms.uExposure.value = this.timeSystem ? this.timeSystem.getExposure() : 1.0;
+                this.godRaysMaskMesh.material.uniforms.uPosition.value.copy(sunPosition);
+                this.godRaysMaskMesh.visible = true;
+                renderer.setClearColor(0x000000, 1);
+                if (renderer.shadowMap) renderer.shadowMap.autoUpdate = false;
 
-    // Compose god rays onto screen (post-process)
-    composeGodRays(targetRT) {
-        if (!this.godRaysEnabled) return;
+                renderer.setRenderTarget(this.godRaysRenderTarget);
+                renderer.clear(true, true, true);
+                scene.background = null;
+                scene.overrideMaterial = this.godRaysOcclusionMaterial;
+                if (this.skyMesh) this.skyMesh.visible = false;
+                if (this.starsMesh) this.starsMesh.visible = false;
+                this.sunMesh.visible = false;
+                if (this.moonMesh) this.moonMesh.visible = false;
+                renderer.render(scene, camera);
 
-        const renderer = this.renderer;
-        const prevRT = renderer.getRenderTarget();
+                scene.overrideMaterial = previousOverrideMaterial;
+                scene.background = previousBackground;
+                if (this.skyMesh) this.skyMesh.visible = skyVisible;
+                if (this.starsMesh) this.starsMesh.visible = starsVisible;
+                this.sunMesh.visible = sunVisible;
+                if (this.moonMesh) this.moonMesh.visible = moonVisible;
+                renderer.render(this.godRaysMaskScene, camera);
 
-        this.godRaysMaterial.uniforms.tDiffuse.value = this.godRaysRenderTarget.texture;
-        this.godRaysMaterial.uniforms.uIntensity.value = this.godRaysIntensity;
-        this.godRaysMaterial.uniforms.uColor.value.copy(this.godRaysColor);
-        this.godRaysMaterial.uniforms.uExposure.value = this.timeSystem ? this.timeSystem.getExposure() : 1.0;
+                renderer.setRenderTarget(this.godRaysBlurTarget);
+                renderer.clear(true, true, true);
+                renderer.render(this.godRaysBlurScene, camera);
+                this._godRaysHasResult = true;
+            }
 
-        renderer.setRenderTarget(targetRT);
-        renderer.render(this.godRaysMesh, this.camera);
-        renderer.setRenderTarget(prevRT);
+            renderer.setRenderTarget(previousRenderTarget);
+            renderer.render(this.godRaysCompositeScene, camera);
+        } finally {
+            scene.overrideMaterial = previousOverrideMaterial;
+            scene.background = previousBackground;
+            if (this.skyMesh) this.skyMesh.visible = skyVisible;
+            if (this.starsMesh) this.starsMesh.visible = starsVisible;
+            this.sunMesh.visible = sunVisible;
+            if (this.moonMesh) this.moonMesh.visible = moonVisible;
+            this.godRaysMaskMesh.visible = false;
+            renderer.setRenderTarget(previousRenderTarget);
+            renderer.autoClear = previousAutoClear;
+            renderer.setClearColor(this._godRaysClearColor, previousClearAlpha);
+            if (renderer.shadowMap && previousShadowAutoUpdate !== undefined) {
+                renderer.shadowMap.autoUpdate = previousShadowAutoUpdate;
+            }
+        }
     }
 
     // Getters for external use
@@ -589,10 +742,14 @@ export class AtmosphereSystem {
     getFogNear() { return this.fogNear; }
     getFogFar() { return this.fogFar; }
     getHazeDensity() { return this.hazeDensity; }
+    getWeatherMix() { return this.weatherMix; }
     getSkyColor() { return this.skyMaterial?.uniforms.uSkyColor.value.clone() || new THREE.Color(0x87CEEB); }
 
     // Debug
-    toggleGodRays(enabled) { this.godRaysEnabled = enabled; }
+    toggleGodRays(enabled) {
+        this.godRaysEnabled = Boolean(enabled);
+        if (!this.godRaysEnabled) this.godRaysIntensity = 0;
+    }
 
     dispose() {
         if (this.skyMesh) {
@@ -607,19 +764,17 @@ export class AtmosphereSystem {
         }
         if (this.sunMesh) {
             this.scene.remove(this.sunMesh);
+            this.sunMesh.geometry.dispose();
+            this.sunMesh.material.dispose();
         }
         if (this.moonMesh) {
             this.scene.remove(this.moonMesh);
+            this.moonMesh.material.dispose();
         }
         if (this.celestialMaterial) {
             this.celestialMaterial.dispose();
         }
-        if (this.godRaysRenderTarget) {
-            this.godRaysRenderTarget.dispose();
-        }
-        if (this.godRaysMaterial) {
-            this.godRaysMaterial.dispose();
-        }
+        this._disposeGodRays();
     }
 }
 

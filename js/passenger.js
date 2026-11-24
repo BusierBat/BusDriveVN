@@ -53,9 +53,13 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
         // Lưu ý: baseX/Y/Z CÓ THỂ chính xác 0 (giường giữa BED34) — dùng
         // undefined-check, KHÔNG dùng || (0 || x → lấy x → offset cộng dồn,
         // hành khách trôi dần khỏi giường sau vài giây).
-        const baseX = p.baseX !== undefined ? p.baseX : model.position.x;
-        const baseY = p.baseY !== undefined ? p.baseY : model.position.y;
-        const baseZ = p.baseZ !== undefined ? p.baseZ : model.position.z;
+        // Dùng Number.isFinite: base CÓ THỂ là 0 (giường giữa), NHƯNG pickup khởi
+        // tạo baseX/Y/Z = null. Check `!== undefined` trước đây để null lọt qua →
+        // model.position = null + offset = 0 → khách ngồi bị kéo ra khỏi giường,
+        // đứng chặn lối đi (đo được SEATED z=0 dù targetZ=1.85).
+        const baseX = Number.isFinite(p.baseX) ? p.baseX : model.position.x;
+        const baseY = Number.isFinite(p.baseY) ? p.baseY : model.position.y;
+        const baseZ = Number.isFinite(p.baseZ) ? p.baseZ : model.position.z;
         const targetOffsetX = sway * 0.3;
         const targetOffsetY = -heave * 0.4;
         const targetOffsetZ = impact * 0.05 * Math.sin((ps.roughPhase || 0) * 60);
@@ -182,6 +186,8 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
         upperArm: new THREE.CapsuleGeometry(0.05, 0.28, 3, 4),
         forearm: new THREE.CapsuleGeometry(0.043, 0.26, 3, 4),
         hand: new THREE.BoxGeometry(0.06, 0.08, 0.04),
+        // PHASE 8 — túi xách dùng chung cho mọi khách (12 triangles, không asset).
+        luggage: new THREE.BoxGeometry(0.14, 0.17, 0.08),
         thigh: new THREE.CapsuleGeometry(0.07, 0.37, 3, 4),
         calf: new THREE.CapsuleGeometry(0.055, 0.36, 3, 4),
         foot: new THREE.BoxGeometry(0.075, 0.05, 0.16)
@@ -227,10 +233,23 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
             fore.position.y = -0.28 - 0.155; ag.add(fore);
             const hand = new THREE.Mesh(_pGeo.hand, skinMat);
             hand.position.y = -0.28 - 0.26 - 0.05; ag.add(hand);
+            ag.userData.hand = hand;   // PHASE 8 — mốc để tính vị trí nhặt túi
             g.add(ag);
             return ag;
         }
         g.userData.armL = arm(-1); g.userData.armR = arm(1);
+
+        // PHASE 8 — túi nằm DƯỚI SÀN cạnh chân phải (child của model, KHÔNG phải
+        // của tay). ẨN mặc định; chỉ hiện khi khách cúi nhặt trong COLLECTING_LUGGAGE.
+        // Lúc nhặt xong mới attach vào armR để đi theo cẳng tay. Dùng chung geo +
+        // material cache → +1 draw/khách, không asset/file mới.
+        const bag = new THREE.Mesh(_pGeo.luggage, pMat(0x5a4636, 0.85));
+        bag.position.set(0.24, 0.10, 0.04);   // sàn, cạnh chân phải (local model)
+        bag.castShadow = false; bag.receiveShadow = false;
+        bag.visible = false;
+        g.add(bag);
+        g.userData.luggage = bag;
+        g.userData.luggageFloor = bag.position.clone();
 
         // LEGS
         function leg(side) {
@@ -359,7 +378,12 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
             const s = Math.sin(p.walkPhase || 0);
             u.legL.rotation.x = s * a;
             u.legR.rotation.x = -s * a;
-            if (u.armL && u.armR) { u.armL.rotation.x = -s * a * 0.6; u.armR.rotation.x = s * a * 0.6; }
+            if (u.armL && u.armR) {
+                u.armL.rotation.x = -s * a * 0.6;
+                // PHASE 8 — sau khi lấy túi, tay phải giữ tư thế cầm đồ (không vung
+                // theo nhịp bước); tay trái vẫn đánh bình thường.
+                u.armR.rotation.x = p.luggageHeld ? -0.55 : s * a * 0.6;
+            }
             // Nhún nhẹ theo nhịp bước (chỉ khi đang đi) — hoàn trả bob cũ trước
             // khi cộng bob mới để không tích lũy trôi Y.
             const bob = moving ? Math.abs(Math.sin(p.walkPhase || 0)) * 0.03 * (a / 0.55) : 0;
@@ -368,15 +392,34 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
                 p._bobPrev = bob;
             }
         };
-        const aisleBlocked = (p, dirSign) => {
+        // Lối đi xe giường nằm chỉ đủ 1 người. Khi khách lên (đi vào trong) gặp
+        // khách xuống (đi ra cửa), CẢ HAI cùng thấy người kia "ở trước" → đứng
+        // hình vĩnh viễn (đã đo: WALKING_TO_EXIT kẹt 40s ở z=1.2). Thêm đồng hồ
+        // nhường: quá 1.5s (xuống xe) / 3s (lên xe) thì coi như đã né → đi tiếp.
+        // Ưu tiên người xuống xe như phụ xe bến thực tế.
+        const ALIGHTING_STATES = new Set([
+            'STANDING_UP', 'COLLECTING_LUGGAGE', 'WALKING_TO_EXIT',
+            'DESCENDING_STEPS', 'LEAVING_BUS', 'DROPPING_OFF'
+        ]);
+        const aisleBlocked = (p, dirSign, dt = 0) => {
+            const pAlighting = ALIGHTING_STATES.has(p.state);
+            let blocked = false;
             for (const q of onboardPassengers) {
                 if (q === p || !q.model) continue;
+                // Ưu tiên TUYỆT ĐỐI người xuống xe: phụ xe bến thực tế dừng đón
+                // khách mới cho khách cũ xuống xong. Không ưu tiên → khách xuống
+                // bị 6 người đang lên chặn từng nhịp, đi 2.5m mất >40s.
+                if (pAlighting && !ALIGHTING_STATES.has(q.state)) continue;
                 const qm = q.model.position, pm = p.model.position;
                 if (Math.sign(qm.x || 1) !== Math.sign(pm.x || 1)) continue;   // khác lối đi
                 const ahead = (qm.z - pm.z) * dirSign;                          // cùng chiều tiến
-                if (ahead > 0.1 && ahead < 1.1 && Math.abs(qm.x - pm.x) < 0.5) return true;
+                if (ahead > 0.1 && ahead < 1.1 && Math.abs(qm.x - pm.x) < 0.5) { blocked = true; break; }
             }
-            return false;
+            if (!blocked) { p._blockedT = 0; return false; }
+            p._blockedT = (p._blockedT || 0) + (Number.isFinite(dt) ? Math.max(0, dt) : 0);
+            const limit = ALIGHTING_STATES.has(p.state) ? 1.5 : 3.0;
+            if (p._blockedT >= limit) { p._blockedT = 0; return false; }
+            return true;
         };
 
         for (const p of [...onboardPassengers]) {
@@ -425,7 +468,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
             if (state === 'WALKING_AISLE') {
                 const ax = aisleXFor(p.targetX);
                 const dirSign = Math.sign(p.targetZ - m.z) || -1;
-                if (Math.abs(m.z - p.targetZ) > 0.15 && aisleBlocked(p, dirSign)) { animateWalk(p, false, dt); continue; }
+                if (Math.abs(m.z - p.targetZ) > 0.15 && aisleBlocked(p, dirSign, dt)) { animateWalk(p, false, dt); continue; }
                 // 0: vào khe giữa hai ghế → 1: đi dọc khe qua khỏi lưng ghế →
                 // 2: toả ngang vào làn → 3: đi dọc lối đi tới giường.
                 const step = p.aisleStep | 0;
@@ -465,7 +508,12 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
                 m.y = fromY + (p.targetY - fromY) * t;
                 m.x = fromX + (p.targetX - fromX) * t;   // tuck ngang khi leo — không xuyên đệm
                 animateWalk(p, false, dt);
-                if (t >= 1) { p.state = 'SEATED'; p.sitT = 0; }
+                if (t >= 1) {
+                    // Chốt base SAU khi ngồi xong để applyPassengerFeedback không
+                    // lấy nhầm null (pickup) hay vị trí lối đi làm gốc.
+                    p.baseX = p.targetX; p.baseY = p.targetY; p.baseZ = p.targetZ;
+                    p.state = 'SEATED'; p.sitT = 0;
+                }
                 continue;
             }
 
@@ -483,14 +531,55 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
                 continue;
             }
             if (state === 'COLLECTING_LUGGAGE') {
-                p.luggageT = (p.luggageT || 0) + dt;   // 0.25s đứng lấy đồ (chưa có dữ liệu hành lý)
-                if (p.luggageT >= 0.25) { p.luggageT = 0; p.exitStep = 0; p.state = 'WALKING_TO_EXIT'; }
+                // PHASE 8 — lấy hành lý THẬT (không bật visibility ở tay):
+                // túi nằm DƯỚI SÀN ngay từ đầu → tay cúi xuống (0→-1.05) →
+                // túi lerp từ sàn lên đúng bàn tay → attach vào armR → nâng tay
+                // (-1.05→-0.55). Mọi toạ độ tính qua world matrix nên đúng cả
+                // khi model đang đứng trong bus đã xoay/dịch.
+                p.luggageT = (p.luggageT || 0) + dt;
+                const t = Math.min(1, p.luggageT / 0.6);
+                const u = p.model?.userData;
+                if (u?.armR) {
+                    u.armR.rotation.x = t < 0.5
+                        ? -1.05 * (t / 0.5)                       // cúi xuống
+                        : -1.05 + 0.50 * ((t - 0.5) / 0.5);       // nâng lên -0.55
+                    const bag = u.luggage;
+                    if (bag) {
+                        // Hiện túi NGAY từ frame đầu state (nằm ở sàn) — không dùng
+                        // cửa sổ t<0.05 dễ trễ nhịp sample/frameInitialization.
+                        bag.visible = true;
+                        if (t < 0.05) {
+                            // Vừa bắt đầu: đảm bảo túi ở đúng vị trí sàn.
+                            bag.position.copy(u.luggageFloor);
+                        } else if (!p.luggageHeld) {
+                            // Tay cúi xong (t≥0.45) → túi rời sàn, bay tới bàn tay.
+                            const hand = u.armR.userData.hand;
+                            if (hand) {
+                                p.model.updateMatrixWorld(true);
+                                const hw = hand.getWorldPosition(_tmpV);
+                                const hl = p.model.worldToLocal(hw);
+                                const k = Math.max(0, Math.min(1, (t - 0.45) / 0.45));
+                                bag.position.lerpVectors(u.luggageFloor, hl, k);
+                            }
+                        }
+                    }
+                }
+                if (t >= 1) {
+                    // Gắn túi vào tay (giữ world transform) rồi nâng tay lên -0.55.
+                    const u2 = p.model?.userData;
+                    if (u2?.armR && u2.luggage && u2.luggage.parent !== u2.armR) {
+                        p.model.updateMatrixWorld(true);
+                        u2.armR.attach(u2.luggage);
+                    }
+                    p.luggageT = 0; p.luggageHeld = true;
+                    p.exitStep = 0; p.state = 'WALKING_TO_EXIT';
+                }
                 continue;
             }
             if (state === 'WALKING_TO_EXIT') {
                 const ax = aisleXFor(p.targetX);
                 const dirSign = Math.sign(STAIR_Z - m.z) || 1;
-                if (Math.abs(m.z - STAIR_Z) > 0.15 && aisleBlocked(p, dirSign)) { animateWalk(p, false, dt); continue; }
+                if (Math.abs(m.z - STAIR_Z) > 0.15 && aisleBlocked(p, dirSign, dt)) { animateWalk(p, false, dt); continue; }
                 // Ngược chiều lúc lên: đi dọc làn → toả về khe hai ghế → ra đỉnh thang.
                 const step = p.exitStep | 0;
                 if (step === 0) {
@@ -529,6 +618,15 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
             if (state === 'DROPPED_OFF') {
                 // Xóa khỏi thế giới — khách đã tự bước ra ngoài + đi đủ xa,
                 // KHÔNG dùng timer xóa model khi chưa tới nơi.
+                // PHASE 8 — trả state túi về sàn/phòng khi model được pool lại.
+                p.luggageHeld = false;
+                const u = p.model?.userData;
+                if (u?.luggage) {
+                    if (u.luggage.parent !== p.model) p.model.attach(u.luggage);
+                    u.luggage.position.copy(u.luggageFloor);
+                    u.luggage.visible = false;
+                }
+                if (u?.armR) u.armR.rotation.x = 0;
                 if (p.model?.parent) p.model.parent.remove(p.model);
                 const idx = onboardPassengers.indexOf(p);
                 if (idx >= 0) onboardPassengers.splice(idx, 1);
@@ -547,7 +645,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
 
     function pickUpPassengers() {
         if (!bus || !bus.doorOpen) {
-            ui?.toast("❌ Phải mở cửa (K) để đón khách!");
+            ui?.toast("[icon:x] Phải mở cửa (K) để đón khách!");
             return 0;
         }
         let picked = 0;
@@ -599,9 +697,9 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
             });
             picked++;
         }
-        if (picked > 0) ui?.toast(`✅ Đón ${picked} khách! (${onboardPassengers.length}/${MAX_PASSENGERS})`);
-        else if (inRange.length === 0) ui?.toast("❌ Không có khách ở gần!");
-        else ui?.toast("⚠️ Xe đã đầy! (không còn giường trống)");
+        if (picked > 0) ui?.toast(`[icon:check] Đón ${picked} khách! (${onboardPassengers.length}/${MAX_PASSENGERS})`);
+        else if (inRange.length === 0) ui?.toast("[icon:x] Không có khách ở gần!");
+        else ui?.toast("[icon:warn] Xe đã đầy! (không còn giường trống)");
         return picked;
     }
 
@@ -620,7 +718,7 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
                 }
             }
         }
-        if (released > 0) ui?.toast(`✅ Cho ${released} khách xuống xe`);
+        if (released > 0) ui?.toast(`[icon:check] Cho ${released} khách xuống xe`);
         return released;
     }
 
@@ -646,7 +744,10 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
             const y = Number.isFinite(p.targetY) ? p.targetY : 0;
             const z = Number.isFinite(p.targetZ) ? p.targetZ : 0;
             sx += x; sy += y; sz += z;
-            if (y > 1.2) upper++;
+            // Phân tầng bằng TRUNG ĐIỂM giữa giường dưới (1.76) và trên (2.70).
+            // Ngưỡng 1.2 cũ đếm NHẦM cả giường dưới là tầng trên → upper=1 dù
+            // 10 khách thực ra 5 dưới / 5 trên (đo được meanY=2.28).
+            if (y > (TIER_LOW + TIER_HIGH) / 2) upper++;
         }
         return {
             meanX: sx / n, meanY: sy / n, meanZ: sz / n,
@@ -749,6 +850,8 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
     }
 
     function dispose() {
+        window.removeEventListener('beforeunload', savePassengers);
+        passengerGroup.traverse(o => { if (o.isSprite && o.material) o.material.dispose(); });
         for (const p of onboardPassengers) {
             if (p.model?.parent) p.model.parent.remove(p.model);
         }
@@ -756,6 +859,9 @@ export function createPassengerSystem({ scene, map, npc, bus, ui, interiorType =
         while (passengerGroup.children.length) passengerGroup.remove(passengerGroup.children[0]);
         waitingPassengers.length = 0;
         onboardPassengers.length = 0;
+        for (const g of Object.values(_pGeo)) g.dispose?.();
+        for (const m of _pMatCache.values()) m.dispose?.();
+        glowTexture.dispose();
     }
 
     return {

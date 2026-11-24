@@ -226,7 +226,7 @@ function getShared() {
   }
   g.mirrors = mergeGeos(mir);
 
-  const pf = new THREE.BoxGeometry(0.8, 0.2, 0.03); pf.translate(0, 0.55, L / 2 + 0.02);
+  const pf = new THREE.BoxGeometry(0.8, 0.2, 0.03); pf.translate(0, 0.65, L / 2 + 0.02);
   const pr = new THREE.BoxGeometry(0.8, 0.2, 0.03); pr.translate(0, 0.65, -L / 2 - 0.02);
   g.plates = mergeGeos([pf, pr]);
 
@@ -395,7 +395,7 @@ function assembleBus(mats, withDoorPivot) {
   motion.add(emergencyMesh);
 
   return {
-    root, motion, allPivots, doorPivot, steerPivots, tireMeshes, rimMeshes, mats, headMesh, tailMesh, emergencyMesh, extMeshes, extMat
+    root, motion, allPivots, doorPivot, steerPivots, tireMeshes, rimMeshes, mats, headMesh, tailMesh, emergencyMesh, ledInt, extMeshes, extMat
   };
 }
 
@@ -457,29 +457,34 @@ function makeControl(a) {
 }
 
 // Tay tài xế — dùng chung cho xe người chơi (cockpit đầy đủ) và NPC (khoang tối giản).
-// 9h/3h grip bám vô lăng, ngón cái bám trong vành, cẳng tay + bắp tay đơn giản.
-// KHÔNG dùng skeleton/IK — đây là mesh tĩnh xoay theo vành lái.
+// 9h/3h grip BÁM VÀNH (R=0.22), ngón cái đè lên trong vành, cẳng tay + bắp tay
+// dài về phía ghế (local −z) thay vì mấy khối cụt 0.1m ở sát hub như bản cũ.
+// KHÔNG dùng skeleton/IK — mesh tĩnh xoay theo vành lái (8 mesh, không tăng draw).
 function buildDriverHands() {
   const hands = new THREE.Group();
   const gloveMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8, metalness: 0.1 });
   for (let side = 0; side < 2; side++) {
     const s = side === 0 ? -1 : 1;
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), gloveMat);
-    hand.scale.set(0.85, 0.65, 0.55);
-    hand.position.set(s * 0.155, 0, 0.035);
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.038, 10, 8), gloveMat);
+    hand.scale.set(0.95, 0.75, 0.65);
+    hand.position.set(s * 0.205, 0, 0.008);
     hands.add(hand);
-    const thumb = new THREE.Mesh(new THREE.SphereGeometry(0.015, 8, 6), gloveMat);
-    thumb.position.set(s * 0.148, 0.008, 0.042);
+    const thumb = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 6), gloveMat);
+    thumb.position.set(s * 0.19, 0.018, 0.036);
     hands.add(thumb);
 
-    const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.024, 0.10, 8), gloveMat);
-    forearm.rotation.x = Math.PI / 2 - 0.3;
-    forearm.position.set(s * 0.155, -0.06, -0.02);
+    // Cẳng tay: từ cổ tay (y≈0) chìa xuống/sâu về phía người lái.
+    const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 0.22, 8), gloveMat);
+    forearm.rotation.x = -0.35;
+    forearm.rotation.z = s * 0.18;
+    forearm.position.set(s * 0.215, -0.115, -0.055);
     hands.add(forearm);
 
-    const upperarm = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.022, 0.08, 8), gloveMat);
-    upperarm.rotation.x = Math.PI / 2 - 0.5;
-    upperarm.position.set(s * 0.14, -0.09, -0.06);
+    // Bắp tay nối tiếp cẳng tay — tổng ~0.42m, khớp khoảng cách ghế→vô-lăng 0.52m.
+    const upperarm = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.032, 0.20, 8), gloveMat);
+    upperarm.rotation.x = -0.5;
+    upperarm.rotation.z = s * 0.25;
+    upperarm.position.set(s * 0.23, -0.29, -0.14);
     hands.add(upperarm);
   }
   return hands;
@@ -561,7 +566,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   function setTaillights(on) {
     tailMaterial.emissiveIntensity = on ? 0.9 : 0;
     tailGlow.intensity = on ? 6 : 0;
-    tailGlow.visible = true;   // BUG 6: giu luon trong render list, chi intensity moi doi
+    tailGlow.visible = true;
   }
   function setSignalLeft(on) { signalLeft = on; }
   function setSignalRight(on) { signalRight = on; }
@@ -569,17 +574,52 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   function setIndicators(on) { signalLeft = on; signalRight = on; }
 
   let interiorRef = null;
-  function setInteriorLed(on) {
-    if (interiorRef && typeof interiorRef.setInteriorLed === 'function') {
-      interiorRef.setInteriorLed(on);
-    }
+  const LED_GROUPS = ["ceiling", "trim", "exterior", "body"];
+  const LED_DIM_LEVEL = 0.3;
+  const LED_LEVELS = [1, LED_DIM_LEVEL, 0];  // sáng mạnh -> sáng yếu -> tắt
+  const ledLevel = { ceiling: 1, trim: 1, exterior: 1, body: 1 };
+  let interiorLedOn = true;
+  const ledVisualState = () => ({ ...ledLevel, master: interiorLedOn });
+  function applyLedVisuals() {
+    const state = ledVisualState();
+    if (interiorRef?.setLedGroups) interiorRef.setLedGroups(state);
+    else interiorRef?.setInteriorLed?.(interiorLedOn);
+    const bodyLevel = interiorLedOn ? ledLevel.body : 0;
+    if (a.ledInt) a.ledInt.visible = bodyLevel > 0;
+    mats.led.emissiveIntensity = 5.4 * bodyLevel;
+    const extLevel = interiorLedOn ? ledLevel.exterior : 0;
     if (a.extMeshes) {
       a.extMeshes.forEach(mesh => {
-        mesh.visible = on;
-        mesh.material.opacity = on ? 1 : 0;
+        mesh.visible = extLevel > 0;
+        mesh.material.opacity = 1.5 * extLevel;
       });
     }
   }
+  function setInteriorLed(on) {
+    interiorLedOn = !!on;
+    applyLedVisuals();
+  }
+  function setLedGroup(name, value) {
+    if (!LED_GROUPS.includes(name)) return;
+    // Caller cũ truyền boolean: true = mạnh, false = tắt (không còn nhảy sang yếu).
+    ledLevel[name] = value === true ? 1
+      : value === false ? 0
+      : Math.max(0, Math.min(1, Number(value) || 0));
+    applyLedVisuals();
+  }
+  function cycleLedGroup(name) {
+    if (!LED_GROUPS.includes(name)) return ledVisualState();
+    const current = LED_LEVELS.indexOf(ledLevel[name]);
+    ledLevel[name] = LED_LEVELS[(current + 1) % LED_LEVELS.length];
+    applyLedVisuals();
+    return ledVisualState();
+  }
+  function getLedGroups() {
+    const state = ledVisualState();
+    for (const name of LED_GROUPS) state[name] = state[name] > 0;
+    return state;
+  }
+  function getLedLevels() { return ledVisualState(); }
 
   let cockpitDrawSpeed = null;
   let cockpitDrawCluster = null;
@@ -588,6 +628,10 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     if (cockpitDrawCluster) cockpitDrawCluster(rpm, gear, powerKW);
   }
   let cockpitTickScreen = null;
+  let cabinTvTexture = null, cabinScreenMaterial = null, cabinSpeedMaterial = null, cabinGaugeMaterial = null;
+  let cabinButtonMaterials = [];
+  let tvMode = 0, tvUntil = 0, lastBsodEnd = 0;
+  const paxTvState = new Map();
   // Vô-lăng 3D trong cabin (bus.js dựng runtime) — quay theo góc lái thật.
   let cockpitWheelGroup = null;
   let driverHandsGroup = null;
@@ -608,7 +652,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
   }
 
   function createDriverCockpit(interiorRoot) {
-    if (cockpitTickScreen || !interiorRoot?.isObject3D) return;
+    if (!interiorRoot?.isObject3D) return;
     const findMesh = (pred) => {
       let hit = null;
       interiorRoot.traverse(o => {
@@ -631,7 +675,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       Math.abs(gp.width - 0.5) < 0.03 && Math.abs(gp.height - 0.25) < 0.03 &&
       Math.abs(gp.depth - 0.05) < 0.03 && Math.abs(o.position.x) < 0.12 &&
       o.position.z > 5.3 && o.position.y > 1.9);
-    // RHD: cụm đồng hồ tài xế bên PHẢI — speedo ở x≈+0.45, gauge phụ x≈-0.45
+    // LHD: cụm đồng hồ tài xế bên TRÁI (+x) — speedo ở x≈+0.45, gauge phụ x≈-0.45
     const speedoMesh = findMesh((gp, o) =>
       Math.abs(gp.width - 0.35) < 0.03 && Math.abs(gp.height - 0.2) < 0.03 &&
       o.position.x > 0.25 && o.position.x < 0.6 && o.position.z > 5.3);
@@ -643,13 +687,26 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       Math.abs(gp.depth - 0.04) < 0.02 && o.position.z > 5.3 &&
       o.position.y > 1.7 && o.position.y < 2.2);
 
+    if (cockpitTickScreen && cabinTvTexture) {
+      if (screenMesh && cabinScreenMaterial) {
+        screenMesh.material = cabinScreenMaterial;
+        screenMesh.scale.set(1.2, 1.2, 1); screenMesh.updateMatrix();
+      }
+      if (speedoMesh && cabinSpeedMaterial) {
+        speedoMesh.material = cabinSpeedMaterial;
+        speedoMesh.scale.set(1.05, 1.05, 1); speedoMesh.updateMatrix();
+      }
+      if (gaugeMesh && cabinGaugeMaterial) gaugeMesh.material = cabinGaugeMaterial;
+      btnMeshes.forEach((m, i) => { if (cabinButtonMaterials[i]) m.material = cabinButtonMaterials[i]; });
+      return;
+    }
+
     if (screenMesh) {
       const SW = 320, SH = 192, DOT_N = 5, DOT_R = 13;
       const screenCv = document.createElement('canvas');
       screenCv.width = SW; screenCv.height = SH;
       const sctx = screenCv.getContext('2d');
       const UPDATE_PCT = 37;   // CỐ ĐỊNH theo yêu cầu — không tự tăng, không mô phỏng update thật
-      let tvMode = 0, tvUntil = 0, lastBsodEnd = 0;
 
       const drawQRPseudo = (x, y, size) => {
         // QR chỉ là HÌNH — lưới module giả + 3 finder square, không mã hóa gì.
@@ -769,6 +826,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
 
       const screenTex = new THREE.CanvasTexture(screenCv);
       screenTex.colorSpace = THREE.SRGBColorSpace;
+      cabinTvTexture = screenTex;
       const refreshScreen = (nowMs) => {
         if (tvMode === 0) {
           // thoát "update" sang trạng thái khác: BSOD cooldown 90s, VS Code
@@ -794,7 +852,8 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       };
       refreshScreen(performance.now());
       cockpitTickScreen = refreshScreen;
-      screenMesh.material = new THREE.MeshBasicMaterial({ map: screenTex });
+      cabinScreenMaterial = new THREE.MeshBasicMaterial({ map: screenTex });
+      screenMesh.material = cabinScreenMaterial;
     }
 
     // ---- dong ho toc do (cluster trai): SO KMH LAY TU XE THAT ----
@@ -806,7 +865,8 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       const gctx = spdCv.getContext('2d');
       spdCtex = new THREE.CanvasTexture(spdCv);
       spdCtex.colorSpace = THREE.SRGBColorSpace;
-      speedoMesh.material = new THREE.MeshBasicMaterial({ map: spdCtex });
+      cabinSpeedMaterial = new THREE.MeshBasicMaterial({ map: spdCtex });
+      speedoMesh.material = cabinSpeedMaterial;
       // ve lai CHI khi so km/h doi (hoac che do lui doi) — khong tung frame
       cockpitDrawSpeed = (kmhSigned) => {
         const rev = kmhSigned < -0.5;
@@ -819,6 +879,20 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
         gctx.strokeStyle = '#35ffd0';
         gctx.lineWidth = 2;
         gctx.strokeRect(3, 3, GW2 - 6, GH2 - 6);
+        // Thang vạch 0..120 km/h (đồng hồ cũ chỉ có số -> nhìn như cái điều khiển).
+        // Vẽ cùng lúc với số nên KHÔNG tốn thêm lần upload texture mỗi frame.
+        gctx.lineWidth = 1;
+        gctx.strokeStyle = '#2c8a7c';
+        for (let i = 0; i <= 12; i++) {
+          const tx = 12 + i * 14;
+          gctx.beginPath();
+          gctx.moveTo(tx, 84);
+          gctx.lineTo(tx, i % 2 === 0 ? 91 : 88);
+          gctx.stroke();
+        }
+        const needleX = 12 + Math.min(120, aint) / 120 * 168;
+        gctx.fillStyle = '#35ffd0';
+        gctx.fillRect(needleX - 1.5, 82, 3, 11);
         gctx.fillStyle = '#f2fffb';
         gctx.textAlign = 'center';
         gctx.font = 'bold 40px Consolas, monospace';
@@ -840,7 +914,8 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       const actx = aCv.getContext('2d');
       const aTex = new THREE.CanvasTexture(aCv);
       aTex.colorSpace = THREE.SRGBColorSpace;
-      gaugeMesh.material = new THREE.MeshBasicMaterial({ map: aTex });
+      cabinGaugeMaterial = new THREE.MeshBasicMaterial({ map: aTex });
+      gaugeMesh.material = cabinGaugeMaterial;
       let lastClusterDraw = 0, lastRpm = -1, lastGear = -1;
       cockpitDrawCluster = (rpm, gear, powerKW) => {
         if (!Number.isFinite(rpm)) return;
@@ -880,9 +955,11 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     if (btnMeshes.length) {
       const groups = [0xff4040, 0xffd23f, 0x2fb6ff, 0xf2f4f0];
       btnMeshes.forEach((m, i) => {
-        m.material = new THREE.MeshStandardMaterial({
+        const mat = new THREE.MeshStandardMaterial({
           color: 0x111118, emissive: groups[i % 4], emissiveIntensity: 1.4
         });
+        m.material = mat;
+        cabinButtonMaterials[i] = mat;
       });
     } else {
       console.warn("[cockpit] Khong tim thay nut bam tren dashboard interior");
@@ -914,43 +991,52 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     const trim = new THREE.Mesh(new THREE.BoxGeometry(2.24, 0.025, 0.03), chrome);
     trim.position.set(0, 1.876, 5.845);
     interiorRoot.add(trim);
-    // Vong chrome quanh cluster (RHD: phai +0.50 theo interior.js) + gauge phu
+    // Vong chrome quanh cluster (LHD: trai +0.50 theo interior.js) + gauge phu
     const clusterTrim = new THREE.Mesh(new THREE.TorusGeometry(0.21, 0.018, 8, 24), chrome);
     clusterTrim.position.set(0.50, 2.13, 5.795);
     interiorRoot.add(clusterTrim);
     const gaugeTrim = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.014, 8, 20), chrome);
     gaugeTrim.position.set(-0.45, 2.12, 5.79);
     interiorRoot.add(gaugeTrim);
+    // Viền màn trung tâm (sau scale 1.2 -> 0.60x0.30 tại 0,2.08,5.83).
+    // Chỉ 2 thanh ngang: thanh dọc phải sẽ cắn cluster trim (x 0.29..0.71).
+    for (const by of [1.916, 2.244]) {
+      const bezel = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.012, 0.014), chrome);
+      bezel.position.set(0, by, 5.862);
+      interiorRoot.add(bezel);
+    }
 
     const legacySteer = interiorRoot.getObjectByName("legacySteeringWheel");
-    if (legacySteer) legacySteer.visible = false;
+    if (legacySteer) legacySteer.traverse((o) => { o.visible = false; });
     const steerRing = findMesh((gp, o) =>
       o.geometry?.type === "TorusGeometry" &&
       Math.abs(o.position.x) < 0.001 && Math.abs(o.position.y) < 0.001 &&
       Math.abs(o.position.z) < 0.001);
-    if (steerRing?.parent) steerRing.parent.visible = false;
+    if (steerRing?.parent) steerRing.parent.traverse((o) => { o.visible = false; });
     const wheelGroup = new THREE.Group();
+    wheelGroup.name = "cockpitWheel";
 
-    // RHD: vô lăng trước ghế tài xế bên PHẢI (+0.65)
-    wheelGroup.position.set(0.65, 2.35, 5.02);
+    // LHD: vô lăng trước ghế tài xế bên TRÁI (+0.65) — cửa lên ở -x (phải xe).
+    wheelGroup.position.set(0.65, 2.14, 5.23);
+    wheelGroup.scale.setScalar(0.88);
+    // Euler XYZ: Rz quay trong mặt vành, Rx nghiêng; setCockpitSteering chỉ đụng rotation.z.
+    wheelGroup.rotation.x = 0.35;
     cockpitWheelGroup = wheelGroup;
-    // Tay tài xế — 9h/3h grip bám vô lăng (hàm dùng chung với NPC)
+    // Tay tài xế — 9h/3h grip bám VÀNH (hàm dùng chung với NPC)
     driverHandsGroup = buildDriverHands();
     wheelGroup.add(driverHandsGroup);
     // Vành bọc da dày + 3 chấu + hub chrome + logo LED + nút bấm
     const wheelLeather = new THREE.MeshStandardMaterial({ color: 0x1a1a22, roughness: 0.92, metalness: 0.04 });
     const wRing = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.045, 12, 24), wheelLeather);
-    wRing.rotation.x = Math.PI / 2 - 0.2;
-    wheelGroup.add(wRing);
+    wheelGroup.add(wRing);   // torus mặc định nằm mặt XY; group đã nghiêng
     // Viền chrome mảnh mép ngoài vành
     const wRingTrim = new THREE.Mesh(new THREE.TorusGeometry(0.243, 0.006, 6, 24), chrome);
-    wRingTrim.rotation.x = Math.PI / 2 - 0.2;
     wheelGroup.add(wRingTrim);
     for (let i = 0; i < 3; i++) {
       const wAngle = (i / 3) * Math.PI * 2;
       const wSpoke = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.028, 0.028), dashDark);
-      wSpoke.position.set(Math.sin(wAngle) * 0.12, 0, Math.cos(wAngle) * 0.12);
-      wSpoke.rotation.y = -wAngle;
+      wSpoke.position.set(Math.sin(wAngle) * 0.12, Math.cos(wAngle) * 0.12, 0);
+      wSpoke.rotation.z = -wAngle;
       wheelGroup.add(wSpoke);
     }
     // Hub trung tâm + viền chrome + logo
@@ -959,7 +1045,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     wHub.position.z = 0.018;
     wheelGroup.add(wHub);
     const wHubTrim = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.012, 8, 20), chrome);
-    wHubTrim.rotation.x = Math.PI / 2;
+    wHubTrim.rotation.x = 0;   // vòng quanh hub trục +z phải nằm mặt XY (group đã nghiêng)
     wHubTrim.position.z = 0.024;
     wheelGroup.add(wHubTrim);
     const wLogo = new THREE.Mesh(new THREE.CircleGeometry(0.026, 12),
@@ -973,11 +1059,16 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       wBtn.position.set(bx, -0.035, 0.04);
       wheelGroup.add(wBtn);
     }
-    const wColumn = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.3, 8), panelMat);
-    wColumn.position.set(0, -0.15, 0);
-    wColumn.rotation.x = 0.2;
+    const wColumn = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.034, 0.96, 8), panelMat);
+    wColumn.position.set(0, -0.02, 0.48);
+    wColumn.rotation.x = -Math.PI / 2 + 0.06;
     wheelGroup.add(wColumn);
-    interiorRoot.add(wheelGroup);
+    const wColumnBezel = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.03, 12), chrome);
+    wColumnBezel.rotation.x = Math.PI / 2;
+    wColumnBezel.position.set(0, -0.02, 0.94);
+    wheelGroup.add(wColumnBezel);
+    const driverArea = interiorRoot.getObjectByName("DriverArea") || interiorRoot;
+    driverArea.add(wheelGroup);
     for (const vx of [-0.95, -0.62]) {
       const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.035, 14), chrome);
       ring.rotation.x = Math.PI / 2;
@@ -1000,7 +1091,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     // theo mặt táp-lô CŨ (mặt trên y 2.315, z 4.87..5.97). Mặt trên nay hạ
     // xuống 2.05 và chỉ phủ khoang chân (x ≥ 0.30) nên bản cũ LƠ LỬNG giữa
     // trời. Canh lại theo mặt táp-lô ĐỨNG mới: mặt 5.850..5.900, cạnh trên 2.256.
-    // 1) Brow/but tap-lo trên cluster tốc độ (RHD bên phải +0.50)
+    // 1) Brow/but tap-lo trên cluster tốc độ (LHD bên trái +0.50)
     const clusterBrow = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.04, 0.09), dashDark);
     clusterBrow.position.set(0.50, 2.236, 5.80);
     clusterBrow.rotation.x = 0.22;   // nghiêng theo mặt táp-lô
@@ -1021,7 +1112,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
       post.rotation.x = 0.3;
       interiorRoot.add(post);
     }
-    // 4) Thảm chân vùng lái — phân biệt sàn lái thấp hơn sàn khách — RHD PHẢI
+    // 4) Thảm chân vùng lái — phân biệt sàn lái thấp hơn sàn khách — LHD TRÁI
     // Sàn lái (interior.js) mặt trên = 1.21 → thảm đặt sát mặt (1.21..1.222);
     // bản cũ y 1.268 lơ lửng 5cm trên sàn.
     const footMat = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.012, 0.5), panelMat);
@@ -1033,8 +1124,6 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     pedalBracket.position.set(0.47, 1.62, 5.72);
     interiorRoot.add(pedalBracket);
     // ===== GHE TAI XE + PHU XE: boc CAM/DEN khau thoi theo anh THACO =====
-    // Mesh ghe co san cua interior (cushion/back/headrest, z4.2-4.6, y<1.15):
-    // gán material runtime — khong doi hinh hoc, khong sua file cam.
     // Man trung tam + cluster: scale RUNTIME (man goc 0.5x0.25 & cluster
     // 0.35x0.2 la quá nho tu mat nguoi ngi z4.95 y1.22 nhìn; theo ảnh màn
     // trung tâm = lớn màn dấu giữa dash. Gi nguyên vi tri, không doi file cấm.
@@ -1056,7 +1145,7 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     const seatMeshes = findAllMeshes((gp, o) =>
       (Math.abs(gp.width - 0.5) < 0.03 || Math.abs(gp.width - 0.45) < 0.03 ||
        Math.abs(gp.width - 0.3) < 0.03 || Math.abs(gp.width - 0.25) < 0.03) &&
-      o.position.z < 4.65 && o.position.z > 4.15 &&
+      o.position.z < 4.96 && o.position.z > 4.20 &&
       o.position.y > 1.3 && o.position.y < 2.3 &&
       (Math.abs(o.position.x + 0.35) < 0.05 || Math.abs(o.position.x - 0.65) < 0.05));
     const seatCam = new THREE.MeshStandardMaterial({ color: 0xd97b1f, roughness: 0.9, metalness: 0.05 });
@@ -1069,6 +1158,14 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
 
   function setEmergencyBrake(on) { emergencyMaterial.emissiveIntensity = on ? 1.2 : 0; emergencyMaterial.opacity = on ? 1 : 0; }
   function dispose() {}
+
+  function bindPaxTvs(interior) {
+    const paxTv = interior?.paxTv;
+    if (!paxTv || !cabinTvTexture) return;
+    paxTv.material.map = cabinTvTexture;
+    paxTv.material.needsUpdate = true;
+    for (let i = 0; i < paxTv.count; i++) paxTv.setOn(i, paxTvState.get(i) !== false);
+  }
 
   // UV Skin: đổi texture bọc xe RUNTIME (main.js UV panel gọi bus.setSkin).
   // BUG-011: busObj thiếu setSkin nên panel UV trong game "hợp lệ" xong
@@ -1091,14 +1188,52 @@ export function createBus({ textureUrl = BUS_TEXTURE_URL } = {}) {
     // Vô-lăng cabin quay theo góc lái (Mục G) — main.js gọi mỗi frame.
     setCockpitSteering,
     setHeadlights, setTaillights, setIndicators, setSignalLeft, setSignalRight, setHazard,
-    setInteriorLed, setEmergencyBrake, update, dispose, setDriverTelemetry,
-    areLightsOn: false, doorOpen: false, interiorLedOn: false,
+    setInteriorLed, setLedGroup, cycleLedGroup, getLedGroups, getLedLevels, reapplyLedState: applyLedVisuals,
+    setEmergencyBrake, update, dispose, setDriverTelemetry,
+    areLightsOn: false, doorOpen: false,
+    get interiorLedOn() { return interiorLedOn; },
+    getCabinTvTexture: () => cabinTvTexture,
+    getCabinTvState: () => ({ mode: tvMode, until: tvUntil, lastBsodEnd, now: performance.now() }),
+    getPassengerTvCount: () => interiorRef?.paxTv?.count || 0,
+    getPassengerTvState: () => {
+      const p = interiorRef?.paxTv;
+      if (!p) return [];
+      const out = [];
+      for (let i = 0; i < p.count; i++) out.push(p.getOn(i));
+      return out;
+    },
+    setPassengerTv: (index, on) => {
+      const p = interiorRef?.paxTv;
+      if (!p) return;
+      if (index === 'all' || index === -1) {
+        for (let i = 0; i < p.count; i++) { paxTvState.set(i, !!on); p.setOn(i, !!on); }
+        return;
+      }
+      const i = Number(index);
+      if (!Number.isInteger(i) || i < 0 || i >= p.count) return;
+      paxTvState.set(i, !!on);
+      p.setOn(i, !!on);
+    },
+    togglePassengerTv: (index) => {
+      const p = interiorRef?.paxTv;
+      if (!p) return;
+      if (index === 'all' || index === -1) {
+        busObj.setPassengerTv('all', !p.getOn(0));
+        return;
+      }
+      const i = Number(index);
+      if (!Number.isInteger(i) || i < 0 || i >= p.count) return;
+      busObj.setPassengerTv(i, !p.getOn(i));
+    },
     setSkin,
     get skinPath() { return skinPath; },
     setInteriorReference: (interior) => {
       interiorRef = interior;
-      // cockpit chỉ tồn tại trên xe người chơi (interior của createBusInterior)
-      if (interior?.isObject3D) createDriverCockpit(interior);
+      if (!interior?.isObject3D) return;
+      const legacySteer = interior.getObjectByName("legacySteeringWheel");
+      if (legacySteer) legacySteer.traverse((o) => { o.visible = false; });
+      createDriverCockpit(interior);
+      bindPaxTvs(interior);
     }
   };
 
@@ -1219,10 +1354,10 @@ export function createNpcBus({ skinPath = null, ledColor = 0x2fb6ff } = {}) {
   seatBack.position.set(0.65, 1.89, 4.25);
   a.root.add(seatBack);
   const npcWheelGroup = new THREE.Group();
-  npcWheelGroup.position.set(0.65, 2.35, 5.02);
+  npcWheelGroup.position.set(0.65, 2.24, 4.78);
+  npcWheelGroup.rotation.x = 0.35;   // đồng bộ nghiêng 20° với vô-lăng xe người chơi
   const npcWheel = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.04, 8, 18), new THREE.MeshStandardMaterial({ color: 0x1a1a22, roughness: 0.9 }));
-  npcWheel.rotation.x = Math.PI / 2 - 0.2;
-  npcWheelGroup.add(npcWheel);
+  npcWheelGroup.add(npcWheel);      // torus mặt XY; group đã nghiêng (bản cũ để π/2−0.2 → nằm ngang)
   const npcHub = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.03, 10), new THREE.MeshStandardMaterial({ color: 0x888c96, roughness: 0.35, metalness: 0.8 }));
   npcHub.rotation.x = Math.PI / 2;
   npcHub.position.z = 0.01;

@@ -36,39 +36,17 @@ export const MOON_PARAMS = {
 };
 
 // Do sang cua anh sang trang ban dem (chi dung cho khung gio 18h-5h).
-// Truoc do chi la 0.05 + 0.25*sin(moonPhase) = 0.05..0.30, nhung luc do vi tri trang bi dat
-// DUOI DAT (xem shadows.js updateMoonDirection) nen tri gia nay khong he co tac dung gi.
-// Sau khi sua vi tri, do thuc te tren than xe (RGB/255, khong co ambient):
-//   moon 0.3 -> [11,13,14] | moon 1 -> [13,15,17] | moon 3 -> [20,23,25] |
-//   moon 5 -> [28,32,34]  | moon 8 -> [41,47,49]
-// Can >=3 moi thay ro duoc livery. Sky dem la #2e2f3c ~ [46,47,60], nen gioi han tren 7.0
-// (~[37,42,44]) van giu duoc than xe toi hon troi -> van giu cam giac ban dem.
-// Hien tai 3.0..7.0 (do tren ban do trang luc outputColorSpace con SAI la LinearSRGB,
-// moi tone bi lam toi nen can tang man). Sau khi sua outputColorSpace thanh SRGB
-// (xem main.js), sweep luc 02:30 cho thay:
-//   amb .30 + moon 3.0 -> ground [52,53,54]  (sang hon sky [46,47,60] -> sai)
-//   amb .25 + moon 2.0 -> ground [38,39,40]  (duoi sky -> dung)
-//   amb .25 + moon 4.0 -> ~[46] (trang day van nhan, du sang hon trang moi)
-// Anh trang dem. Truoc do la 2.0/4.0 -> o luc 22:30 (moon 2) ben xe do duoc
-// [47,59,68], khong doc duoc livery (yeu cau goc BUG 1: "dem toi khong thay skin xe").
-// Sweep tren bbox xe (xem comment _ambientIntensity): moon 4 -> bus [76,88,96].
-// 4.0/6.0 = bus ~[76..89], ground ~[78..94] van duoi ref ngay [103,118,119].
-// Day cung la gia tri dung cho transition 17-18h va 5-6h (lerp 0<->MOON_NIGHT_MAX),
-// nen tang no cung lam hoang hon/dawn lienvong voi dem (truoc do 17:59 moon=4 ->
-// 18:00 moon=2..4 co nhay xuong).
-// SWEEP THUC TE 00:36 (canh 3 nguon: dat ben hong khong bi den pha / vung den
-// pha tren duong / be mat xe), do trung binh RGB/255, doi chieu ngay 12:30:
-//   amb .27 / moon 4-6 / exp .44 -> datR 66  pool 133 bus 59  (dem = 0.70 ngay -> "sang nhu ngay")
-//   amb .18 / moon 1.6-2.6/.34   -> datR 40  pool 104 bus 25  (dem = 0.43 ngay)  <- CHON
-//   amb .14 / moon 1.2-2.0/.30   -> datR 33  pool  95 bus 18  (dem = 0.35 ngay -> qua toi, xe bien mat)
-//   NGAY 12:30 (tham chieu):     -> datR  94 pool 168 bus 89
-// 4.0/6.0 truoc do cho dem = 0.70 cua ngay — that ra la BAN NGAY dang mac ao dem.
-// 1.6/2.6 van du de: pool den pha 104 GAP 2.6 LAN datR 40 nen duong van ro rang
-// de lai, bus 25/255 van co silhouette + emissive den sau/den cabin.
-// Cung la endpoint cua transition 17-18h va 5-6h (lerp 0<->MOON_NIGHT_MAX) nen
-// hoang hon/binh minh van lienvong (17:59 moon -> 2.6 = 18:00 moon).
-export const MOON_NIGHT_MIN = 1.6;
-export const MOON_NIGHT_MAX = 2.6;
+// YÊU CẦU (22/11): "lúc tối là tối thui, chỉ có đèn đường và đèn xe là nguồn sáng;
+// vẫn thấy ÍT ÍT màu, không phải mesh nào cũng đen đặc".
+// Trang chi la dia sang tren troi + anh mong du nhan silhouette — KHONG con la
+// nguon sang chinh nhu ban cu 1.6..2.6 (dem sang nhu co den pha san).
+// Gia tri cu 1.6..2.6 + ambient .27 + exposure .44 cho dem = 0.70 cua ngay
+// (do thuc te luc 00:36: datR 66 so voi 94 luc trua) -> THAT LA BAN NGAY MAC AO DEM.
+// Gio amb 0.035 + moon 0.12..0.22 + exp 0.30 -> dat ~0.2 cua ngay, van co mau.
+// Endpoint nay dung cho ca transition 17-18h va 5-6h (lerp 0<->MOON_NIGHT_MAX)
+// nen hoang hon/binh minh lienvong, khong nhay luc 18:00.
+export const MOON_NIGHT_MIN = 0.12;
+export const MOON_NIGHT_MAX = 0.22;
 
 export class TimeSystem {
     constructor(options = {}) {
@@ -197,7 +175,7 @@ export class TimeSystem {
         this._sunPosition.copy(this._sunDirection).multiplyScalar(SUN_PARAMS.distance);
 
         // Mặt trăng
-        this._updateMoon(altitude, sunAz);
+        this._updateMoon(sunAz);
 
         // Lighting, sky, exposure theo giờ game (không dùng altitude)
         this._computeLighting();
@@ -239,8 +217,10 @@ export class TimeSystem {
         // Sáng sớm: 5-6h
         if (hours >= 5 && hours < 6) {
             const t = (hours - 5) / 1; // 0->1
-            this._sunIntensity = lerp(0.1, 0.8, t);
-            this._ambientIntensity = lerp(0.18, 0.6, t);  // endpoint = DEM (0.18), khong nhay luc 06:00
+            // Endpoint KHỚP đêm (0 sun / 0.035 amb) và ngày (1 / 0.7) —
+            // trước đây 0.1/0.18/0.6 làm giờ 05:00 và 06:00 nhảy ánh sáng.
+            this._sunIntensity = lerp(0, 1, t);
+            this._ambientIntensity = lerp(0.035, 0.7, t);
             this._moonIntensity = lerp(MOON_NIGHT_MAX, 0, t);
             this._sunColor.setHSL(lerp(0.02, 0.08, t), lerp(0.7, 0.15, t), lerp(0.5, 0.9, t));
         }
@@ -254,39 +234,24 @@ export class TimeSystem {
         // Hoàng hôn: 17-18h
         else if (hours >= 17 && hours < 18) {
             const t = (hours - 17) / 1; // 0->1
-            this._sunIntensity = lerp(0.8, 0.05, t);
-            this._ambientIntensity = lerp(0.5, 0.18, t);  // endpoint = DEM (0.18), khong nhay luc 18:00
-            // LIEN MAO 18:00: dusk ket thuc tai 0.18 = ambient cua dem (0.18). Cung luc
-            // 17:59 moon = MOON_NIGHT_MAX = 2.6 va 18:00 dem la 1.6..2.6 -> khong nhay.
+            // Liền mạch với ngày (17:00: sun 1 / amb 0.7) và đêm
+            // (18:00: sun 0 / amb 0.035 / moon ~0.2). Hoàng hôn vẫn có nắng
+            // xiên dần nhưng KHÔNG giữ ambient sáng đến 18:00.
+            this._sunIntensity = lerp(1, 0, t);
+            this._ambientIntensity = lerp(0.7, 0.035, t);
             this._moonIntensity = lerp(0, MOON_NIGHT_MAX, t);
             this._sunColor.setHSL(lerp(0.08, 0.02, t), lerp(0.1, 0.7, t), lerp(0.98, 0.5, t));
         }
         // Tối đen: 18-5h
         else {
             this._sunIntensity = 0;
-            // SWEEP LAI (yeu cau: "dem van toi nhu chi co trang" -> khong thay duoc skin xe).
-            // Lan truoc chon 0.30 roi ha 0.25 chi de EP ground < sky. Do la sai ly thuyet:
-            // sky o day la `scene.background` (#2e2f3c, khong qua tonemap -> do duoc byte-exact)
-            // va anh sang trang/sang ambient KHONG anh hue den no -> hai thu DOC LAP.
-            // Tang anh trang thi xe/toi sang, sky van [46,47,60] (da do xac nhan).
-            // Do lai luc 22:30 tren BUNG XE (bbox projected), khong phai ground nua:
-            //   amb .25/moon 2.0/exp .38 -> bus [47,59,68]   ground [41,42,43]   QUA TOI
-            //   amb .27/moon 4.0/exp .44 -> bus [76,88,96]   ground [78,80,80]   CHON
-            //   amb .28/moon 5.0/exp .46 -> bus [89,100,108] ground [94,96,95]
-            //   amb .30/moon 6.0/exp .48 -> bus [100,112,119] ground [109,110,110] QUA SANG
-            //   ref NGAY (12:30):         ground [103,118,119] building [125,149,151]
-            // SWEEP MOI (BUG 4: "dem van sang nhu ngay", do luc 00:36, xem MOON_NIGHT_MIN):
-            // truoc do amb .27/4-6/.44 cho dat ben hong = 66/255 = 0.70 cua ngay (94)
-            // -> dem khac ngay qua it. Chon .18 + moon 1.6-2.6 + exp .34 cho 40/255 = 0.43.
-            // Dat 0.16/.32 -> 33 (0.35) va 0.11/.27 -> 28: qua toi, mat chi tiet quanh xe.
-            // Xe bus do duoc 25/255 (silhouette ro + den sau/den cabin emissive van thay),
-            // vung den pha tren duong 104/255 GAP 2.6 lan dat xung quanh -> van LAI DUOC.
-            this._ambientIntensity = 0.15;  // Reduced from 0.18 for darker night
-            // BUG FIX: truoc do chi la `0.05 + 0.25 * sin(moonPhase)` -> 0.05..0.30. Vi tri
-            // trang truoc do bi dat DUOI DAT (xem shadows.js updateMoonDirection) nen tri gia
-            // nay khong he co tac dung. Sau khi sua vi tri, do sang thuc te tren xe bus do duoc:
-            //   moon 0.3 -> [11,13,14] | moon 3 -> [20,23,25] | moon 8 -> [41,47,49] (RGB/255)
-            // Can 2..5 moi thay ro duoc livery xe; 0.30 thi van la mot chiec xe den thui.
+            // YÊU CẦU 22/11: "tối thui, chỉ có đèn đường và đèn xe là nguồn sáng;
+            // vẫn thấy ít ít màu". Ambient chỉ là ánh xén để material giữ chút màu —
+            // 0.035 đủ thấy livery mờ, không biến cabin thành hố đen (0 -> đen đặc).
+            // Đèn đường/đèn xe mới là nguồn sáng thật (moon 0.12..0.22 chỉ nhận silhouette).
+            // Các bản cũ .27/4-6/.44 cho đêm = 0.70 ngày -> "bán ngày mặc áo đêm".
+            this._ambientIntensity = 0.035;
+            // Trăng 18h-6h: cường độ 0.12..0.22, chỉ đủ nhận silhouette.
             this._moonIntensity = MOON_NIGHT_MIN + (MOON_NIGHT_MAX - MOON_NIGHT_MIN) * Math.max(0, Math.sin(this._moonPhaseAngle));
             this._sunColor.setHex(0xFF3300);
             this._moonColor.setHSL(0.58, 0.15, 0.85);
@@ -302,12 +267,6 @@ export class TimeSystem {
         const duskT = smoothstep(17, 18, hours);
 
         // Phase weights MUST be a partition of unity (sum === 1).
-        // BUG FIX: the old `nightT = 1 - max(dawnT, dayT, duskT)` was broken because
-        // smoothstep saturates at 1 for every hour past its edge — so after 18h all three
-        // of dawnT/dayT/duskT were 1, nightT was 0, the weights summed to 3, and the blended
-        // HSL lightness overflowed past 1.0 -> clamp -> WHITE sky + WHITE fog.
-        // (Live proof before the fix: fogColor #ffffff, fogNear 680, fogFar 4400.)
-        //
         // Timeline: night [0,5) | night->dawn [5,6) | day [6,17)
         //           | day->dusk [17,18) | dusk->night [18,19) | night [19,24)
         let wNight, wDawn, wDay, wDusk;
@@ -330,12 +289,12 @@ export class TimeSystem {
         // Dawn (5-6h): gradient cam/vàng → xanh
         const dawnSkyH = lerp(0.04, 0.55, dawnT);
         const dawnSkyS = lerp(0.6, 0.6, dawnT);
-        const dawnSkyL = lerp(0.5, 0.65, dawnT);  // Reduced lightness from 0.7 to 0.65
+        const dawnSkyL = lerp(0.006, 0.65, dawnT);  // đầu dải = đêm đen, không nhảy lúc 05:00
         const dawnFogH = lerp(0.05, 0.55, dawnT);
         const dawnFogS = lerp(0.5, 0.4, dawnT);
-        const dawnFogL = lerp(0.5, 0.75, dawnT);
-        const dawnFogNear = lerp(150, 300, dawnT);
-        const dawnFogFar = lerp(800, 2000, dawnT);
+        const dawnFogL = lerp(0.01, 0.75, dawnT);
+        const dawnFogNear = lerp(60, 300, dawnT);
+        const dawnFogFar = lerp(500, 2000, dawnT);
         const dawnHaze = lerp(0.0004, 0.00015, dawnT);
         
         // Day (6-17h): xanh dương rõ - REDUCED LIGHTNESS
@@ -346,17 +305,19 @@ export class TimeSystem {
         // Dusk (17-18h): gradient cam/đỏ → xanh đen
         const duskSkyH = lerp(0.04, 0.62, duskT);
         const duskSkyS = lerp(0.6, 0.35, duskT);
-        const duskSkyL = lerp(0.5, 0.2, duskT);
+        const duskSkyL = lerp(0.65, 0.006, duskT);  // đầu = trời ngày, cuối = trời đêm đen
         const duskFogH = lerp(0.05, 0.62, duskT);
         const duskFogS = lerp(0.5, 0.3, duskT);
-        const duskFogL = lerp(0.5, 0.2, duskT);
-        const duskFogNear = lerp(300, 80, duskT);
-        const duskFogFar = lerp(2000, 400, duskT);
+        const duskFogL = lerp(0.8, 0.01, duskT);
+        const duskFogNear = lerp(300, 60, duskT);
+        const duskFogFar = lerp(2000, 500, duskT);
         const duskHaze = lerp(0.00015, 0.0008, duskT);
         
         // Night (18-5h): navy đen, sao, trăng
-        const nightSkyH = 0.72, nightSkyS = 0.45, nightSkyL = 0.06 + moonFactor * 0.06;  // deep blue-purple night sky
-        const nightFogH = 0.72, nightFogS = 0.35, nightFogL = 0.08 + moonFactor * 0.06;  // matching fog
+        // Trời đêm đen thui như ngoài đời: lightness ~0.005 (gần #010104).
+        // Sắc xanh tím chỉ còn ở mức rất nhạt để không thành khối đen tuyền.
+        const nightSkyH = 0.72, nightSkyS = 0.45, nightSkyL = 0.003 + moonFactor * 0.004;
+        const nightFogH = 0.72, nightFogS = 0.35, nightFogL = 0.004 + moonFactor * 0.005;
         const nightFogNear = 60, nightFogFar = 500, nightHaze = 0.0008;  // closer fog for night
 
         // Blend all periods smoothly
@@ -383,24 +344,22 @@ export class TimeSystem {
         
         if (hours >= 5 && hours < 6) {
             const t = (hours - 5) / 1;
-            return lerp(0.34, 1.0, t);  // endpoint = DEM (0.34), khong nhay luc 06:00
+            return lerp(0.30, 1.0, t);  // endpoint = DEM (0.30), khong nhay luc 06:00
         }
         else if (hours >= 6 && hours < 17) {
             return 1.0;
         }
         else if (hours >= 17 && hours < 18) {
             const t = (hours - 17) / 1;
-            // endpoint = DEM (0.34): ca hai ben 18:00 deu = 0.34 nen lienvong.
-            return lerp(1.0, 0.34, t);
+            // endpoint = DEM (0.30): cả hai bên 18:00 đều = 0.30 nên liền mạch.
+            return lerp(1.0, 0.30, t);
         }
         else {
-            // Dem: SWEEP 00:36 (xem MOON_NIGHT_MIN). Truoc do 0.44 + moon*0.05 cho
-            // dem = 0.70 cua ngay -> "sang nhu ban ngay". Ha xuong 0.34 + moon*0.03:
-            //   exp .44 -> datR 66 | exp .34 -> datR 40 | exp .30 -> 33 | exp .27 -> 28
-            // 0.34 giu vung den pha 104/255 (duong truoc mat van ro) va khong day
-            // geometry vuot ref ngay. moonFactor*0.03 (truoc 0.05) de trang tron
-            // van nhe hon ngay nhu truoc.
-            return 0.30 + moonFactor * 0.02;  // Reduced from 0.34 for darker night
+            // Đêm: exposure 0.30 (+ tối đa 0.02 theo pha trăng) — thấp hơn hẳn
+            // bản cũ 0.44 từng cho đêm = 0.70 ngày. Đèn đường/đèn xe tự lo phần sáng;
+            // trời thì đã bị sky shader ép gần đen bởi uNightFactor.
+            // Đầu 5-6h và 17-18h cũng lerp về 0.30 nên không nhảy ở 18:00.
+            return 0.30 + moonFactor * 0.02;
         }
     }
 

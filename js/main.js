@@ -18,7 +18,7 @@ import { getTravelDirection, setTravelDirection, getMoney, addMoney, FARE_PER_PA
 import { formatMoney } from "./utils.js";
 import { createCSGTManager } from "./csgt.js";
 import { CollisionSystem } from "./collisionSystem.js";
-import { updatePhysicsState, PHYSICS_STATE, registerImpact, computeYawRate, updateRoadRoughness, applySurfaceFromSegment, computeVehicleMass, computeVehicleForces, rectContactMTV, computeEnginePower } from "./physics_step.js"; // vật lý cảm giác (roll/pitch/heave + nhíp bánh + RPM)
+import { updatePhysicsState, PHYSICS_STATE, registerImpact, computeYawRate, updateRoadRoughness, applySurfaceFromSegment, computeVehicleMass, computeVehicleForces, rectContactMTV, computeEnginePower, configureVehicleGeometry, selectGear } from "./physics_step.js"; // vật lý cảm giác (roll/pitch/heave + nhíp bánh + RPM)
 
 let renderer, scene, camera, canvas, map, lighting, npc, bus, interior, passengerSystem, trafficManager, trafficDebug, ui, cameraSystem;
 let travelClock = null;   // ước lượng giờ game từ lái xe thật (js/TravelClock.js)
@@ -144,8 +144,11 @@ let wheelSpinAngle = 0;   // rad — góc quay cộng dồn của bánh (theo qu
 
 const KEY_BY_NAME = new Map();
 const LEGACY_BY_KEYCODE = new Map();
-const keysPressed = new Map();   // code -> timestamp keydown gần nhất (chống phím kẹt)
-const steerReleaseAt = new Map(); // A/D: debounce nhả phím (tránh ghost từ IME), hết hạn thì xóa khỏi keysPressed
+const keysPressed = new Map();
+const steerReleaseAt = new Map();
+const physicalSteerKeys = new Set();
+const imeSteerKeys = new Set();
+const imeSteerRefreshUntil = new Map();
 
 
 let keyDiagOn = false;
@@ -172,14 +175,13 @@ function keyDiagDump() {
 }
 
 const KEY_HOLD_TIMEOUT_MS = 5000;
-const STEER_KEY_HOLD_TIMEOUT_MS = 800; // Thời gian timeout ngắn hơn cho phím lái (A/D) để tránh "ghost steering" do IME nuốt keyup
+// A/D chỉ tự hết hạn khi IME nuốt keyup VÀ phím không còn auto-repeat.
+// 800ms cũ (theo performance.now()) cắt lái giữa cua: Windows chỉ repeat phím
+// bấm SAU CÙNG, nên đang giữ A rồi bấm W là A im luôn -> 0.8s sau tự thẳng.
+// 3000ms đủ cho thao tác giữ A+W thực tế mà vẫn dọn ghost trong 3s.
+const STEER_KEY_HOLD_TIMEOUT_MS = 3000;
 const STEER_KEY_MIN_HOLD_MS = 60;
-// Chống phím kẹt khi IME nuốt keyup. 5000ms an toàn cho cả Windows repeat chậm nhất
-// (delay <= 1s + interval <= 0.5s) nên phím đang giữ thật không bị nhả nhầm.
-//
-// PHÍM LÁI A/D dùng timeout RIÊNG (STEER_KEY_HOLD_TIMEOUT_MS = 800ms) ngắn hơn để tránh "ghost steering"
-// do IME nuốt keyup. Chỉ keydown CỦA CHÚNG mới làm mới timestamp (ga/thắng KHÔNG được refresh giùm).
-// Nhờ vậy phím lái "ma" luôn tự hết hạn trong 0.8s kể từ lần bấm cuối, tránh xe tự quẹo khi ga.
+const IME_STEER_REFRESH_MS = 15000;
 
 function buildInputKeyMaps() {
     // a..z / A..Z -> KeyA..KeyZ
@@ -306,18 +308,31 @@ function isEditableTarget(target) {
 function pruneStaleKeys(now) {
     if (!keysPressed.size) return;
     for (const [code, last] of keysPressed) {
-        const releaseAt = steerReleaseAt.get(code);
-        if (releaseAt !== undefined && now >= releaseAt) {
-            // Hết thời gian debounce nhả phím lái (A/D): phải thực sự thả phím,
-            // nếu không keysPressed giữ mãi -> ghost/stuck steering.
+        if (imeSteerKeys.has(code) && now >= (imeSteerRefreshUntil.get(code) || 0)) {
             keysPressed.delete(code);
             steerReleaseAt.delete(code);
+            physicalSteerKeys.delete(code);
+            imeSteerKeys.delete(code);
+            imeSteerRefreshUntil.delete(code);
             continue;
         }
-        const timeout = (code === "KeyA" || code === "KeyD") ? STEER_KEY_HOLD_TIMEOUT_MS : KEY_HOLD_TIMEOUT_MS;
+        const releaseAt = steerReleaseAt.get(code);
+        if (releaseAt !== undefined && now >= releaseAt) {
+            keysPressed.delete(code);
+            steerReleaseAt.delete(code);
+            physicalSteerKeys.delete(code);
+            imeSteerKeys.delete(code);
+            imeSteerRefreshUntil.delete(code);
+            continue;
+        }
+        const timeout = imeSteerKeys.has(code) ? IME_STEER_REFRESH_MS
+            : (code === "KeyA" || code === "KeyD") ? STEER_KEY_HOLD_TIMEOUT_MS : KEY_HOLD_TIMEOUT_MS;
         if (now - last > timeout) {
             keysPressed.delete(code);
             steerReleaseAt.delete(code);
+            physicalSteerKeys.delete(code);
+            imeSteerKeys.delete(code);
+            imeSteerRefreshUntil.delete(code);
         }
     }
 }
@@ -325,6 +340,9 @@ function pruneStaleKeys(now) {
 function clearPressedKeys() {
     keysPressed.clear();
     steerReleaseAt.clear();
+    physicalSteerKeys.clear();
+    imeSteerKeys.clear();
+    imeSteerRefreshUntil.clear();
 }
 
 // Thu vi tri TAT CA cot den duong trong scene (dung cho street lights pool
@@ -373,47 +391,9 @@ const _tmpNormal = new THREE.Vector3();
 let _lastValidGroundY = 10.0;
 
 // === HỘP SỐ TỰ ĐỘNG (PHASE 1) ===
-// Giữ ĐÚNG thông số với physics_step.js (GEAR_RATIOS_PH2, FINAL_DRIVE,
-// WHEEL_RADIUS) — kiểm bằng _tmpbench test gearbox. Số chọn theo tốc độ với
-// vùng trễ ±GEAR_HYSTERESIS_KMH để không nhảy số liên tục.
-const GEAR_RATIOS_MAIN = [0, 3.80, 2.40, 1.50, 1.00, 0.75];
-const FINAL_DRIVE_MAIN = 4.10;
-const WHEEL_RADIUS_MAIN = 0.525;
-const GEAR_MAX_RPM_MAIN = 4500;
-const GEAR_UPSHIFT_RPM = 3400;
-const GEAR_DOWNSHIFT_RPM = 1500;
-const GEAR_HYSTERESIS_KMH = 2;
+// selectGear/rpmForGear/gearSpeedForRpm + 3 hằng ngưỡng đã chuyển sang
+// physics_step.js để NPC và player DÙNG CHUNG một nguồn (Phase 7).
 const GEAR_SHIFT_TIME = 0.45;   // s — hộp số tự động xe khách (có ly hợp)
-
-/** RPM ứng với tốc độ + cấp số (bánh ↔ động cơ, hộp số cơ khí). */
-function rpmForGear(speedMs, gear) {
-    const ratio = GEAR_RATIOS_MAIN[gear] || 1;
-    return (Math.abs(speedMs) / WHEEL_RADIUS_MAIN) * ratio * FINAL_DRIVE_MAIN * (60 / (2 * Math.PI));
-}
-
-/** Tốc độ (km/h) mà RPM ứng với `rpm` ở `gear`. */
-function gearSpeedForRpm(rpm, gear) {
-    return (rpm * 2 * Math.PI / 60) * WHEEL_RADIUS_MAIN / ((GEAR_RATIOS_MAIN[gear] || 1) * FINAL_DRIVE_MAIN) * 3.6;
-}
-
-/**
- * Chọn cấp số theo tốc độ, vùng trễ quanh ngưỡng lên/xuống số:
- *   lên số khi vượt (GEAR_UPSHIFT_RPM + trễ) ở số hiện tại,
- *   về số khi tụt dưới (GEAR_DOWNSHIFT_RPM − trễ).
- * Chặn cứng vòng tua tối đa (số có trần tốc độ lý thuyết).
- */
-function selectGear(speedKmh, currentGear) {
-    const v = Math.abs(speedKmh || 0);
-    if (v < 0.5) return 1;
-    let gear = Math.min(5, Math.max(1, currentGear || 1));
-    const upKmh = gearSpeedForRpm(GEAR_UPSHIFT_RPM, gear) + GEAR_HYSTERESIS_KMH;
-    if (gear < 5 && v > upKmh) gear++;
-    const downKmh = gearSpeedForRpm(GEAR_DOWNSHIFT_RPM, gear) - GEAR_HYSTERESIS_KMH;
-    if (gear > 1 && v < downKmh) gear--;
-    // Không cấp số nào vượt vòng tua tối đa (khi maxSpeed cho phép số 5 vẫn dư phòng)
-    while (gear > 1 && rpmForGear(v / 3.6, gear) > GEAR_MAX_RPM_MAIN) gear--;
-    return gear;
-}
 
 function updateGearbox(phys) {
     if (phys.gearShiftTimer > 0) {
@@ -475,7 +455,6 @@ let _terrainNullWarned = false;
 
 function updateVehiclePhysics(dt) {
     if (!bus?.group) return;
-    pruneStaleKeys(performance.now());
     const phys = vehiclePhysics;
     const isAccel = keysPressed.has("KeyW") || mobileInput.accel > 0;
     const isBrake = keysPressed.has("KeyS") || mobileInput.brake > 0;
@@ -771,12 +750,12 @@ function updateVehiclePhysics(dt) {
 function rescuePlayerToNearestRoad() {
     if (!bus?.group || !map?.getRoadGraph) return;
     const g = map.getRoadGraph();
-    if (!g || !g.segmentsNear) { ui?.toast("✕ Cứu hộ: road graph chưa sẵn sàng!", true); return; }
+    if (!g || !g.segmentsNear) { ui?.toast("[icon:x] Cứu hộ: road graph chưa sẵn sàng!", true); return; }
     const px = bus.group.position.x, pz = bus.group.position.z;
 
     // Quét đoạn trong 400m; loại cầu/hầm/ngõ (nền cao độ khác / hẹp chuyên dụng)
     const segs = g.segmentsNear(px, pz, 400, (s) => !s.bridge && s.class !== "TUNNEL" && s.class !== "ALLEY");
-    if (!segs.length) { ui?.toast("✕ Cứu hộ: không tìm thấy đường hợp lệ trong 400m", true); return; }
+    if (!segs.length) { ui?.toast("[icon:x] Cứu hộ: không tìm thấy đường hợp lệ trong 400m", true); return; }
 
     // Ứng viên = điểm CHIẾU VỤT gần nhất trên mỗi đoạn (không phải tâm — để xe
     // luôn rơi về mặt đường đang chảy qua đúng vị trí người chơi).
@@ -818,7 +797,7 @@ function rescuePlayerToNearestRoad() {
         chosen = c;
         break;
     }
-    if (!chosen) { ui?.toast("✕ Cứu hộ: mọi chỗ gần nhất đều có vật cản, thử lùi lại", true); return; }
+    if (!chosen) { ui?.toast("[icon:x] Cứu hộ: mọi chỗ gần nhất đều có vật cản, thử lùi lại", true); return; }
 
     // Xoay theo đoạn — chọn chiều gần với hướng xe hiện tại (giữ cảm giác lái)
     const cur = bus.group.rotation.y;
@@ -832,7 +811,7 @@ function rescuePlayerToNearestRoad() {
     vehiclePhysics.speed = 0;
     playerStuckT = 0;
     if (window.collisionSystem) window.collisionSystem.update(playerColId, chosen.x, chosen.z, chosen.y);
-    ui?.toast("🔧 Cứu hộ: đã đưa xe về đường hợp lệ gần nhất");
+    ui?.toast("[icon:wrench] Cứu hộ: đã đưa xe về đường hợp lệ gần nhất");
 }
 
 let inputHooked = false;
@@ -881,49 +860,31 @@ function initInput() {
 
         const _physCode = (typeof e.code === "string" && e.code.length > 0 && e.code !== "Unidentified") ? e.code : null;
 
-        // BUG UniKey VI — SỬA LẠI GUARD "BUG 7/BUG 8" cho đúng:
-        // ----------------------------------------------------------------
-        // TRIỆU CHỨNG MỚI: bật UniKey chế độ tiếng Việt -> A/D KHÔNG đánh lái
-        // (kể cả bấm một lần); chuyển EN thì lái được lại.
-        // NGUYÊN NHÂN: hai guard BUG-7/BUG-8 cũ chặn MỌI keydown A/D không có
-        // chứng cứ vật lý (e.code / legacy VK). Nhưng UniKey VI bơm sự kiện theo
-        // KÝ TỰ ("đ", "a", "à"...) với e.code rỗng — đúng dạng bị chặn — trong
-        // khi resolveEventCode vẫn suy ra "KeyA"/"KeyD" từ bộ chữ VI_FAMILIES.
-        // Kết quả: phím lái không bao giờ được set ở chế độ VI = mất lái hoàn toàn.
-        // CÁCH SỬA (giữ anti-ghost của BUG 7/8, chỉ mở đúng chỗ cần mở):
-        //   • LẦN BẤM MỚI (phím chưa đang giữ): CHẤP NHẬN kể cả bằng ký tự IME.
-        //     Rủi ro "junk revival" còn lại bị chặn bởi auto-expire 800ms của
-        //     STEER_KEY_HOLD_TIMEOUT_MS (pruneStaleKeys): chấp nhận sai chỉ tốn
-        //     tối đa 0.8s quẹo nhầm — rẻ hơn nhiều so với mất lái hẳn chế độ VI.
-        //   • REFRESH khi phím ĐANG GIỮ (keysPressed.has): 2 đường hợp lệ —
-        //     (a) chứng cứ vật lý (e.code / legacy VK) như trước,
-        //     (b) e.repeat=true: auto-repeat của phím đang giữ bị IME nuốt code
-        //         vẫn phải làm mới timestamp, nếu không giữ A/D ở chế độ VI sẽ
-        //         chết sau 0.8s dù tay vẫn giữ phím.
-        //     Không thuộc cả hai -> từ chối (phím ma không được sống thêm).
-        // keyup vẫn dùng bộ resolve chung + xóa A/D khi IME nuốt keyup (giữ nguyên).
+        const hasPhysicalEvidence = !!(_physCode || legacyKeyCodeToCode(e));
         if (code === "KeyA" || code === "KeyD") {
-            const hasEvidence = _physCode || legacyKeyCodeToCode(e);
-            if (keysPressed.has(code) && !steerReleaseAt.has(code) && !hasEvidence && !e.repeat) {
-                return;
+            if (keysPressed.has(code) && !steerReleaseAt.has(code) && !hasPhysicalEvidence && !e.repeat) return;
+            if (hasPhysicalEvidence) {
+                physicalSteerKeys.add(code);
+                imeSteerKeys.delete(code);
+                imeSteerRefreshUntil.delete(code);
+            } else {
+                imeSteerKeys.add(code);
+                imeSteerRefreshUntil.set(code, _now + IME_STEER_REFRESH_MS);
             }
-            // lần bấm mới không chứng cứ (ký tự IME) đi tiếp tới keysPressed.set
         }
 
         steerReleaseAt.delete(code);
         keysPressed.set(code, _now);
-        // Windows chỉ auto-repeat phím được nhấn SAU CÙNG. Giữ Shift+W rồi bấm A/D
-        // để rẽ -> Shift+W ngừng repeat -> pruneStaleKeys xóa -> xe giảm tốc oan.
-        // Fix: refresh timestamp TẤT CẢ phím đang giữ khi có keydown bất kỳ.
-        //
-        // TRỪ A/D (xem KEY_HOLD_TIMEOUT_MS): phím lái chỉ sống bằng keydown CỦA CHÚNG.
-        // Nếu ga/thắng refresh giùm thì khi keyup của A bị IME/jank nuốt (event
-        // không resolve được -> không xóa nổi), phím lái ma đó sẽ không bao giờ hết
-        // hạn trong lúc giữ ga -> xe tự quẹo trái, mà A vẫn đứng đầu if/else nên
-        // bấm D vô tác dụng. Vẫn refresh W/S/Shift/Alt/Space để không tái mở bug cũ
-        // "giữ Shift+W rồi lái là xe giảm tốc".
+        if (imeSteerKeys.has(code)) imeSteerRefreshUntil.set(code, _now + IME_STEER_REFRESH_MS);
         for (const k of keysPressed.keys()) {
-            if (k === "KeyA" || k === "KeyD") continue;
+            if (k === "KeyA" || k === "KeyD") {
+                // Giữ A/D sống khi phím KHÁC được bấm — kể cả phím đó bị IME
+                // nuốt code ( UniKey xuất "ư" cho W ). Chỉ bỏ qua nếu A/D
+                // không còn bằng chứng vật lý/IME → đúng ghost cần dọn.
+                if (physicalSteerKeys.has(k) ||
+                    (imeSteerKeys.has(k) && _now < (imeSteerRefreshUntil.get(k) || 0))) keysPressed.set(k, _now);
+                continue;
+            }
             keysPressed.set(k, _now);
         }
         // LÁI: phím vừa bấm giành quyền, xóa phím đối xứng -> A và D không bao giờ
@@ -933,30 +894,40 @@ function initInput() {
         if (code === "KeyA") {
             keysPressed.delete("KeyD");
             steerReleaseAt.delete("KeyD");
+            physicalSteerKeys.delete("KeyD");
+            imeSteerKeys.delete("KeyD");
+            imeSteerRefreshUntil.delete("KeyD");
         } else if (code === "KeyD") {
             keysPressed.delete("KeyA");
             steerReleaseAt.delete("KeyA");
+            physicalSteerKeys.delete("KeyA");
+            imeSteerKeys.delete("KeyA");
+            imeSteerRefreshUntil.delete("KeyA");
         }
-        
-        // Additional safety: if both A and D are somehow pressed, cancel both (neutral)
         if (keysPressed.has("KeyA") && keysPressed.has("KeyD")) {
             keysPressed.delete("KeyA");
             keysPressed.delete("KeyD");
             steerReleaseAt.delete("KeyA");
             steerReleaseAt.delete("KeyD");
+            physicalSteerKeys.delete("KeyA");
+            physicalSteerKeys.delete("KeyD");
+            imeSteerKeys.delete("KeyA");
+            imeSteerKeys.delete("KeyD");
+            imeSteerRefreshUntil.delete("KeyA");
+            imeSteerRefreshUntil.delete("KeyD");
         }
         // Shift/Alt không auto-repeat khi phím khác được nhấn -> sync từ state vật lý.
-        if (!composing) {
-            if (e.shiftKey) {
-                if (!keysPressed.has("ShiftLeft") && !keysPressed.has("ShiftRight")) keysPressed.set("ShiftLeft", _now);
-            } else if (!code.startsWith("Shift")) {
-                keysPressed.delete("ShiftLeft"); keysPressed.delete("ShiftRight");
-            }
-            if (e.altKey) {
-                if (!keysPressed.has("AltLeft") && !keysPressed.has("AltRight")) keysPressed.set("AltLeft", _now);
-            } else if (!code.startsWith("Alt")) {
-                keysPressed.delete("AltLeft"); keysPressed.delete("AltRight");
-            }
+        // e.shiftKey/e.altKey vẫn đúng khi IME đang gộp chữ, nên KHÔNG bỏ qua
+        // block này lúc composing — nếu không Shift+W+A mất boost ngay khi bật UniKey.
+        if (e.shiftKey) {
+            if (!keysPressed.has("ShiftLeft") && !keysPressed.has("ShiftRight")) keysPressed.set("ShiftLeft", _now);
+        } else if (!code.startsWith("Shift")) {
+            keysPressed.delete("ShiftLeft"); keysPressed.delete("ShiftRight");
+        }
+        if (e.altKey) {
+            if (!keysPressed.has("AltLeft") && !keysPressed.has("AltRight")) keysPressed.set("AltLeft", _now);
+        } else if (!code.startsWith("Alt")) {
+            keysPressed.delete("AltLeft"); keysPressed.delete("AltRight");
         }
         if (!composing && ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "AltLeft", "AltRight"].includes(code)) e.preventDefault();
         if (e.repeat) return;   // phim tac vu chi xu ly khi VUA bam, khong khi nhan giu
@@ -968,31 +939,38 @@ function initInput() {
         }
 
         if (code === "KeyF" && performance.now() - lastFPressTime > 150 && bus) {
+            // F = công tắc đèn pha + đèn xe (đuôi). LED nội thất đi riêng qua L.
             lastFPressTime = performance.now();
             bus.areLightsOn = !bus.areLightsOn;
             bus.setHeadlights?.(bus.areLightsOn);
             bus.setTaillights?.(bus.areLightsOn);
-            ui?.toast(`💡 Đèn ${bus.areLightsOn ? 'BẬT' : 'TẮT'}`);
+            ui?.toast(`[icon:light] Đèn ${bus.areLightsOn ? 'BẬT' : 'TẮT'}`);
         }
         if (code === "KeyK" && bus) {
             doorTarget = doorTarget === 0 ? 1 : 0;
             bus.doorOpen = false;
             doorServiceStarted = false;
-            ui?.toast(`🚪 Cửa ${doorTarget === 1 ? 'MỞ' : 'ĐÓNG'}`);
+            ui?.toast(`[icon:door] Cửa ${doorTarget === 1 ? 'MỞ' : 'ĐÓNG'}`);
         }
-        if (code === "KeyL" && bus && interior) {
-            // L: Bật/tắt TẤT CẢ đèn cùng lúc (pha + đuôi + interior)
-            const allLightsOn = !bus.areLightsOn;
-            bus.areLightsOn = allLightsOn;
-            bus.setHeadlights?.(allLightsOn);
-            bus.setTaillights?.(allLightsOn);
-            interior.setInteriorLed?.(allLightsOn);
-            ui?.toast(`💡 Tất cả đèn ${allLightsOn ? 'BẬT' : 'TẮT'}`);
+        if (code === "KeyL" && bus) {
+            const heldDigit = LED_GROUP_NAMES.findIndex((_, i) => keysPressed.has(`Digit${i + 1}`));
+            if (heldDigit >= 0) {
+                toggleLedGroup(heldDigit);
+            } else {
+                bus.setInteriorLed?.(!bus.interiorLedOn);
+                ui?.toast(`[icon:light] LED xe ${bus.interiorLedOn ? 'BẬT' : 'TẮT'}`);
+            }
+        }
+        if (/^Digit[1-4]$/.test(code) && bus && keysPressed.has("KeyL")) {
+            toggleLedGroup(Number(code.slice(-1)) - 1);
+        }
+        if (code === "KeyT" && bus) {
+            toggleSeatTv();
         }
         if (code === "KeyH" && performance.now() - lastHornPressTime > 300) {
             lastHornPressTime = performance.now();
             audioSystem?.horn(0.45);     // còi xe THẬT (WebAudio)
-            ui?.toast("📯 Bim bim!");
+            ui?.toast("[icon:horn] Bim bim!");
         }
         if (code === "KeyC" && performance.now() - lastCameraPressTime > 200 && cameraSystem) {
             lastCameraPressTime = performance.now();
@@ -1000,14 +978,16 @@ function initInput() {
         }
     });
 
-    // keyup dung CUNG bo resolve: keydown ra code "KeyW" ma keyup bi IME bien
-    // thanh key "ư" (code rong) thi van phai xoa duoc, khong thi xe lai ve moi.
     window.addEventListener("keyup", (e) => {
         const code = resolveEventCode(e);
         keyDiagPush("U", e);
         if (code) {
-            if ((code === "KeyA" || code === "KeyD") && keysPressed.has(code)) {
-                steerReleaseAt.set(code, performance.now() + STEER_KEY_MIN_HOLD_MS);
+            const upTime = performance.now();
+            if (code === "KeyA" || code === "KeyD") {
+                physicalSteerKeys.delete(code);
+                imeSteerKeys.delete(code);
+                imeSteerRefreshUntil.delete(code);
+                if (keysPressed.has(code)) steerReleaseAt.set(code, upTime + STEER_KEY_MIN_HOLD_MS);
             } else {
                 keysPressed.delete(code);
                 steerReleaseAt.delete(code);
@@ -1015,46 +995,61 @@ function initInput() {
             return;
         }
 
-        // BUG 7 FIX — xe tu quẹo trai du khong bam A:
-        // keyup bi IME/UniKey nuot hoan toan (e.code = '' VA e.key = '') nen
-        // resolveEventCode tra null -> khong xoa duoc "KeyA" da set tu keydown
-        // truoc do. Phim lai ma do song lai toi da STEER_KEY_HOLD_TIMEOUT_MS
-        // (800ms); o 80~100 km/h va steerAngle day du, 800ms = khoang 20 do lai
-        // OAN — dung hop la "xe tu quẹo trai", va vi A dung dau if/else nen nguoi
-        // choi phai bam D (keyup cua D xoa ngay KeyA) de keo lai.
-        //
-        // A va D tuyet doi doc nhan trong keysPressed (keydown cua phim nao xua
-        // phim doi xung, va ca hai cung song -> huy ca hai, xem 433-440), nen keyup
-        // rong mang dau hieu IME nay gan nhu chac chan la su nhac CHINH phim lai ->
-        // xoa ngay thay vi cho 800ms. Neu la su nhac phim khac trong luc dang giu lai
-        // thi chi mat phim lai tam thong (bam A lai la du) — thap hon nhieu so voi
-        // vi tri lai oan 20 do o toc do cao.
-        //
-        // Dieu kien "imei swallow" du dieu kien: IME dang hoat dong, hoac su kien
-        // khong co bat ky thong tin nao (code rong + key rong). Keyup binh thuong
-        // (co e.code) van di vao nhanh o tren ma khong cham vao day.
-        const imeSwallow = (e.isComposing === true || e.keyCode === 229 ||
-            (!e.code && !e.key));
-        // BUG 8 FIX — mo rong: moi keyup khong co e.code vat ly ma resolve khong
-        // duoc (vd key="ä"/"Process"/ky tu la tu doan IME cuoi cung) van xoa ca
-        // A/D NGAY, khong cho 800ms ghost nua. Keyup vat ly that (co e.code) luon
-        // resolve o dong `if (code)` o tren -> khong bao gio roi vao day, nen khong
-        // the xoa nham phim khi nguoi choi dang giu lai; keyup legacy Unikey (VK)
-        // cung resolve o tren. Con lai (neu co) van don pruneStaleKeys (800ms).
-        const _upPhys = (typeof e.code === "string" && e.code.length > 0 && e.code !== "Unidentified");
-        
-        // Chi xoa A/D neu thuc su la keyup cua phim lai (khong xoa lung tung khi nha phim khac).
-        // Neu khong chac chan, de pruneStaleKeys (800ms) tu tu xoa -> tranh mat lai.
-        const wasHoldingSteer = keysPressed.has("KeyA") || keysPressed.has("KeyD");
-        if ((imeSwallow || !_upPhys) && wasHoldingSteer) {
+        const imeSwallow = (e.isComposing === true || e.keyCode === 229 || (!e.code && !e.key));
+        const upPhys = typeof e.code === "string" && e.code.length > 0 && e.code !== "Unidentified";
+        if ((imeSwallow || !upPhys) && (keysPressed.has("KeyA") || keysPressed.has("KeyD"))) {
             const releaseAt = performance.now() + STEER_KEY_MIN_HOLD_MS;
-            if (keysPressed.has("KeyA")) steerReleaseAt.set("KeyA", releaseAt);
-            if (keysPressed.has("KeyD")) steerReleaseAt.set("KeyD", releaseAt);
+            for (const k of ["KeyA", "KeyD"]) {
+                if (keysPressed.has(k)) {
+                    steerReleaseAt.set(k, releaseAt);
+                    physicalSteerKeys.delete(k);
+                    imeSteerKeys.delete(k);
+                    imeSteerRefreshUntil.delete(k);
+                }
+            }
         }
     });
 
     window.addEventListener("blur", clearPressedKeys);
     document.addEventListener("visibilitychange", () => { if (document.hidden) clearPressedKeys(); });
+}
+
+const LED_GROUP_NAMES = ["ceiling", "trim", "exterior", "body"];
+const LED_GROUP_LABELS = ["trần", "viền/lối đi", "ngoại thất", "thân xe"];
+
+function ledLevelText(level) {
+    if (level === 0) return 'TẮT';
+    return level >= 1 ? 'SÁNG MẠNH' : 'SÁNG YẾU';
+}
+
+function toggleLedGroup(index) {
+    const name = LED_GROUP_NAMES[index];
+    if (!name || !bus?.cycleLedGroup) return;
+    const state = bus.cycleLedGroup(name);
+    ui?.toast(`[icon:light] LED ${LED_GROUP_LABELS[index]} ${ledLevelText(state[name])}`);
+}
+
+function toggleSeatTv() {
+    if (!bus?.togglePassengerTv) return;
+    const mode = cameraSystem?.modes?.[cameraSystem.currentIndex] || '';
+    const m = /^seat_(\d+)$/.exec(mode);
+    if (!m || !interior?.paxTv) {
+        bus.togglePassengerTv('all');
+        ui?.toast('[icon:check] TV giường: bật/tắt tất cả');
+        return;
+    }
+    const seat = cameraSystem.seats?.[Number(m[1])]?.localPos;
+    if (!seat) return;
+    const positions = interior.paxTv.positions;
+    let best = -1, bestD = Infinity;
+    for (let i = 0; i < positions.length; i++) {
+        const p = positions[i];
+        const d = (p.x - seat.x) ** 2 + (p.y - seat.y) ** 2 + (p.z - seat.z) ** 2;
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best < 0) return;
+    bus.togglePassengerTv(best);
+    ui?.toast(`[icon:check] TV giường ${best + 1} ${bus.getPassengerTvState?.()[best] ? 'BẬT' : 'TẮT'}`);
 }
 
 function handleCommand(cmd) {
@@ -1064,66 +1059,106 @@ function handleCommand(cmd) {
         keyDiagOn = !keyDiagOn;
         if (keyDiagOn) {
             keyDiagLog.length = 0;
-            ui.toast("✓ Đang GHI phím — bật UniKey bấm thử W/A/S/D, rồi gõ lại lệnh: keys");
+            ui.toast("[icon:check] Đang GHI phím — bật UniKey bấm thử W/A/S/D, rồi gõ lại lệnh: keys");
         } else {
             keyDiagDump();
         }
         return;
     }
-    if (parts[0] === "time" && parts[1]) {
+    if (parts[0] === "tv") {
+        const state = bus?.getPassengerTvState?.() || [];
+        const sub = (parts[1] || "").toLowerCase();
+        const val = (parts[2] || "").toLowerCase();
+        if (sub === "list") {
+            ui.toast(`[icon:check] TV giường: ${state.filter(Boolean).length}/${state.length} đang bật`);
+        } else if (sub === "all" || sub === "") {
+            if (val === "on" || val === "off") bus?.setPassengerTv?.('all', val === 'on');
+            else bus?.togglePassengerTv?.('all');
+            ui.toast(`[icon:check] TV giường: ${bus?.getPassengerTvState?.().filter(Boolean).length || 0}/${state.length} đang bật`);
+        } else {
+            const idx = Number(sub) - 1;
+            if (!Number.isInteger(idx) || idx < 0 || idx >= state.length) {
+                ui.toast(`[icon:x] Cú pháp: tv <1-${state.length}> [on|off] | tv all [on|off]`, true);
+            } else {
+                if (val === "on" || val === "off") bus?.setPassengerTv?.(idx, val === 'on');
+                else bus?.togglePassengerTv?.(idx);
+                ui.toast(`[icon:check] TV giường ${idx + 1}: ${bus?.getPassengerTvState?.()[idx] ? 'BẬT' : 'TẮT'}`);
+            }
+        }
+    } else if (parts[0] === "led") {
+        const sub = (parts[1] || "").toLowerCase();
+        const val = (parts[2] || "").toLowerCase();
+        if (sub === "all" || sub === "") {
+            if (val === "on" || val === "off") bus?.setInteriorLed?.(val === 'on');
+            else bus?.setInteriorLed?.(!bus?.interiorLedOn);
+            ui.toast(`[icon:light] LED xe ${bus?.interiorLedOn ? 'BẬT' : 'TẮT'}`);
+        } else {
+            const idx = Number(sub) - 1;
+            if (idx < 0 || idx >= LED_GROUP_NAMES.length) {
+                ui.toast(`[icon:x] Cú pháp: led <1-${LED_GROUP_NAMES.length}> [on|off] | led all [on|off]`, true);
+            } else {
+                const name = LED_GROUP_NAMES[idx];
+                if (val === "on") bus?.setLedGroup?.(name, true);
+                else if (val === "off") bus?.setLedGroup?.(name, false);
+                else toggleLedGroup(idx);
+                const level = bus?.getLedLevels?.()?.[name];
+                ui.toast(`[icon:light] LED ${LED_GROUP_LABELS[idx]} ${ledLevelText(level)}`);
+            }
+        }
+    } else if (parts[0] === "time" && parts[1]) {
         const tp = parts[1].split("/");
         if (tp.length === 2) {
             const h = parseInt(tp[0]), m = parseInt(tp[1]);
             if (!isNaN(h) && !isNaN(m) && h >= 0 && h <= 23 && m >= 0 && m <= 59) {
                 lighting.setGameTime(h * 60 + m);
-                ui.toast(`✓ Đã đặt thời gian thành ${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`);
-            } else { ui.toast("✕ Thời gian không hợp lệ!", true); }
-        } else { ui.toast("✕ Cú pháp: time HH/MM", true); }
+                ui.toast(`[icon:check] Đã đặt thời gian thành ${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`);
+            } else { ui.toast("[icon:x] Thời gian không hợp lệ!", true); }
+        } else { ui.toast("[icon:x] Cú pháp: time HH/MM", true); }
     } else if (parts[0] === "traffic") {
         // Lệnh debug giao thông: traffic | traffic check | traffic spawn <n> | traffic info
         const sub = (parts[1] || "").toLowerCase();
         if (!trafficManager) {
-            ui.toast("✕ Chưa vào game / chưa có traffic manager!", true);
+            ui.toast("[icon:x] Chưa vào game / chưa có traffic manager!", true);
         } else if (sub === "check") {
-            if (!trafficDebug) { ui.toast("✕ Thiếu TrafficDebug!", true); }
+            if (!trafficDebug) { ui.toast("[icon:x] Thiếu TrafficDebug!", true); }
             else {
                 const r = trafficDebug.runSelfCheck();
                 if (!trafficDebug.enabled) trafficDebug.toggle(true);
                 ui.toast(r.pass
-                    ? `✓ SELF-CHECK PASS: ${r.checked} xe đều đi bên phải, đúng chiều`
-                    : `✕ SELF-CHECK FAIL: sai lề ${r.wrongSide}, sai hướng ${r.wrongHeading}, lều mép ${r.offRoad}`, !r.pass);
+                    ? `[icon:check] SELF-CHECK PASS: ${r.checked} xe đều đi bên phải, đúng chiều`
+                    : `[icon:x] SELF-CHECK FAIL: sai lề ${r.wrongSide}, sai hướng ${r.wrongHeading}, lều mép ${r.offRoad}`, !r.pass);
             }
         } else if (sub === "spawn") {
             const n = parseInt(parts[2]);
-            if (isNaN(n) || n < 0 || n > 60) { ui.toast("✕ Cú pháp: traffic spawn <0-60>", true); }
+            if (isNaN(n) || n < 0 || n > 60) { ui.toast("[icon:x] Cú pháp: traffic spawn <0-60>", true); }
             else {
                 trafficManager.maxVehicles = n;
                 gameSettings.npcDensity = n;
-                ui.toast(`✓ Mật độ NPC = ${n} (preset cho phép ${trafficManager.graphics.settings.maxActiveTraffic})`);
+                ui.toast(`[icon:check] Mật độ NPC = ${n} (preset cho phép ${trafficManager.graphics.settings.maxActiveTraffic})`);
             }
         } else if (sub === "info") {
             const i = trafficManager.getDebugInfo();
             ui.toast(`NPC ${i.active}/${i.max} · đang chạy ${i.moving} · pool ${i.pooled} · spawn ${i.spawnDistance}m · despawn ${i.despawnDistance}m`);
         } else {
             const on = trafficDebug ? trafficDebug.toggle() : false;
-            ui.toast(on ? "✓ Traffic debug: ON (nhấn F3 để tắt)" : "Traffic debug: OFF");
+            ui.toast(on ? "[icon:check] Traffic debug: ON (nhấn F3 để tắt)" : "Traffic debug: OFF");
         }
     } else if (parts[0] === "surface") {
         // DEBUG: "Xe rơi ở đâu?" — road segment + collision box
         // + transform tại vị trí xe hiện tại
         if (!map || !bus?.group) {
-            ui.toast("✕ Chưa vào game!", true);
+            ui.toast("[icon:x] Chưa vào game!", true);
         } else {
             const info = map.debugSurfaceAt(
                 bus.group.position.x, bus.group.position.z, bus.group.position.y);
-            if (!info) ui.toast("⚫ Ngoài mặt đường — đang ở terrain", true);
+            if (!info) ui.toast("[icon:dot] Ngoài mặt đường — đang ở terrain", true);
             else ui.toast(
-                `🛣 ${info.roadType} · ${info.roadId} · seg ${info.segId}` +
+                `[icon:road] ${info.roadType} · ${info.roadId} · seg ${info.segId}` +
                 ` · box #${info.collisionId}` +
                 ` · Y=${info.surfaceY.toFixed(2)}m` +
                 ` · lệch tâm ${info.offsetFromCenter.toFixed(1)}m`);
         }
-    } else { ui.toast("✕ Lệnh không xác định!", true); }
+    } else { ui.toast("[icon:x] Lệnh không xác định!", true); }
     isConsoleOpen = false;
     ui.hideConsole();
 }
@@ -1287,7 +1322,8 @@ function applyInteriorConfig(configId) {
     }
     // 6) Gộp đèn: 38 -> 16 PointLight trong scene (shader nhẹ hơn ~58% trên N5000)
     optimizeInteriorLights(interior);
-    interior.setInteriorLed?.(true);      // đèn cabin theo cấu hình mới
+    // Giữ nguyên trạng thái từng nhóm LED khi dựng interior mới.
+    bus.reapplyLedState?.();
     if (moved > 0) console.log(`[interior] chuyen ${want}: giu ${moved} mesh cockpit`);
 }
 
@@ -1339,9 +1375,9 @@ function askConfirm(message, labels) {
     const btnSave = document.getElementById('confirm-save');
     const btnDiscard = document.getElementById('confirm-discard');
     const btnCancel = document.getElementById('confirm-cancel');
-    if (btnSave) btnSave.textContent = (labels && labels.yes) || '💾 Lưu thay đổi';
-    if (btnDiscard) btnDiscard.textContent = (labels && labels.no) || '🗑️ Bỏ thay đổi';
-    if (btnCancel) btnCancel.textContent = (labels && labels.cancel) || '↩️ Tiếp tục chỉnh sửa';
+    if (btnSave) btnSave.textContent = (labels && labels.yes) || '[icon:save] Lưu thay đổi';
+    if (btnDiscard) btnDiscard.textContent = (labels && labels.no) || '[icon:trash] Bỏ thay đổi';
+    if (btnCancel) btnCancel.textContent = (labels && labels.cancel) || '[icon:back] Tiếp tục chỉnh sửa';
     dlg.style.display = 'flex';
     const finish = (choice) => {
         dlg.style.display = 'none';
@@ -1400,18 +1436,7 @@ function initRenderer() {
     renderer.setClearColor(0x87ceeb, 1);
     renderer.setPixelRatio(isLowEnd ? 0.8 : 1.0);
     renderer.setSize(window.innerWidth, window.innerHeight, true);
-    // BUG FIX: truoc do la THREE.LinearSRGBColorSpace ("srgb-linear").
-    // Three.js tinh toan lighting trong khong gian linear (dung), nhung buoc encode
-    // linear ->sRGB khi dua ra framebuffer bi BO QUA. Hau qua: buffer chua gia tri linear
-    // ma man hinh doc nhu sRGB -> toan bo game toi hon rat nhieu o moi tone giua/dam.
-    // CUNG CHUNG NGUYEN G voi loi "dem qua toi / vat the thanh khoi den" vi luc do
-    // ambient la nguon sang duy nhat va no cung bi lam toi.
-    // Bang chung do duoc (sky `#b1deef` = [177,222,239], pixel render duoc [112,187,219]):
-    //   177/255 = 0.694 -> linear 0.4396 -> 112   (khop)
-    //   222/255 = 0.871 -> linear 0.7310 -> 186   (khop)
-    //   239/255 = 0.937 -> linear 0.8626 -> 220   (khop)
-    // Texture van dung THREE.SRGBColorSpace luc load (xem bus.js) -> input da duoc
-    // linear dung, nen output PHAI encode lai thi moi khop voi nhap lieu.
+    // Texture input đã ở linear (xem bus.js); output phải encode sRGB lại cho khớp.
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.0;
@@ -1469,7 +1494,7 @@ let routePickerOpen = false;
 
 function updatePrimaryMenuButton() {
     const btn = document.getElementById('btn-new-game');
-    if (btn) btn.textContent = '🚍 LÁI XE';
+    if (btn) btn.textContent = '[icon:bus] LÁI XE';
 }
 
 function highlightDirectionButton(dir) {
@@ -1566,8 +1591,6 @@ function setupMenuEvents() {
     document.getElementById('setting-lighting')?.addEventListener('change', () => { settingsDirty = true; });
     document.getElementById('setting-godrays')?.addEventListener('change', () => { settingsDirty = true; });
     document.getElementById('setting-audio-mute')?.addEventListener('change', () => { settingsDirty = true; });
-    rngFov?.addEventListener('input', () => { if(valFov) valFov.textContent = rngFov.value; });
-    rngRenderDist?.addEventListener('input', () => { if(valRenderDist) valRenderDist.textContent = rngRenderDist.value; });
 
     // Chọn chiều chạy — chỉ hiện sau khi bấm "LÁI XE"
     document.querySelectorAll('.dir-btn').forEach(btn => {
@@ -1600,6 +1623,21 @@ function setupMenuEvents() {
         syncSettingsUI();      // dong bo TAT CA gia tri dang luu (ke ca noi that 20/34)
     });
     
+    // UV status: marker [icon:name] -> span SVG/CSS, text vẫn là text node.
+    function setUvStatus(el, text, color) {
+        if (!el) return;
+        el.replaceChildren();
+        const m = String(text).match(/^\[icon:([a-z-]+)\]\s*/i);
+        if (m) {
+            const span = document.createElement('span');
+            span.className = `ui-icon ui-icon--${m[1]}`;
+            span.style.marginRight = '8px';
+            el.appendChild(span);
+        }
+        el.appendChild(document.createTextNode(m ? text.slice(m[0].length) : text));
+        if (color) el.style.color = color;
+    }
+
     // UV Skin panel
     btnUvSkin?.addEventListener('click', () => {
         openPanel(uvPanel);
@@ -1658,10 +1696,10 @@ function setupMenuEvents() {
             // Đang ở Main Menu: chưa có xe để đổi ngay — cấu hình sẽ áp dụng
             // lúc vào game. Nói rõ để người chơi không tưởng setting bị bỏ qua.
             ui?.toast(saved
-                ? `💾 Đã lưu — nội thất ${gameSettings.interior === 'BED34' ? '34 giường VIP' : '20 phòng VIP'} sẽ áp dụng khi vào game`
-                : "⚠ Đã áp dụng nhưng không lưu được (localStorage bị chặn)");
+                ? `[icon:save] Đã lưu — nội thất ${gameSettings.interior === 'BED34' ? '34 giường VIP' : '20 phòng VIP'} sẽ áp dụng khi vào game`
+                : "[icon:warn] Đã áp dụng nhưng không lưu được (localStorage bị chặn)");
         } else {
-            ui?.toast(saved ? "✅ Đã áp dụng & lưu cài đặt!" : "⚠ Đã áp dụng nhưng không lưu được (localStorage bị chặn)");
+            ui?.toast(saved ? "[icon:check] Đã áp dụng & lưu cài đặt!" : "[icon:warn] Đã áp dụng nhưng không lưu được (localStorage bị chặn)");
         }
         closeAllPanels();
     });
@@ -1679,7 +1717,7 @@ function setupMenuEvents() {
         saveSettingsToStorage();
         syncSettingsUI();
         settingsDirty = false;
-        ui?.toast("↩ Đã đặt lại mặc định!");
+        ui?.toast("[icon:back] Đã đặt lại mặc định!");
     });
 
     // ===== MENU TẠM DỪNG (ESC) — 4 NÚT BẮT BUỘC =====
@@ -1693,7 +1731,7 @@ function setupMenuEvents() {
         closeAllPanels();
         togglePauseMenu(false);
         canvas?.focus?.();
-        ui?.toast("▶ Tiếp tục lái xe");
+        ui?.toast("[icon:play] Tiếp tục lái xe");
     });
 
     // Chọn UV Skin: mở popup (KHÔNG tạo bản sao popup) — giữ nguyên pause
@@ -1717,7 +1755,7 @@ function setupMenuEvents() {
     btnPauseMenu?.addEventListener('click', async () => {
         const choice = await askConfirm(
             'Về Menu chính? Tiến trình chuyến đi hiện tại sẽ không được lưu.',
-            { yes: '🏠 Về Menu chính', no: '❌ Ở lại', cancel: '↩️ Quay lại menu' }
+            { yes: '[icon:home] Về Menu chính', no: '[icon:x] Ở lại', cancel: '[icon:back] Quay lại menu' }
         );
         if (choice !== 'save') return;   // chỉ "Về Menu chính" mới thoát
         closeAllPanels();
@@ -1770,11 +1808,11 @@ function setupMenuEvents() {
         if(uvPreview) uvPreview.style.display = 'none';
         
         if (!file.type.match('image/png') && !file.name.toLowerCase().endsWith('.png')) {
-            if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '❌ File phải là PNG'; }
+            setUvStatus(uvStatus, '[icon:x] File phải là PNG', '#f87171');
             return;
         }
         if (file.size > 5 * 1024 * 1024) {
-            if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '❌ File quá lớn (max 5MB)'; }
+            setUvStatus(uvStatus, '[icon:x] File quá lớn (max 5MB)', '#f87171');
             return;
         }
         
@@ -1783,16 +1821,16 @@ function setupMenuEvents() {
             const arr = new Uint8Array(ev.target.result);
             const isPng = arr.length >= 8 && arr[0] === 0x89 && arr[1] === 0x50 && arr[2] === 0x4E && arr[3] === 0x47;
             if (!isPng) {
-                if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '❌ File không phải PNG hợp lệ'; }
+                setUvStatus(uvStatus, '[icon:x] File không phải PNG hợp lệ', '#f87171');
                 return;
             }
             const img = new Image();
             img.onload = () => {
                 if (img.width !== 2048 || img.height !== 1024) {
-                    if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = `❌ Kích thước sai. Yêu cầu: 2048×1024. File: ${img.width}×${img.height}`; }
+                    setUvStatus(uvStatus, `[icon:x] Kích thước sai. Yêu cầu: 2048×1024. File: ${img.width}×${img.height}`, '#f87171');
                     return;
                 }
-                if(uvStatus) { uvStatus.style.color = '#34d399'; uvStatus.innerHTML = '✅ UV Skin hợp lệ'; }
+                setUvStatus(uvStatus, '[icon:check] UV Skin hợp lệ', '#34d399');
                 const objUrl = URL.createObjectURL(file);
                 if(uvPreview && uvPreviewImg) {
                     uvPreviewImg.src = objUrl;
@@ -1809,14 +1847,14 @@ function setupMenuEvents() {
                 if (bus?.setSkin) {
                     try {
                         bus.setSkin(objUrl);
-                        if(uvStatus) { uvStatus.style.color = '#34d399'; uvStatus.innerHTML = '✅ UV Skin hợp lệ — đã áp dụng lên xe'; }
+                        setUvStatus(uvStatus, '[icon:check] UV Skin hợp lệ — đã áp dụng lên xe', '#34d399');
                     } catch (e) {
                         console.warn("[uv-skin] setSkin that bai:", e);
-                        if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '⚠ Không áp dụng được lên xe (xe chưa sẵn sàng)'; }
+                        setUvStatus(uvStatus, '[icon:warn] Không áp dụng được lên xe (xe chưa sẵn sàng)', '#f87171');
                     }
                 }
             };
-            img.onerror = () => { if(uvStatus) { uvStatus.style.color = '#f87171'; uvStatus.innerHTML = '❌ Lỗi đọc file'; } };
+            img.onerror = () => setUvStatus(uvStatus, '[icon:x] Lỗi đọc file', '#f87171');
             img.src = URL.createObjectURL(file);
         };
         reader.readAsArrayBuffer(file);
@@ -1881,6 +1919,13 @@ async function startGameFromMenu() {
         
         ui.setLoading("Xe khách 3D...", 0.6);
         bus = createBus();
+        // Geometry thật của xe (texture) là nguồn duy nhất cho physics:
+        // wheelbase ~6.25m, bán kính bánh 0.525m, track từ halfTrack.
+        configureVehicleGeometry({
+            wheelbase: bus.dimensions.frontAxleZ - bus.dimensions.rearAxleZ,
+            wheelRadius: bus.dimensions.wheelRadius,
+            trackWidth: bus.dimensions.halfTrack * 2,
+        });
         // Cấu hình nội thất theo setting (20 phòng / 34 giường) — dựng 1
         // cấu hình duy nhất, không dựng song song 2 bản.
         interior = (gameSettings.interior === 'BED34') ? createBusInterior34() : createBusInterior();
@@ -1994,6 +2039,9 @@ async function startGameFromMenu() {
         // song). Giờ TrafficManager là NGUỒN DUY NHẤT của xe đang chạy; npc.js
         // giữ nguyên API nhưng ủy quyền số liệu về đây.
         npc.setTrafficManager?.(trafficManager);
+        // Xe người chơi đậu ngay một baySlots: đăng ký vào registry chung TRƯỚC
+        // khi queue bến chạy, nếu không xe tĩnh sẽ đỗ đè đúng tọa độ spawn.
+        trafficManager.markBayBusy(spawn.x, spawn.z);
         trafficDebug = new TrafficDebug({
             scene, camera, traffic: trafficManager, roadGraph,
             getPlayerPos: () => (bus && bus.group ? bus.group.position : null)
@@ -2067,7 +2115,7 @@ function updateWorld(delta) {
                     const revenue = picked * FARE_PER_PASSENGER;
                     addMoney(revenue);
                     ui?.setMoney?.(getMoney());
-                    ui?.toast?.(`💰 +${formatMoney(revenue)} (${picked} vé)`);
+                    ui?.toast?.(`[icon:money] +${formatMoney(revenue)} (${picked} vé)`);
                 }
             }
         } else if (doorTarget === 0) {
@@ -2179,7 +2227,7 @@ function updateHUD(delta) {
     // 2) Cảnh báo sắp hết (chỉ 1 lần / ngưỡng; reset khi >20% bình).
     if (fuelNow > 0 && fuelNow <= FUEL_CAPACITY * 0.2 && !lowFuelWarned) {
         lowFuelWarned = true;
-        ui.toast(`⚠ Nhiên liệu sắp hết (${Math.floor(fuelNow)}L) — còn vài chục km nữa là hết`, true);
+        ui.toast(`[icon:warn] Nhiên liệu sắp hết (${Math.floor(fuelNow)}L) — còn vài chục km nữa là hết`, true);
     } else if (fuelNow > FUEL_CAPACITY * 0.2) {
         lowFuelWarned = false;
     }
@@ -2212,7 +2260,7 @@ function updateHUD(delta) {
                     playerStuckT = 0;
                     if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z, bus.group.position.y);
                     flushFuel();
-                    ui.toast(`🛻 Hết xăng! Cứu hộ về trạm gần nhất (${target.name}) — phí ${formatMoney(fee)}`);
+                    ui.toast(`[icon:tow] Hết xăng! Cứu hộ về trạm gần nhất (${target.name}) — phí ${formatMoney(fee)}`);
                 }
             }
         } else {
@@ -2239,7 +2287,7 @@ function updateHUD(delta) {
                 if (litres > 0) { addMoney(-paid); addFuel(litres); }
                 flushFuel();
                 lowFuelWarned = false;
-                ui.toast(`⛽ Đã đổ ${Math.floor(litres)}L tại ${p.name} — ${formatMoney(paid)}`);
+                ui.toast(`[icon:fuel] Đã đổ ${Math.floor(litres)}L tại ${p.name} — ${formatMoney(paid)}`);
                 break;
             }
         }

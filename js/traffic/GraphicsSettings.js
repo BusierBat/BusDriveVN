@@ -127,6 +127,10 @@ export class GraphicsSettings {
 
     onChange(callback) {
         this.callbacks.push(callback);
+        return () => {
+            const i = this.callbacks.indexOf(callback);
+            if (i >= 0) this.callbacks.splice(i, 1);
+        };
     }
 
     _notify() {

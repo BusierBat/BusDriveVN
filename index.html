@@ -12,8 +12,7 @@
       {
         "imports": {
           "three": "./vendor/three/build/three.module.js",
-          "three/addons/": "./vendor/three/examples/jsm/"
-        }
+          "three/addons/": "./vendor/three/examples/jsm/"        }
       }
     </script>
 </head>
@@ -22,7 +21,7 @@
 
     <!-- Màn hình tải -->
     <div id="loading-screen" style="display:none; position:fixed; inset:0; background:linear-gradient(135deg, #0f172a 0%, #1e293b 100%); z-index:1000; flex-direction:column; justify-content:center; align-items:center; text-align:center;">
-        <h1 style="font-size:3rem; color:#3b82f6;">🚍 BUSDRIVEVN</h1>
+        <h1 style="font-size:3rem; color:#3b82f6; display:flex; align-items:center; gap:12px;"><span class="ui-icon ui-icon--bus" style="font-size:2.8rem;"></span>BUSDRIVEVN</h1>
         <p id="loading-tip" style="color:#94a3b8; font-size:1.2rem; margin-top:10px;">HÃY LÁI XE AN TOÀN!</p>
         <div style="width:300px; height:6px; background:#334155; border-radius:3px; overflow:hidden; margin-top:30px;">
             <div id="loading-progress-bar" style="width:0%; height:100%; background:#3b82f6; transition:width 0.3s ease;"></div>
@@ -37,13 +36,13 @@
         <!-- 3 NÚT BẮT BUỘC TRÊN MENU CHÍNH -->
         <div style="display:flex; flex-direction:column; gap:14px; width:min(340px, 86vw);">
             <button id="btn-new-game" style="width:100%; padding:16px 28px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:14px; cursor:pointer; font-size:1.15rem; font-weight:800; transition:all 0.2s ease; box-shadow:0 6px 20px rgba(59,130,246,0.45); display:flex; align-items:center; justify-content:center; gap:10px;">
-                <span style="font-size:1.3rem;">🚍</span> LÁI XE
+                <span class="ui-icon ui-icon--bus" style="font-size:1.3rem;"></span> LÁI XE
             </button>
             <button id="btn-settings-main" style="width:100%; padding:15px 24px; background:rgba(30,41,59,0.7); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:14px; cursor:pointer; font-size:1.05rem; font-weight:700; transition:all 0.2s ease; display:flex; align-items:center; justify-content:center; gap:10px; backdrop-filter:blur(6px);">
-                <span>⚙</span> CÀI ĐẶT
+                <span class="ui-icon ui-icon--gear"></span> CÀI ĐẶT
             </button>
             <button id="btn-uv-skin" style="width:100%; padding:15px 24px; background:rgba(30,41,59,0.7); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:14px; cursor:pointer; font-size:1.05rem; font-weight:700; transition:all 0.2s ease; display:flex; align-items:center; justify-content:center; gap:10px; backdrop-filter:blur(6px);">
-                <span>🎨</span> THÊM UV SKIN
+                <span class="ui-icon ui-icon--palette"></span> THÊM UV SKIN
             </button>
         </div>
 
@@ -58,39 +57,39 @@
     <div id="route-picker-panel" class="anim-slide-up" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); border-radius:18px; z-index:970; width:92%; max-width:620px; box-shadow:0 25px 60px -12px rgba(0,0,0,0.7), 0 0 0 1px rgba(59,130,246,0.3); border:1px solid rgba(59,130,246,0.25); overflow:hidden;">
         <div style="background:linear-gradient(90deg, #1e293b 0%, #0f172a 100%); padding:20px 24px; border-bottom:1px solid rgba(59,130,246,0.2); display:flex; align-items:center; justify-content:space-between;">
             <h2 style="margin:0; font-size:1.25rem; font-weight:800; color:#fff; display:flex; align-items:center; gap:10px;">
-                <span style="font-size:1.35rem;">🗺️</span>
+                <span class="ui-icon ui-icon--map" style="font-size:1.35rem;"></span>
                 <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent;">CHỌN TUYẾN ĐƯỜNG</span>
             </h2>
-            <button id="btn-close-route-picker" style="width:36px; height:36px; border:none; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)">✕</button>
+            <button id="btn-close-route-picker" style="width:36px; height:36px; border:none; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)"><span class="ui-icon ui-icon--close"></span></button>
         </div>
         <div style="padding:24px; display:flex; flex-direction:column; gap:16px;">
             <p style="margin:0; color:#94a3b8; font-size:0.92rem; line-height:1.5;">Vui lòng chọn hướng hành trình trước khi xuất bến:</p>
             
             <div id="route-card-north" class="dir-btn" data-dir="north" style="padding:16px 20px; background:linear-gradient(135deg, rgba(30,58,95,0.6) 0%, rgba(15,23,42,0.8) 100%); border:2px solid #3b82f6; border-radius:14px; cursor:pointer; transition:all 0.2s ease; display:flex; align-items:center; gap:16px;">
-                <div style="font-size:2rem; background:rgba(59,130,246,0.2); width:50px; height:50px; border-radius:12px; display:flex; align-items:center; justify-content:center; flex-shrink:0;">🚌</div>
+                <div style="font-size:2rem; background:rgba(59,130,246,0.2); width:50px; height:50px; border-radius:12px; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><span class="ui-icon ui-icon--bus"></span></div>
                 <div style="flex:1;">
                     <div style="color:#fff; font-size:1.05rem; font-weight:800; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">
                         <span>PHÚ YÊN → SÀI GÒN</span>
                         <span style="font-size:0.75rem; background:#3b82f6; color:#fff; padding:2px 8px; border-radius:6px; font-weight:600;">CHIỀU XUÔI</span>
                     </div>
-                    <div style="color:#94a3b8; font-size:0.82rem;">Bến xe Nam Tuy Hòa ➔ Bến xe Miền Đông Mới (QL1A)</div>
+                    <div style="color:#94a3b8; font-size:0.82rem;">Bến xe Nam Tuy Hòa -> Bến xe Miền Đông Mới (QL1A)</div>
                 </div>
             </div>
 
             <div id="route-card-south" class="dir-btn" data-dir="south" style="padding:16px 20px; background:linear-gradient(135deg, rgba(95,30,30,0.4) 0%, rgba(15,23,42,0.8) 100%); border:2px solid rgba(239,68,68,0.4); border-radius:14px; cursor:pointer; transition:all 0.2s ease; display:flex; align-items:center; gap:16px;">
-                <div style="font-size:2rem; background:rgba(239,68,68,0.2); width:50px; height:50px; border-radius:12px; display:flex; align-items:center; justify-content:center; flex-shrink:0;">🚌</div>
+                <div style="font-size:2rem; background:rgba(239,68,68,0.2); width:50px; height:50px; border-radius:12px; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><span class="ui-icon ui-icon--bus"></span></div>
                 <div style="flex:1;">
                     <div style="color:#fff; font-size:1.05rem; font-weight:800; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between;">
                         <span>SÀI GÒN → PHÚ YÊN</span>
                         <span style="font-size:0.75rem; background:#ef4444; color:#fff; padding:2px 8px; border-radius:6px; font-weight:600;">CHIỀU NGƯỢC</span>
                     </div>
-                    <div style="color:#94a3b8; font-size:0.82rem;">Bến xe Miền Đông Mới ➔ Bến xe Nam Tuy Hòa (QL1A)</div>
+                    <div style="color:#94a3b8; font-size:0.82rem;">Bến xe Miền Đông Mới -> Bến xe Nam Tuy Hòa (QL1A)</div>
                 </div>
             </div>
 
             <div style="display:flex; gap:12px; margin-top:8px;">
-                <button id="btn-back-to-menu" style="flex:1; padding:14px; background:rgba(148,163,184,0.15); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease;">↩ QUAY LẠI</button>
-                <button id="btn-play-now" style="flex:2; padding:14px; background:linear-gradient(135deg, #10b981 0%, #059669 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1.1rem; font-weight:800; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(16,185,129,0.4);">🚍 CHƠI NGAY</button>
+                <button id="btn-back-to-menu" style="flex:1; padding:14px; background:rgba(148,163,184,0.15); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease; display:flex; align-items:center; justify-content:center; gap:8px;"><span class="ui-icon ui-icon--back"></span>QUAY LẠI</button>
+                <button id="btn-play-now" style="flex:2; padding:14px; background:linear-gradient(135deg, #10b981 0%, #059669 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1.1rem; font-weight:800; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(16,185,129,0.4); display:flex; align-items:center; justify-content:center; gap:8px;"><span class="ui-icon ui-icon--bus"></span>CHƠI NGAY</button>
             </div>
         </div>
     </div>
@@ -102,23 +101,23 @@
 
     <div id="confirm-dialog" style="display:none; position:fixed; inset:0; z-index:1200; background:rgba(2,6,23,0.72); backdrop-filter:blur(3px); align-items:center; justify-content:center; padding:20px;">
         <div style="width:min(400px,92vw); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); border:1px solid rgba(59,130,246,0.25); border-radius:16px; padding:24px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.6);">
-            <h3 style="margin:0 0 10px; font-size:1.1rem; color:#fff; font-weight:700;">⚠️ Thay đổi chưa lưu</h3>
+            <h3 style="margin:0 0 10px; font-size:1.1rem; color:#fff; font-weight:700; display:flex; align-items:center; gap:8px;"><span class="ui-icon ui-icon--warn" style="color:#fbbf24;"></span>Thay đổi chưa lưu</h3>
             <p id="confirm-message" style="margin:0 0 20px; color:#94a3b8; font-size:0.9rem; line-height:1.5;">Bạn đã thay đổi cài đặt nhưng chưa lưu.</p>
             <div style="display:flex; flex-direction:column; gap:10px;">
-                <button id="confirm-save" style="padding:12px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:10px; cursor:pointer; font-size:0.95rem; font-weight:700;">💾 Lưu thay đổi</button>
-                <button id="confirm-discard" style="padding:12px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.3); border-radius:10px; cursor:pointer; font-size:0.95rem; font-weight:600;">🗑️ Bỏ thay đổi</button>
-                <button id="confirm-cancel" style="padding:12px; background:rgba(148,163,184,0.12); color:#94a3b8; border:1px solid rgba(148,163,184,0.25); border-radius:10px; cursor:pointer; font-size:0.95rem; font-weight:600;">↩️ Tiếp tục chỉnh sửa</button>
+                <button id="confirm-save" style="padding:12px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:10px; cursor:pointer; font-size:0.95rem; font-weight:700; display:flex; align-items:center; justify-content:center; gap:8px;"><span class="ui-icon ui-icon--save"></span>Lưu thay đổi</button>
+                <button id="confirm-discard" style="padding:12px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.3); border-radius:10px; cursor:pointer; font-size:0.95rem; font-weight:600; display:flex; align-items:center; justify-content:center; gap:8px;"><span class="ui-icon ui-icon--trash"></span>Bỏ thay đổi</button>
+                <button id="confirm-cancel" style="padding:12px; background:rgba(148,163,184,0.12); color:#94a3b8; border:1px solid rgba(148,163,184,0.25); border-radius:10px; cursor:pointer; font-size:0.95rem; font-weight:600; display:flex; align-items:center; justify-content:center; gap:8px;"><span class="ui-icon ui-icon--back"></span>Tiếp tục chỉnh sửa</button>
             </div>
         </div>
     </div>
 
 
     <div id="pause-menu" style="display:none; position:fixed; inset:0; z-index:950; background:rgba(2,6,23,0.72); backdrop-filter:blur(6px); flex-direction:column; align-items:center; justify-content:center; gap:14px; animation:fadeIn 0.18s ease;">
-        <h2 style="margin:0 0 10px; font-size:2rem; font-weight:800; color:#fff; letter-spacing:0.5px; text-shadow:0 2px 12px rgba(0,0,0,0.6);">⏸ TẠM DỪNG</h2>
-        <button id="btn-pause-resume" style="width:min(340px,86vw); padding:14px 24px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(59,130,246,0.4);">▶ TIẾP TỤC</button>
-        <button id="btn-pause-uvskin" style="width:min(340px,86vw); padding:14px 24px; background:rgba(148,163,184,0.15); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease;">🎨 CHỌN UV SKIN</button>
-        <button id="btn-pause-settings" style="width:min(340px,86vw); padding:14px 24px; background:rgba(148,163,184,0.15); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease;">⚙ CÀI ĐẶT</button>
-        <button id="btn-pause-menu" style="width:min(340px,86vw); padding:14px 24px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease;">🏠 VỀ MENU CHÍNH</button>
+        <h2 style="margin:0 0 10px; font-size:2rem; font-weight:800; color:#fff; letter-spacing:0.5px; text-shadow:0 2px 12px rgba(0,0,0,0.6); display:flex; align-items:center; gap:10px;"><span class="ui-icon ui-icon--pause"></span>TẠM DỪNG</h2>
+        <button id="btn-pause-resume" style="width:min(340px,86vw); padding:14px 24px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(59,130,246,0.4); display:flex; align-items:center; justify-content:center; gap:8px;"><span class="ui-icon ui-icon--play"></span>TIẾP TỤC</button>
+        <button id="btn-pause-uvskin" style="width:min(340px,86vw); padding:14px 24px; background:rgba(148,163,184,0.15); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease; display:flex; align-items:center; justify-content:center; gap:8px;"><span class="ui-icon ui-icon--palette"></span>CHỌN UV SKIN</button>
+        <button id="btn-pause-settings" style="width:min(340px,86vw); padding:14px 24px; background:rgba(148,163,184,0.15); color:#e2e8f0; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease; display:flex; align-items:center; justify-content:center; gap:8px;"><span class="ui-icon ui-icon--gear"></span>CÀI ĐẶT</button>
+        <button id="btn-pause-menu" style="width:min(340px,86vw); padding:14px 24px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease; display:flex; align-items:center; justify-content:center; gap:8px;"><span class="ui-icon ui-icon--home"></span>VỀ MENU CHÍNH</button>
         <p style="margin:12px 0 0; color:#64748b; font-size:0.8rem;">ESC: đóng menu / tiếp tục game</p>
     </div>
 
@@ -126,9 +125,9 @@
     <div id="uv-skin-panel" style="display:none; position:fixed; top:15%; left:50%; transform:translateX(-50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); padding:0; border-radius:16px; z-index:970; width:90%; max-width:480px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2); border:1px solid rgba(59,130,246,0.15); overflow:hidden; animation:slideDown 0.3s cubic-bezier(0.16,1,0.3,1);">
         <div style="background:linear-gradient(90deg, #1e293b 0%, #0f172a 100%); padding:20px 24px; border-bottom:1px solid rgba(59,130,246,0.2); display:flex; align-items:center; justify-content:space-between;">
             <h2 style="margin:0; font-size:1.25rem; font-weight:700; color:#fff; display:flex; align-items:center; gap:10px;">
-                <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;">🎨 UV SKIN</span>
+                <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; display:flex; align-items:center; gap:8px;"><span class="ui-icon ui-icon--palette"></span>UV SKIN</span>
             </h2>
-            <button id="btn-close-uv-skin" style="width:36px; height:36px; border:none; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)">✕</button>
+            <button id="btn-close-uv-skin" style="width:36px; height:36px; border:none; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)"><span class="ui-icon ui-icon--close"></span></button>
         </div>
         <div style="padding:24px;">
             <p style="margin:0 0 16px; color:#94a3b8; font-size:0.9rem; line-height:1.5;">Chọn file PNG UV Skin (<strong>2048 × 1024</strong>) để áp dụng cho xe khách.</p>
@@ -136,7 +135,7 @@
             <div style="position:relative; margin-bottom:20px;">
                 <input type="file" id="uv-skin-input" accept="image/png" style="display:none;">
                 <button id="btn-choose-skin" style="width:100%; padding:16px 24px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; display:flex; align-items:center; justify-content:center; gap:10px; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(59,130,246,0.3);">
-                    <span>📁</span> CHỌN FILE UV SKIN
+                    <span class="ui-icon ui-icon--folder"></span> CHỌN FILE UV SKIN
                 </button>
             </div>
 
@@ -152,7 +151,7 @@
             <p id="uv-skin-status" style="margin:0 0 16px; min-height:24px; font-size:0.9rem; font-weight:500;"></p>
 
             <a id="uv-skin-download" style="display:none; width:100%; padding:14px; background:linear-gradient(135deg, #10b981 0%, #059669 100%); color:#fff; text-decoration:none; border-radius:12px; text-align:center; font-weight:600; font-size:1rem; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(16,185,129,0.3);" download="bus_final.png" href="#">
-                ⬇ TẢI XUỐNG bus_final.png
+                <span class="ui-icon ui-icon--download" style="margin-right:8px;"></span>TẢI XUỐNG bus_final.png
             </a>
         </div>
     </div>
@@ -161,38 +160,38 @@
     <div id="settings-panel" style="display:none; position:fixed; top:8%; left:50%; transform:translateX(-50%); background:linear-gradient(145deg, #0f172a 0%, #1e293b 100%); padding:0; border-radius:16px; z-index:970; width:90%; max-width:460px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2); border:1px solid rgba(59,130,246,0.15); overflow:hidden; animation:slideDown 0.3s cubic-bezier(0.16,1,0.3,1);">
         <div style="background:linear-gradient(90deg, #1e293b 0%, #0f172a 100%); padding:20px 24px; border-bottom:1px solid rgba(59,130,246,0.2); display:flex; align-items:center; justify-content:space-between;">
             <h2 style="margin:0; font-size:1.25rem; font-weight:700; color:#fff; display:flex; align-items:center; gap:10px;">
-                <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;">⚙ CÀI ĐẶT</span>
+                <span style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; display:flex; align-items:center; gap:8px;"><span class="ui-icon ui-icon--gear"></span>CÀI ĐẶT</span>
             </h2>
-            <button id="btn-close-settings" style="width:36px; height:36px; border:none; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)">✕</button>
+            <button id="btn-close-settings" style="width:36px; height:36px; border:none; border-radius:10px; background:rgba(239,68,68,0.15); color:#ef4444; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:1.25rem; transition:all 0.2s ease;" title="Đóng (Esc)"><span class="ui-icon ui-icon--close"></span></button>
         </div>
         <div style="padding:24px; max-height:70vh; overflow-y:auto;">
             <!-- Chất lượng đồ họa tổng thể -->
             <div class="setting-group" style="margin-bottom:24px;">
-                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">🎮 Chất lượng đồ họa tổng thể</label>
+                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;"><span class="ui-icon ui-icon--gear"></span>Chất lượng đồ họa tổng thể</label>
                 <select id="setting-graphics" style="width:100%; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.2); border-radius:10px; color:#fff; font-size:1rem; cursor:pointer; appearance:none; background-image:url('data:image/svg+xml;utf8,<svg fill="%2394a3b8" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>'); background-repeat:no-repeat; background-position:right 12px center; padding-right:40px;">
-                    <option value="low">🔧 Thấp (Performance)</option>
-                    <option value="medium" selected>⚖️ Trung bình (Balanced)</option>
-                    <option value="high">🎨 Cao (Quality)</option>
+                    <option value="low">Thấp (Performance)</option>
+                    <option value="medium" selected>Trung bình (Balanced)</option>
+                    <option value="high">Cao (Quality)</option>
                 </select>
             </div>
 
             <!-- Chất lượng Lighting/Shadow -->
             <div class="setting-group" style="margin-bottom:24px;">
-                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">☀️ Chất lượng ánh sáng & Bóng đổ</label>
+                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;"><span class="ui-icon ui-icon--light"></span>Chất lượng ánh sáng & Bóng đổ</label>
                 <select id="setting-lighting" style="width:100%; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.2); border-radius:10px; color:#fff; font-size:1rem; cursor:pointer; appearance:none; background-image:url('data:image/svg+xml;utf8,<svg fill="%2394a3b8" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>'); background-repeat:no-repeat; background-position:right 12px center; padding-right:40px;">
-                    <option value="low">🔧 Thấp (512, 2 cascade, no god rays)</option>
-                    <option value="medium" selected>⚖️ Trung bình (1024, 3 cascade, god rays)</option>
-                    <option value="high">🎨 Cao (2048, 4 cascade, god rays + post)</option>
+                    <option value="low">Thấp (512, 2 cascade, no god rays)</option>
+                    <option value="medium" selected>Trung bình (1024, 3 cascade, god rays)</option>
+                    <option value="high">Cao (2048, 4 cascade, god rays + post)</option>
                 </select>
             </div>
 
             <!-- God Rays -->
             <div class="setting-group" style="margin-bottom:24px;">
-                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">✨ God Rays (Tia sáng thể tích)</label>
+                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">God Rays (Tia sáng thể tích)</label>
                 <select id="setting-godrays" style="width:100%; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.2); border-radius:10px; color:#fff; font-size:1rem; cursor:pointer; appearance:none; background-image:url('data:image/svg+xml;utf8,<svg fill="%2394a3b8" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>'); background-repeat:no-repeat; background-position:right 12px center; padding-right:40px;">
-                    <option value="off">🚫 Tắt</option>
-                    <option value="low">💡 Thấp (256px, 16 samples)</option>
-                    <option value="high" selected>✨ Cao (512px, 32 samples)</option>
+                    <option value="off">Tắt</option>
+                    <option value="low">Thấp (256px, 16 samples)</option>
+                    <option value="high" selected>Cao (512px, 32 samples)</option>
                 </select>
             </div>
 
@@ -201,7 +200,7 @@
             <!-- Mật độ NPC -->
             <div class="setting-group" style="margin-bottom:24px;">
                 <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
-                    🚌 Mật độ xe NPC
+                    <span class="ui-icon ui-icon--bus"></span>Mật độ xe NPC
                     <span id="val-npc-density" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">5</span>
                 </label>
                 <input type="range" id="setting-npc-density" min="0" max="20" value="15" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
@@ -211,7 +210,7 @@
             <!-- Độ nhạy Camera -->
             <div class="setting-group" style="margin-bottom:24px;">
                 <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
-                    🎮 Độ nhạy Camera
+                    <span class="ui-icon ui-icon--gear"></span>Độ nhạy Camera
                     <span id="val-cam-sens" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">30</span>
                 </label>
                 <input type="range" id="setting-cam-sens" min="10" max="50" value="30" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
@@ -221,7 +220,7 @@
             <!-- FOV -->
             <div class="setting-group" style="margin-bottom:24px;">
                 <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
-                    👁️ Field of View (FOV)
+                    Field of View (FOV)
                     <span id="val-fov" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">70</span>
                 </label>
                 <input type="range" id="setting-fov" min="50" max="100" value="70" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
@@ -231,7 +230,7 @@
             <!-- Render Distance -->
             <div class="setting-group" style="margin-bottom:24px;">
                 <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
-                    🌍 Render Distance
+                    Render Distance
                     <span id="val-render-dist" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">2</span>
                 </label>
                 <input type="range" id="setting-render-dist" min="1" max="4" value="2" step="1" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
@@ -242,10 +241,10 @@
 
             <!-- Cấu hình nội thất xe khách -->
             <div class="setting-group" style="margin-bottom:24px;">
-                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">🛏️ Cấu hình nội thất xe khách</label>
+                <label style="display:block; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">Cấu hình nội thất xe khách</label>
                 <select id="setting-interior" style="width:100%; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.2); border-radius:10px; color:#fff; font-size:1rem; cursor:pointer; appearance:none; background-image:url('data:image/svg+xml;utf8,<svg fill="%2394a3b8" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>'); background-repeat:no-repeat; background-position:right 12px center; padding-right:40px;">
-                    <option value="BED20">🛏️ 20 phòng VIP (2 dãy · 1 lối đi)</option>
-                    <option value="BED34">🛏️ 34 giường VIP (3 dãy · 2 lối đi)</option>
+                    <option value="BED20">20 phòng VIP (2 dãy · 1 lối đi)</option>
+                    <option value="BED34">34 giường VIP (3 dãy · 2 lối đi)</option>
                 </select>
                 <p style="margin:8px 0 0; color:#64748b; font-size:0.75rem;">Đổi cấu hình sẽ dựng lại khoang hành khách (giường + dải LED trần)</p>
             </div>
@@ -253,7 +252,7 @@
             <!-- Độ nhạy bàn phím -->
             <div class="setting-group" style="margin-bottom:24px;">
                 <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
-                    ⌨️ Độ nhạy bàn phím
+                    Độ nhạy bàn phím
                     <span id="val-key-sens" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">1.0</span>
                 </label>
                 <input type="range" id="setting-key-sens" min="0.5" max="2" step="0.1" value="1" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
@@ -263,7 +262,7 @@
             <!-- Âm thanh -->
             <div class="setting-group" style="margin-bottom:24px;">
                 <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; color:#e2e8f0; font-size:0.875rem; font-weight:600;">
-                    🔊 Âm lượng
+                    <span class="ui-icon ui-icon--horn"></span>Âm lượng
                     <span id="val-audio-volume" style="background:linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:1.25rem;">60%</span>
                 </label>
                 <input type="range" id="setting-audio-volume" min="0" max="100" step="5" value="60" style="width:100%; accent-color:#3b82f6; cursor:pointer;">
@@ -278,10 +277,10 @@
             <!-- Nút hành động -->
             <div style="display:flex; gap:12px; align-items:stretch;">
                 <button id="btn-apply-settings" style="flex:1; padding:14px 24px; background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color:#fff; border:none; border-radius:12px; cursor:pointer; font-size:1rem; font-weight:700; transition:all 0.2s ease; box-shadow:0 4px 14px rgba(59,130,246,0.4);">
-                    💾 LƯU
+                    <span class="ui-icon ui-icon--save"></span>LƯU
                 </button>
                 <button id="btn-reset-settings" style="flex:1; padding:14px 24px; background:rgba(148,163,184,0.15); color:#94a3b8; border:1px solid rgba(148,163,184,0.3); border-radius:12px; cursor:pointer; font-size:1rem; font-weight:600; transition:all 0.2s ease;">
-                    ↩ ĐẶT LẠI
+                    <span class="ui-icon ui-icon--back"></span>ĐẶT LẠI
                 </button>
             </div>
             <p style="margin:10px 0 0; color:#64748b; font-size:0.75rem; text-align:center;">Lưu vào localStorage — giữ nguyên sau khi tải lại game</p>
@@ -361,7 +360,7 @@
             <!-- Nhiên liệu -->
             <div id="hud-fuel" style="background:linear-gradient(135deg, rgba(2,6,23,0.9) 0%, rgba(15,23,42,0.95) 100%); border:1px solid rgba(59,130,246,0.3); border-radius:10px; padding:10px 14px; display:flex; flex-direction:column; gap:4px; min-width:140px; backdrop-filter:blur(4px); box-shadow:0 4px 16px rgba(0,0,0,0.4);">
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-                    <span style="color:#94a3b8; font-size:0.75rem; font-weight:600;">⛽ NHIÊN LIỆU</span>
+                    <span style="color:#94a3b8; font-size:0.75rem; font-weight:600; display:flex; align-items:center; gap:6px;"><span class="ui-icon ui-icon--fuel"></span>NHIÊN LIỆU</span>
                     <span id="hud-fuel-text" style="color:#fff; font-family:monospace; font-size:0.85rem; font-weight:700;">300/300L</span>
                 </div>
                 <div style="height:6px; background:rgba(255,255,255,0.1); border-radius:3px; overflow:hidden;">
@@ -375,11 +374,11 @@
                 <span style="color:#fbbf24; font-size:0.75rem; font-weight:700;">TỐC ĐỘ CHO PHÉP</span>
                 <span id="hud-speed-limit-value" style="color:#fbbf24; font-family:monospace; font-size:1.1rem; font-weight:800;">80 km/h</span>
             </div>
-            <div>📍 TUYẾN: <span id="hud-next-dest">Phú Yên → TP. HCM</span></div>
-            <div>🚍 KHÁCH: <span id="hud-passengers">0/24</span></div>
-            <div>🗺️ X: <span id="hud-x">0</span> | Z: <span id="hud-z">0</span></div>
-            <div>⏰ <span id="hud-time">06:30</span> | FPS: <span id="hud-fps">0</span></div>
-            <div id="hud-trip-row">🛣️ <span id="hud-trip">0.0 km · 0.0 km/h · —</span></div>
+            <div style="display:flex; align-items:center; gap:6px;"><span class="ui-icon ui-icon--pin"></span>TUYẾN: <span id="hud-next-dest">Phú Yên → TP. HCM</span></div>
+            <div style="display:flex; align-items:center; gap:6px;"><span class="ui-icon ui-icon--bus"></span>KHÁCH: <span id="hud-passengers">0/24</span></div>
+            <div style="display:flex; align-items:center; gap:6px;"><span class="ui-icon ui-icon--map"></span>X: <span id="hud-x">0</span> | Z: <span id="hud-z">0</span></div>
+            <div style="display:flex; align-items:center; gap:6px;"><span class="ui-icon ui-icon--clock"></span><span id="hud-time">06:30</span> | FPS: <span id="hud-fps">0</span></div>
+            <div id="hud-trip-row" style="display:flex; align-items:center; gap:6px;"><span class="ui-icon ui-icon--road"></span><span id="hud-trip">0.0 km · 0.0 km/h · —</span></div>
         </div>
         
         <div id="hud-minimap-container" style="position:fixed; bottom:16px; left:16px; z-index:100;"><canvas id="hud-minimap" width="200" height="200"></canvas></div>
@@ -405,9 +404,9 @@
         <div id="steering-wheel"><div id="wheel-knob"></div></div>
         <button id="m-gas">GA</button>
         <button id="m-brake">PHANH</button>
-        <button id="m-horn">📯</button>
-        <button id="m-light">💡</button>
-        <button id="m-door">🚪</button>
+        <button id="m-horn"><span class="ui-icon ui-icon--horn"></span></button>
+        <button id="m-light"><span class="ui-icon ui-icon--light"></span></button>
+        <button id="m-door"><span class="ui-icon ui-icon--door"></span></button>
     </div>
 
     <script type="module" src="js/main.js"></script>

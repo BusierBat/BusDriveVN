@@ -58,13 +58,13 @@ export function createMusicPlayer({ volume = 0.6 } = {}) {
     fileInput.style.display = 'none';
     document.body.appendChild(fileInput);
     for (const b of [btnPlay, btnPrev, btnNext, btnLoop, btnAdd]) {
-        b.style.cssText = 'background:rgba(59,130,246,.15);color:#e2e8f0;border:1px solid rgba(59,130,246,.3);border-radius:6px;padding:4px 8px;cursor:pointer;font-size:.85rem;';
+        b.style.cssText = 'background:rgba(59,130,246,.15);color:#e2e8f0;border:1px solid rgba(59,130,246,.3);border-radius:6px;padding:4px 8px;cursor:pointer;font-size:.85rem;display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;';
     }
-    btnPlay.textContent = '▶';
-    btnPrev.textContent = '⏮';
-    btnNext.textContent = '⏭';
-    btnLoop.textContent = '🔁';
-    btnAdd.textContent = '📁';
+    btnPlay.innerHTML = '<span class="ui-icon ui-icon--play"></span>';
+    btnPrev.innerHTML = '<span class="ui-icon ui-icon--music-prev"></span>';
+    btnNext.innerHTML = '<span class="ui-icon ui-icon--music-next"></span>';
+    btnLoop.innerHTML = '<span class="ui-icon ui-icon--music-loop"></span>';
+    btnAdd.innerHTML = '<span class="ui-icon ui-icon--folder"></span>';
     btnAdd.title = 'Thêm file MP3';
     root.append(title, btnPrev, btnPlay, btnNext, btnLoop, btnAdd, fileInput);
     document.body.appendChild(root);
@@ -149,7 +149,7 @@ export function createMusicPlayer({ volume = 0.6 } = {}) {
     });
 
     function updateTitle() {
-        if (tracks.length === 0) { title.textContent = 'Chưa có nhạc (kéo thả MP3 hoặc bấm 📁)'; return; }
+        if (tracks.length === 0) { title.textContent = 'Chưa có nhạc (kéo thả MP3 hoặc bấm biểu tượng thư mục)'; return; }
         title.textContent = trackName(tracks[index]);
     }
 
@@ -159,16 +159,16 @@ export function createMusicPlayer({ volume = 0.6 } = {}) {
         if (audio.src !== new URL(t.file, location.href).href) audio.src = t.file;
         audio.play().then(() => {
             playing = true;
-            btnPlay.textContent = '⏸';
+            btnPlay.innerHTML = '<span class="ui-icon ui-icon--pause"></span>';
         }).catch((e) => {
             playing = false;
-            btnPlay.textContent = '▶';
+            btnPlay.innerHTML = '<span class="ui-icon ui-icon--play"></span>';
             title.textContent = `Không phát được: ${trackName(t)}`;
             console.warn("[music] Khong phat duoc track:", t.file, e);
         });
         return true;
     }
-    function pause() { audio.pause(); playing = false; btnPlay.textContent = '▶'; }
+    function pause() { audio.pause(); playing = false; btnPlay.innerHTML = '<span class="ui-icon ui-icon--play"></span>'; }
     function toggle() { playing ? pause() : play(); }
     function next() {
         if (tracks.length === 0) return;

@@ -128,16 +128,17 @@ export function createCSGTManager({ roadGraph, stationsData = [], options = {} }
         lastRenderState = stateKey;
 
         const headerTitle = isStopSignal
-            ? "🚨 HIỆU LỆNH CSGT — YÊU CẦU DỪNG PHƯƠNG TIỆN"
-            : "🚨 CSGT GHI NHẬN — VƯỢT QUÁ TỐC ĐỘ";
+            ? "HIỆU LỆNH CSGT — YÊU CẦU DỪNG PHƯƠNG TIỆN"
+            : "CSGT GHI NHẬN — VƯỢT QUÁ TỐC ĐỘ";
+        const headerIcon = '<span class="ui-icon ui-icon--siren" style="margin-right:8px;"></span>';
 
         const borderCol = isStopSignal ? "#ef4444" : "#f59e0b";
         const gradCol = isStopSignal ? "linear-gradient(135deg, #7f1d1d, #991b1b)" : "linear-gradient(135deg, #78350f, #92400e)";
 
         warnEl.innerHTML =
             `<div style="background:${gradCol}; border:2px solid ${borderCol}; border-radius:14px; padding:16px 24px; color:#fff; text-align:center; box-shadow:0 10px 40px rgba(0,0,0,0.6); font-family:system-ui,sans-serif; transition:all 0.3s ease;">` +
-            `<div style="font-size:1.15rem; font-weight:800; letter-spacing:0.5px; margin-bottom:8px;">${headerTitle}</div>` +
-            `<div style="font-size:0.9rem; color:#fde68a; margin-bottom:6px;">👮 ${csgtName}</div>` +
+            `<div style="font-size:1.15rem; font-weight:800; letter-spacing:0.5px; margin-bottom:8px; display:flex; align-items:center; justify-content:center;">${headerIcon}${headerTitle}</div>` +
+            `<div style="font-size:0.9rem; color:#fde68a; margin-bottom:6px;"><span class="ui-icon ui-icon--police"></span>${csgtName}</div>` +
             `<div style="display:flex; justify-content:center; gap:20px; font-size:0.95rem; margin:8px 0;">` +
             `  <div>Giới hạn: <b>${limitTxt}</b></div>` +
             `  <div>Tốc độ xe: <b style="color:#fca5a5;">${speedTxt}</b></div>` +

@@ -17,6 +17,9 @@ Thumbs.db
 .vscode/*
 !.vscode/settings.json
 
+# Nhac co ban quyen: khong them mp3 moi vao assets/music
+assets/music/*.mp3
+
 # Agent tool state (khong phai cong viec du an)
 .opencode/
 # npm workbench (cai dat cay thu vien ba phu — khong track)
