@@ -1269,9 +1269,23 @@ export class MapLoader {
             ((navigator.hardwareConcurrency || 4) <= 4 || (navigator.deviceMemory || 4) <= 4);
         this.isLowEnd = lowEnd;
         this.renderRadius = lowEnd ? RENDER_RADIUS_MIN : RENDER_RADIUS_MAX;
+        // Trần do NGƯỜI CHƠI chọn (slider 1..4). _adaptQuality() chỉ được co
+        // xuống dưới trần này khi FPS kém, KHÔNG được tự mở rộng vượt ý chọn.
+        this.renderRadiusCap = RENDER_RADIUS_MAX;
         this._frameAvg = 1 / 60;
         this._adaptTimer = 0;
         this._adaptCooldown = 0;
+    }
+
+    /** Slider "Render Distance" (1..4) -> bán kính chunk tối đa.
+     *  Fog che sau ~5 chunk nên 3 & 4 cùng trần RENDER_RADIUS_MAX; cấp 1/2
+     *  siết thật để máy yếu có chỗ thở mà không xoá nội dung. */
+    setRenderDistance(level) {
+        const n = Number(level);
+        if (!Number.isFinite(n)) return;
+        const cap = Math.min(RENDER_RADIUS_MAX, Math.max(RENDER_RADIUS_MIN, RENDER_RADIUS_MIN + Math.round(n) - 1));
+        this.renderRadiusCap = cap;
+        if (this.renderRadius > cap) this.renderRadius = cap;
     }
 
     // dt (giây) của frame vừa render -> tự điều chỉnh tầm nhìn
@@ -1280,6 +1294,8 @@ export class MapLoader {
         this._frameAvg = this._frameAvg * 0.9 + dt * 0.1;
         this._adaptCooldown -= dt;
         this._adaptTimer += dt;
+        const cap = Math.min(RENDER_RADIUS_MAX, Math.max(RENDER_RADIUS_MIN, this.renderRadiusCap ?? RENDER_RADIUS_MAX));
+        if (this.renderRadius > cap) this.renderRadius = cap;
         if (this._adaptTimer < 2.0) return;
         this._adaptTimer = 0;
         if (this._adaptCooldown > 0) return;
@@ -1287,7 +1303,7 @@ export class MapLoader {
         if (fps < 38 && this.renderRadius > RENDER_RADIUS_MIN) {
             this.renderRadius--;
             this._adaptCooldown = 3;
-        } else if (fps > 56 && this.renderRadius < RENDER_RADIUS_MAX) {
+        } else if (fps > 56 && this.renderRadius < cap) {
             this.renderRadius++;
             this._adaptCooldown = 3;
         }
@@ -5521,7 +5537,10 @@ export class MapLoader {
             return {
                 x: slot.x,
                 z: slot.z,
-                y: typeof slot.y === "number" ? slot.y : (station.y || 0) + BUS_AXLE,
+                // slot.y là cao độ MẶT ĐƯỜNG dữ liệu, chưa có roadLift (0.12m).
+                // Trả thẳng slot.y làm xe sinh ra THẤP hơn mesh 12cm rồi bị
+                // grounding kéo bật lên ở frame đầu (đo ở bến Miền Đông Mới).
+                y: this.getTerrainHeight(slot.x, slot.z, slot.y) + BUS_AXLE,
                 heading: typeof slot.heading === "number" ? slot.heading : (station.rot || 0)
             };
         }

@@ -128,7 +128,15 @@ export class CameraSystem {
     // từ main.js qua setMotionSource(). null = camera tĩnh như cũ.
     this.motionSource = null;
 
+    // Kéo slider Settings/console/panel thì phải thuộc UI, không được vừa
+    // preventDefault mousedown vừa xoay cabin (camera bắt sự kiện trên document).
+    this._isUiEvent = (e) => {
+      const t = e?.target;
+      return !!(t && typeof t.closest === 'function' &&
+        t.closest('button,input,select,textarea,[contenteditable],#settings-panel,#uv-skin-panel,#command-console,#traffic-debug-panel,#confirm-dialog,#pause-menu'));
+    };
     this._onMouseDown = (e) => {
+      if (this._isUiEvent(e)) { this.isMouseDown = false; return; }
       if (e.button === 0) {
         this.isMouseDown = true;
         e.preventDefault();
@@ -226,7 +234,7 @@ export class CameraSystem {
   }
 
   onMouseMove(e) {
-        if (!this.isMouseDown) return;
+        if (!this.isMouseDown || this._isUiEvent(e)) return;
         const mode = this.modes[this.currentIndex];
         const moveX = Math.max(-100, Math.min(100, e.movementX || 0));
         const moveY = Math.max(-100, Math.min(100, e.movementY || 0));
@@ -250,6 +258,7 @@ export class CameraSystem {
     }
 
   onWheel(e) {
+    if (this._isUiEvent(e)) return;
     if (this.modes[this.currentIndex] !== 'outside') return;
     this.orbitDistance += e.deltaY * 0.01;
     this.orbitDistance = Math.max(this.settings.outsideMinDistance, Math.min(this.settings.outsideMaxDistance, this.orbitDistance));

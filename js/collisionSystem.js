@@ -303,6 +303,13 @@ export class CollisionSystem {
         this.roadBoxes.clear();
         this.roadBoxGrid.clear();
     }
+
+    // Dọn toàn bộ collider của MỘT phiên chơi trước khi về menu/restart.
+    // remove() đã lo _removeFromGrid, không Clear grid thô (rò rỉ cell cũ).
+    clearAll() {
+        for (const id of [...this.colliders.keys()]) this.remove(id);
+        this.clearRoadBoxes();
+    }
 }
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }

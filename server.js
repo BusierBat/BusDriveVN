@@ -46,7 +46,13 @@ const VERSIONED_RE = /^\/v\d+(\/.*)?$/;
 
 const server = http.createServer((req, res) => {
   // Bo ?query va #hash di truoc khi map len dia. Neu khong thi /?v=1 -> "khong tim thay file".
-  const urlPath = decodeURIComponent(req.url.split('?')[0].split('#')[0]);
+  // decodeURIComponent nem URIError voi "%ZZ": truoc day crash CA server (da repro).
+  let urlPath;
+  try {
+    urlPath = decodeURIComponent(req.url.split('?')[0].split('#')[0]);
+  } catch {
+    res.writeHead(400); res.end('Bad Request'); return;
+  }
 
   const versioned = urlPath.match(VERSIONED_RE);
   if (!versioned) {
@@ -66,8 +72,10 @@ const server = http.createServer((req, res) => {
   const relPath = rest === '/' ? 'index.html' : rest.replace(/^\/+/, '');
   const filePath = path.join(ROOT, relPath);
 
-  // Security: prevent directory traversal
-  if (!filePath.startsWith(ROOT)) {
+  // Security: prevent directory traversal. startsWith(ROOT) lọt qua thư mục
+  // cùng prefix (vd "BusDriveVN-other"), dùng path.relative cho chắc.
+  const relCheck = path.relative(ROOT, filePath);
+  if (relCheck.startsWith('..') || path.isAbsolute(relCheck)) {
     res.writeHead(403); res.end('Forbidden'); return;
   }
 

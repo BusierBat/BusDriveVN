@@ -4029,6 +4029,24 @@ class MapGenerator:
         # id vừa bị gộp; hàn đổi dốc cục bộ nên `_fix_final_slopes` chạy lại.
         if self._weld_coincident_pairs():
             self._fix_final_slopes()
+        # T3 CHỐT HẠ: `_cap_node_degree()` ở 3789 chạy TRƯỚC 8 bước mutate
+        # cuối (weld / repair / service / ramp / station access) nên bản export
+        # vẫn có 11 node vượt cap theo rank — audit exit 1. Chạy lại Ở ĐÂY,
+        # sau mọi đổi hình học nhưng TRƯỚC `_mark_hollow_piers` và
+        # `_repair_*_refs` để refs được sửa nếu cap dời đoạn sang node khác.
+        self._build_node_seg_index()
+        for _ in range(4):
+            over = len([q for q in self.nodes
+                        if self._topo_deg(q) > TOPO_DEGREE_CAP.get(self._topo_rank(q), 6)])
+            if over == 0:
+                break
+            if self._cap_node_degree() == 0:
+                break
+            self._build_node_seg_index()
+        self._trace_conn("sau _cap_node_degree lan cuoi")
+        # Cap có thể dời/đổi đoạn -> dốc đổi; làm phẳng lần cuối trước khi
+        # đánh dấu cầu rỗng và sửa route/station refs.
+        self._fix_final_slopes()
         # P82: đánh `pier` cho đoạn võng giữa (2 đầu sát đất, giữa cao 4-12m).
         # Phải chạy SAU mọi bước đổi hình học (weld/repair/limit-slope) và chỉ
         # 1 lần — pass này gọi `get_elevation` (~5ms/lần) nên không nhét vào
@@ -8399,7 +8417,51 @@ class MapGenerator:
         if viaduct:
             print("      cau can (dap nen >%.0fm): danh dau %d doan"
                   % (_VIADUCT_CLR, viaduct))
-        return marked + viaduct
+        # P83: van con node duong THUONG cao >8m sau guard "2 dau >8m" o tren.
+        # Do duoc p82: 8 node (n_6081 +20.8m, n_6808 +16.1m...) co mot dau
+        # thap +6~7m => KHONG doan nao cham no duoc danh dau cau can, audit
+        # rule 22 van do. Thuc te day la duong BAC QUA THUNG LUNG: mot dau
+        # nam tren dinh (elev ~= y), dau kia bi _limit_slopes keo len 20m
+        # giua thung lung. Chon nhanh di XUONG node thap nhat lam nhip cầu
+        # tiep dat — khong ha y (se bi _limit_slopes keo lai) va khong xoa
+        # duong (mat lien thong).
+        stuck_high = 0
+        for nid, nd in list(self.nodes.items()):
+            if _clearance(nid) <= _VIADUCT_CLR:
+                continue
+            covered = False
+            for sid in nd.get("connections", []):
+                sg = self.segments.get(sid)
+                if sg is None:
+                    continue
+                if sg.get("bridge") or sg.get("pier") or sg.get("class") in _SKIP_CLS:
+                    covered = True
+                    break
+            if covered:
+                continue
+            candidates = []
+            for sid in nd.get("connections", []):
+                sg = self.segments.get(sid)
+                if sg is None or sg.get("class") in _SKIP_CLS:
+                    continue
+                oid = sg["to"] if sg["from"] == nid else sg["from"]
+                ond = self.nodes.get(oid)
+                if ond is None:
+                    continue
+                candidates.append((ond.get("y", 0.0), sid, sg))
+            if not candidates:
+                continue
+            candidates.sort(key=lambda t: t[0])
+            _, sid, sg = candidates[0]
+            sg["bridge"] = True
+            sg["pier"] = True
+            sg["structure"] = "cau_can"
+            sg["name"] = sg.get("name") or "cau_can"
+            stuck_high += 1
+        if stuck_high:
+            print("      cau can (node con cao >%.0fm): danh dau %d doan"
+                  % (_VIADUCT_CLR, stuck_high))
+        return marked + viaduct + stuck_high
 
     def _mark_hollow_piers(self, min_len=150.0, excess_tol=3.0, min_mid=1.2):
         """P82: DOAN VONG GIUA — "cau thieu tru" that su.
@@ -15067,9 +15129,14 @@ def _tool_audit_world(argv=None):
     _worst_bury = 0.0
     _worst_float = 0.0
     _n_float = 0          # riêng node (để in tách khỏi "võng giữa đoạn")
+    # Phải so THEO CLASS y hệt renderer/cầu cạn trong generator: EXPRESSWAY và
+    # RAMP cao 36m là CẦU VƯỢT hợp lệ (map.js chủ động vẽ trụ), không phải
+    # "đường lơ lửng". Bản cũ chỉ xét cờ bridge/pier/TUNNEL -> 24/32 node
+    # cao tốc bị flag nhầm làm audit fail.
+    _ELEVATED_CLS = {"EXPRESSWAY", "RAMP", "TUNNEL"}
     _nod_has_hw = set()
     for s_ in segs:
-        if s_.get("bridge") or s_.get("pier") or s_.get("class") == "TUNNEL":
+        if s_.get("bridge") or s_.get("pier") or s_.get("class") in _ELEVATED_CLS:
             _nod_has_hw.add(s_["from"])
             _nod_has_hw.add(s_["to"])
 

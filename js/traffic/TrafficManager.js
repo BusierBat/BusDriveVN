@@ -516,9 +516,16 @@ export class TrafficManager {
         }
         if (pick < 0) return;
         this.stationSpawnTimer = 0;
-        const req = this.stationSpawnQueue.splice(pick, 1)[0];
+        // Đừng splice TRƯỚC rồi mới phát hiện bay bận: request biến mất vĩnh
+        // viễn (bến trống sau khi player đỗ vào bay duy nhất). Giữ request,
+        // đẩy xuống cuối để bến khác vẫn có cơ hội spawn trong lượt sau.
+        const req = this.stationSpawnQueue[pick];
         const bay = this.findFreeBay(req.transform, req.bays);
-        if (!bay) return;
+        if (!bay) {
+            this.stationSpawnQueue.push(this.stationSpawnQueue.splice(pick, 1)[0]);
+            return;
+        }
+        this.stationSpawnQueue.splice(pick, 1);
         const tx = bay.x, tz = bay.z;
         this.markBayBusy(tx, tz);
 

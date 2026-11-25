@@ -95,6 +95,25 @@ export class AtmosphereSystem {
         }
     }
 
+    /** God Rays có setting RIÊNG (off/low/high), không được đi theo nhầm
+     *  chất lượng lighting: low = 256px/16 sample, high = 512px/32 sample.
+     *  setQuality() có thể dựng lại material -> so sánh cả giá trị thực trước
+     *  khi return để luôn khôi phục đúng lựa chọn của người chơi. */
+    setGodRaysQuality(level) {
+        const high = level === 'high';
+        const resolution = high ? 512 : 256;
+        const samples = high ? 32 : 16;
+        const appliedSamples = this.godRaysMaterial?.uniforms?.uSamples?.value;
+        if (this.godRaysQuality === level && this.godRaysResolution === resolution && appliedSamples === samples) return;
+        this.godRaysQuality = level;
+        this.godRaysResolution = resolution;
+        this._godRaysHasResult = false;
+        this._initGodRays();
+        if (this.godRaysMaterial?.uniforms?.uSamples) {
+            this.godRaysMaterial.uniforms.uSamples.value = samples;
+        }
+    }
+
     _rebuildQualityDependent() {
         this.godRaysResolution = this.quality === "HIGH" ? 512 : this.quality === "MEDIUM" ? 256 : 128;
         this._godRaysHasResult = false;

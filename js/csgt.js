@@ -30,8 +30,7 @@ export function getSegmentSpeedLimit(roadGraph, seg) {
     if (Number.isFinite(raw) && raw > 0) return raw;
     if (roadGraph && typeof roadGraph.getLaneMeta === "function") {
         try {
-            const meta = roadGra
-            ph.getLaneMeta(seg);
+            const meta = roadGraph.getLaneMeta(seg);
             const m = meta ? Number(meta.speedKmh) : NaN;
             if (Number.isFinite(m) && m > 0) return m;
         } catch (e) { /* bỏ qua nếu thiếu dữ liệu */ }

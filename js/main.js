@@ -19,7 +19,7 @@ import { getTravelDirection, setTravelDirection, getMoney, addMoney, FARE_PER_PA
 import { formatMoney } from "./utils.js";
 import { createCSGTManager } from "./csgt.js";
 import { CollisionSystem } from "./collisionSystem.js";
-import { updatePhysicsState, PHYSICS_STATE, registerImpact, computeYawRate, updateRoadRoughness, applySurfaceFromSegment, computeVehicleMass, computeVehicleForces, rectContactMTV, computeEnginePower, configureVehicleGeometry, selectGear } from "./physics_step.js"; // vật lý cảm giác (roll/pitch/heave + nhíp bánh + RPM)
+import { updatePhysicsState, PHYSICS_STATE, registerImpact, computeYawRate, updateRoadRoughness, applySurfaceFromSegment, computeVehicleMass, computeVehicleForces, rectContactMTV, computeEnginePower, configureVehicleGeometry, selectGear, resetPhysicsState } from "./physics_step.js"; // vật lý cảm giác (roll/pitch/heave + nhíp bánh + RPM)
 
 let renderer, scene, camera, canvas, map, lighting, npc, bus, interior, passengerSystem, trafficManager, trafficDebug, ui, cameraSystem;
 // Đèn bến/facility nạp 1 lần lúc startup; đèn đường lấy từ MapLoader theo vị trí xe.
@@ -74,17 +74,44 @@ let gameSettings = {
 let currentDirection = "north"; // mặc định: Phú Yên → Sài Gòn
 const DEFAULT_SETTINGS = { ...gameSettings };
 
+/** localStorage là dữ liệu do người dùng / bản cũ ghi ra — KHÔNG tin kiểu dáng.
+ *  sanitize ở cổng vào để mọi caller sau này thấy đúng enum + số hợp lệ
+ *  (trước đây một chuỗi bất kỳ ở `lightingQuality` là `.toLowerCase()` nổ,
+ *  `fov` sai kiểu làm camera matrix NaN). */
+function sanitizeSettings(raw) {
+    const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    const oneOf = (key, allowed, fallback) => allowed.includes(src[key]) ? src[key] : fallback;
+    const number = (key, min, max, fallback, integer = true) => {
+        const v = Number(src[key]);
+        if (!Number.isFinite(v)) return fallback;
+        const clamped = Math.min(max, Math.max(min, v));
+        return integer ? Math.round(clamped) : clamped;
+    };
+    return {
+        graphics: oneOf('graphics', ['low', 'medium', 'high'], DEFAULT_SETTINGS.graphics),
+        renderDist: number('renderDist', 1, 4, DEFAULT_SETTINGS.renderDist),
+        npcDensity: number('npcDensity', 0, 20, DEFAULT_SETTINGS.npcDensity),
+        camSens: number('camSens', 10, 50, DEFAULT_SETTINGS.camSens),
+        fov: number('fov', 50, 100, DEFAULT_SETTINGS.fov),
+        lightingQuality: oneOf('lightingQuality', ['LOW', 'MEDIUM', 'HIGH'], DEFAULT_SETTINGS.lightingQuality),
+        godRays: oneOf('godRays', ['off', 'low', 'high'], DEFAULT_SETTINGS.godRays),
+        interior: oneOf('interior', ['BED20', 'BED34'], DEFAULT_SETTINGS.interior),
+        keySens: number('keySens', 0.5, 2, DEFAULT_SETTINGS.keySens, false),
+        audioVolume: number('audioVolume', 0, 1, DEFAULT_SETTINGS.audioVolume, false),
+        audioMute: typeof src.audioMute === 'boolean' ? src.audioMute : DEFAULT_SETTINGS.audioMute
+    };
+}
 
 // Load settings from localStorage
 try {
     const saved = localStorage.getItem('busdrivevn_settings');
     if (saved) {
         const parsed = JSON.parse(saved);
-        gameSettings = { ...gameSettings, ...parsed };
+        gameSettings = sanitizeSettings(parsed);
         // Migration mot lan: ban cu da luu npcDensity=5 (default cu) vao localStorage,
         // khong nang len thi nguoi choi van bi mac dinh 5 xe moi khi mo game.
         // Chi nang khi GIONG default cu de khong deo cai dat ma nguoi dung da tu chon.
-        if (parsed.npcDensity === 5 && !localStorage.getItem('busdrivevn_density_v2')) {
+        if (gameSettings.npcDensity === 5 && !localStorage.getItem('busdrivevn_density_v2')) {
             gameSettings.npcDensity = 15;
             try {
                 localStorage.setItem('busdrivevn_settings', JSON.stringify(gameSettings));
@@ -687,12 +714,15 @@ function updateVehiclePhysics(dt) {
             }
         }
 
-        // BÁNH QUAY theo quãng đường THẬT đã đi (trước đây không ai gọi
-        // setWheelRotation → bánh đứng im dù xe chạy). ω = v/R, cộng dồn góc.
-        wheelSpinAngle += (phys.speed / (bus.wheelRadius || 0.525)) * dt;
+        // BÁNH QUAY theo quãng đường THẬT đã đi SAU collision projection.
+        // Dùng phys.speed ở đây là sai: speed đã bị chiếu về 0 sau cú đâm,
+        // trong khi thân xe vẫn trượt dọc vật cản -> bánh đứng im giữa đường.
+        const movedLen = Math.hypot(moveDx, moveDz);
+        const spinSign = Math.sign(phys.speed) || 1;
+        wheelSpinAngle += (movedLen / (bus.wheelRadius || 0.525)) * spinSign;
         bus.setWheelRotation?.(wheelSpinAngle);
 
-        const movedLen = Math.hypot(moveDx, moveDz);
+
         bus.group.position.x += moveDx;
         bus.group.position.z += moveDz;
         // Reset timer CHỈ khi xe đi được quãng đáng kể. Bản cũ reset ngay khi
@@ -1154,6 +1184,10 @@ function handleCommand(cmd) {
         if (tp.length === 2) {
             const h = parseInt(tp[0]), m = parseInt(tp[1]);
             if (!isNaN(h) && !isNaN(m) && h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+                if (!lighting) {
+                    ui.toast("[icon:x] Chưa vào game — không thể đổi giờ!", true);
+                    return;
+                }
                 lighting.setGameTime(h * 60 + m);
                 ui.toast(`[icon:check] Đã đặt thời gian thành ${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`);
             } else { ui.toast("[icon:x] Thời gian không hợp lệ!", true); }
@@ -1319,7 +1353,7 @@ function syncSettingsUI() {
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
     const txt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
     set('setting-graphics', gameSettings.graphics);
-    set('setting-lighting', gameSettings.lightingQuality.toLowerCase());
+    set('setting-lighting', String(gameSettings.lightingQuality).toLowerCase());
     set('setting-godrays', gameSettings.godRays);
     set('setting-interior', gameSettings.interior);
     set('setting-npc-density', gameSettings.npcDensity); txt('val-npc-density', gameSettings.npcDensity);
@@ -1373,19 +1407,22 @@ function applyInteriorConfig(configId) {
 
 // ===== ÁP DỤNG + LƯU CÀI ĐẶT =====
 function applySettingsToGame() {
+    // Điểm áp dụng cuối cùng cũng sanitize: dù debug console hay caller cũ có
+    // gán sai kiểu, renderer/camera vẫn nhận số hợp lệ.
+    gameSettings = sanitizeSettings(gameSettings);
     if (cameraSystem) {
         cameraSystem.settings.cameraSensitivity = gameSettings.camSens / 5000;
         cameraSystem.settings.fov = gameSettings.fov;
         camera.fov = gameSettings.fov;
         camera.updateProjectionMatrix();
     }
-    if (map) map.renderRadius = gameSettings.renderDist;
-    if (renderer) {
-        renderer.toneMapping = (gameSettings.graphics === 'low')
-            ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
-    }
+    map?.setRenderDistance(gameSettings.renderDist);
+    applyGraphicsQuality();
     if (lighting) {
         lighting.setQuality(gameSettings.lightingQuality);
+        // setQuality() bật God Rays theo preset lighting; ý chọn riêng của
+        // người chơi (off/low/high) phải áp SAU để không bị đè lại.
+        lighting.atmosphereSystem?.setGodRaysQuality(gameSettings.godRays);
         lighting.atmosphereSystem?.toggleGodRays(gameSettings.godRays !== 'off');
     }
     if (trafficManager) trafficManager.maxVehicles = gameSettings.npcDensity;
@@ -1399,6 +1436,7 @@ function applySettingsToGame() {
 
 function saveSettingsToStorage() {
     try {
+        gameSettings = sanitizeSettings(gameSettings);
         localStorage.setItem('busdrivevn_settings', JSON.stringify(gameSettings));
         return true;
     } catch (e) {
@@ -1406,10 +1444,89 @@ function saveSettingsToStorage() {
     }
 }
 
+/** Dọn SẠCH một phiên chơi trước khi về menu. Không dispose -> restart dựng
+ *  thế giới thứ 2 đè lên cái cũ (2 bus, 2 map, NPC/collider cũ vẫn chạy) —
+ *  trên N5000 là freeze chắc. Mọi phần tử ở đây đều có sẵn dispose() hoặc
+ *  được remove khỏi scene; không xoá tính năng nào. */
+function teardownGame() {
+    clock.stop();
+    trafficDebug?.dispose?.();
+    trafficManager?.dispose?.();
+    passengerSystem?.dispose?.();
+    npc?.dispose?.();
+    csgtManager?.dispose?.();
+    cameraSystem?.dispose?.();
+    lighting?.dispose?.();
+    map?.dispose?.();
+    audioSystem?.stopEngine?.();
+    if (bus?.group?.parent) bus.group.parent.remove(bus.group);
+    if (interior) {
+        interior.traverse((o) => { if (o.isMesh && o.geometry) o.geometry.dispose(); });
+    }
+    if (window.collisionSystem) window.collisionSystem.clearAll();
+    ui?.setupMinimap?.(null);
+    resetPhysicsState();
+    // vehiclePhysics/steer là state LOCAL của main.js, resetPhysicsState()
+    // không đụng tới — nếu quên, lần chơi sau bắt đầu với vận tốc cũ.
+    vehiclePhysics.speed = 0;
+    vehiclePhysics.currentSpeedKmh = 0;
+    vehiclePhysics.isReversing = false;
+    vehiclePhysics.gear = 1;
+    vehiclePhysics.gearTarget = 1;
+    vehiclePhysics.engineRPM = 800;
+    vehiclePhysics.engineLoad = 0;
+    vehiclePhysics.throttleInput = 0;
+    vehiclePhysics.brakeInput = 0;
+    steerAngle = 0;
+    steerTarget = 0;
+    clearPressedKeys();
+    playerColId = -1;
+    wheelSpinAngle = 0;
+    pendingLightingDelta = 0;
+    renderReady = false;
+    trafficDebug = null;
+    trafficManager = null;
+    passengerSystem = null;
+    npc = null;
+    csgtManager = null;
+    cameraSystem = null;
+    lighting = null;
+    map = null;
+    bus = null;
+    interior = null;
+    travelClock = null;
+    baseStreetLamps = null;
+    doorProgress = 0;
+    doorTarget = 0;
+    doorServiceStarted = false;
+    strandedT = 0;
+    lowFuelWarned = false;
+    accumulator = 0;
+}
+
 // ===== HỘP THOẠI XÁC NHẬN (dùng chung) =====
 // Trả về Promise<'save'|'discard'|'cancel'>. Hộp thoại nằm ở z-index 1200
 // (trên mọi lớp) nên không bị che; có 3 nút rõ ràng, đóng được bằng Esc.
 let _confirmResolver = null;
+let _confirmAbort = null;   // dọn 3 listener của MỖI lần hỏi, không để đời cũ trả lời đời mới
+
+// Marker "[icon:name]" -> span SVG/CSS + text node. Dùng cho mọi nhãn nút:
+// textContent sẽ XÓA <span class="ui-icon"> có sẵn trong index.html.
+function setLabelWithIcon(el, text, iconMargin = 0) {
+    if (!el) return;
+    const raw = String(text ?? '');
+    el.replaceChildren();
+    const m = raw.match(/^\[icon:([a-z-]+)\]\s*/i);
+    if (m) {
+        const span = document.createElement('span');
+        span.className = `ui-icon ui-icon--${m[1]}`;
+        span.setAttribute('aria-hidden', 'true');
+        if (iconMargin) span.style.marginRight = `${iconMargin}px`;
+        el.appendChild(span);
+    }
+    el.appendChild(document.createTextNode(m ? raw.slice(m[0].length) : raw));
+}
+
 function askConfirm(message, labels) {
     const dlg = document.getElementById('confirm-dialog');
     const msg = document.getElementById('confirm-message');
@@ -1419,11 +1536,18 @@ function askConfirm(message, labels) {
     const btnSave = document.getElementById('confirm-save');
     const btnDiscard = document.getElementById('confirm-discard');
     const btnCancel = document.getElementById('confirm-cancel');
-    if (btnSave) btnSave.textContent = (labels && labels.yes) || '[icon:save] Lưu thay đổi';
-    if (btnDiscard) btnDiscard.textContent = (labels && labels.no) || '[icon:trash] Bỏ thay đổi';
-    if (btnCancel) btnCancel.textContent = (labels && labels.cancel) || '[icon:back] Tiếp tục chỉnh sửa';
+    setLabelWithIcon(btnSave, (labels && labels.yes) || '[icon:save] Lưu thay đổi');
+    setLabelWithIcon(btnDiscard, (labels && labels.no) || '[icon:trash] Bỏ thay đổi');
+    setLabelWithIcon(btnCancel, (labels && labels.cancel) || '[icon:back] Tiếp tục chỉnh sửa');
+    // `{ once:true }` chỉ gỡ đúng nút được bấm; 2 nút kia còn dính và có thể
+    // resolve nhầm Promise của lần hỏi SAU. AbortController gỡ cả 3.
+    _confirmAbort?.abort();
+    const controller = new AbortController();
+    _confirmAbort = controller;
     dlg.style.display = 'flex';
     const finish = (choice) => {
+        controller.abort();
+        if (_confirmAbort === controller) _confirmAbort = null;
         dlg.style.display = 'none';
         const r = _confirmResolver;
         _confirmResolver = null;
@@ -1432,12 +1556,15 @@ function askConfirm(message, labels) {
     const onYes = () => finish('save');
     const onNo = () => finish('discard');
     const onCancel = () => finish('cancel');
-    document.getElementById('confirm-save')?.addEventListener('click', onYes, { once: true });
-    document.getElementById('confirm-discard')?.addEventListener('click', onNo, { once: true });
-    document.getElementById('confirm-cancel')?.addEventListener('click', onCancel, { once: true });
+    const opts = { once: true, signal: controller.signal };
+    btnSave?.addEventListener('click', onYes, opts);
+    btnDiscard?.addEventListener('click', onNo, opts);
+    btnCancel?.addEventListener('click', onCancel, opts);
     return new Promise((res) => { _confirmResolver = res; });
 }
 function closeConfirmDialog() {
+    _confirmAbort?.abort();
+    _confirmAbort = null;
     const dlg = document.getElementById('confirm-dialog');
     if (dlg) dlg.style.display = 'none';
     const r = _confirmResolver;
@@ -1469,23 +1596,35 @@ let csgtTimer = 0;
 let fuelFlushTimer = 0;   // đếm thời gian giữa các lần flushFuel() xuống localStorage
 let strandedT = 0;         // đếm thời gian xe hết xăng + đứng yên liên tục
 let lowFuelWarned = false; // tránh spam cảnh báo sắp hết nhiên liệu
+
+/** Chất lượng đồ họa tổng thể: 3 mức PHẢI khác nhau thật, không chỉ đổi chữ.
+ *  low = độ phân giải thấp + không tone map; medium = native; high = tone map
+ *  sáng hơn + pixel ratio cao hơn (vẫn chặn theo DPR thiết bị & isLowEnd). */
+function applyGraphicsQuality() {
+    if (!renderer) return;
+    const q = gameSettings.graphics;
+    const wanted = q === 'high' ? 1.5 : q === 'medium' ? 1.0 : 0.8;
+    const cap = isLowEnd ? 1.0 : 2.0;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, wanted, cap));
+    renderer.toneMapping = q === 'low' ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = q === 'high' ? 1.15 : 1.0;
+}
+
 function handleResize() {
     if (!renderer || !camera) return;
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setPixelRatio(isLowEnd ? 0.8 : 1.0);
+    applyGraphicsQuality();
     renderer.setSize(window.innerWidth, window.innerHeight, true);
 }
 
 function initRenderer() {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance", stencil: false, depth: true });
     renderer.setClearColor(0x87ceeb, 1);
-    renderer.setPixelRatio(isLowEnd ? 0.8 : 1.0);
+    applyGraphicsQuality();
     renderer.setSize(window.innerWidth, window.innerHeight, true);
     // Texture input đã ở linear (xem bus.js); output phải encode sRGB lại cho khớp.
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.shadowMap.autoUpdate = false; // LightingSystem controls shadow updates
@@ -1518,7 +1657,10 @@ async function boot() {
     // Menu chính hiện số dư THẬT ngay từ đầu (trước đây là chữ tĩnh trong HTML).
     ui.setMoney(getMoney());
     musicPlayer = createMusicPlayer({ volume: gameSettings.audioVolume });
-    if (isMobile || isLowEnd) { ui.saveSettings(); }
+    // Máy yếu/mobile bị ép renderDist=1 + lighting LOW ở trên — lưu lại ngay để
+    // lần mở sau không đọc lại cài đặt cũ nặng hơn (ui.saveSettings() trước đây
+    // chỉ trả object rác, không ghi localStorage gì cả).
+    if (isMobile || isLowEnd) saveSettingsToStorage();
     ui.showMainMenu();
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x87ceeb);
@@ -1539,8 +1681,7 @@ async function boot() {
 let routePickerOpen = false;
 
 function updatePrimaryMenuButton() {
-    const btn = document.getElementById('btn-new-game');
-    if (btn) btn.textContent = '[icon:bus] LÁI XE';
+    setLabelWithIcon(document.getElementById('btn-new-game'), '[icon:bus] LÁI XE');
 }
 
 function highlightDirectionButton(dir) {
@@ -1669,18 +1810,10 @@ function setupMenuEvents() {
         syncSettingsUI();      // dong bo TAT CA gia tri dang luu (ke ca noi that 20/34)
     });
     
-    // UV status: marker [icon:name] -> span SVG/CSS, text vẫn là text node.
+    // UV status dùng chung parser marker với nhãn nút (setLabelWithIcon).
     function setUvStatus(el, text, color) {
         if (!el) return;
-        el.replaceChildren();
-        const m = String(text).match(/^\[icon:([a-z-]+)\]\s*/i);
-        if (m) {
-            const span = document.createElement('span');
-            span.className = `ui-icon ui-icon--${m[1]}`;
-            span.style.marginRight = '8px';
-            el.appendChild(span);
-        }
-        el.appendChild(document.createTextNode(m ? text.slice(m[0].length) : text));
+        setLabelWithIcon(el, text, 8);
         if (color) el.style.color = color;
     }
 
@@ -1806,9 +1939,11 @@ function setupMenuEvents() {
         if (choice !== 'save') return;   // chỉ "Về Menu chính" mới thoát
         closeAllPanels();
         togglePauseMenu(false);
+        // Dọn trước khi đổi state: nếu không, scene/map/NPC/collider đời cũ
+        // vẫn tồn tại và lần "LÁI XE" tiếp theo dựng thêm một thế giới mới.
+        teardownGame();
         gameState = 'menu';
         paused = false;
-        csgtManager?.reset();
         resetMenuToHome();
         document.getElementById('hud').style.display = 'none';
         ui.showMainMenu();
@@ -1938,12 +2073,11 @@ async function startGameFromMenu() {
             initialMinutes: 1080,  // 18:00
             quality: gameSettings.lightingQuality 
         });
-        // Apply god rays setting
-        if (lighting.atmosphereSystem) {
-            const val = gameSettings.godRays;
-            if (val === 'off') lighting.atmosphereSystem.toggleGodRays(false);
-            else lighting.atmosphereSystem.toggleGodRays(true);
-        }
+        // God Rays: low/high KHÁC nhau thật về resolution + sample count,
+        // không phải cùng một hiệu ứng như cũ. applySettingsToGame() áp lại
+        // ở cuối boot nên mọi cửa vào đều đồng nhất.
+        lighting.atmosphereSystem?.setGodRaysQuality(gameSettings.godRays);
+        lighting.atmosphereSystem?.toggleGodRays(gameSettings.godRays !== 'off');
         lighting.update(0.1);
         await new Promise(r => setTimeout(r, 300));
         
@@ -1991,8 +2125,9 @@ async function startGameFromMenu() {
                     .then(() => finalizeShaderPrograms(renderer), () => finalizeShaderPrograms(renderer));
             } catch (e) { return null; }
         };
-        // Apply render distance
-        map.renderRadius = gameSettings.renderDist;
+        // Render distance: slider là GIỚI HẠN trên, FPS thấp vẫn tự co về
+        // RENDER_RADIUS_MIN; không để _adaptQuality() đè ngược lên 3..5.
+        map.setRenderDistance(gameSettings.renderDist);
         const success = await map.loadInitialData();
         if (!success) throw new Error("Không thể tải dữ liệu bản đồ JSON. Vui lòng chạy Python generator trước.");
         ui.setupMinimap(map);
@@ -2039,11 +2174,9 @@ async function startGameFromMenu() {
         // Cockpit tài xế (Windows Update/BSOD/speedo, nút phân màu) được gán
         // RUNTIME lên mesh dashboard có sẵn — bus.setInteriorReference là hook hiện có.
         bus.setInteriorReference?.(interior);
-    // Pass physics to camera for vibration
-    if (cameraSystem) {
-        cameraSystem.setMotionSource(PHYSICS_STATE);
-    }
-    // Ensure steering/cockpit sync on init
+        // CameraSystem được tạo ở dưới — lúc này vẫn là null, block
+        // setMotionSource cũ ở đây là code chết (đã gọi đúng sau khi tạo).
+        // Ensure steering/cockpit sync on init
     bus.setSteering?.(0);
     bus.setCockpitSteering?.(0);
     bus.setDriverTelemetry?.(vehiclePhysics.currentSpeedKmh || 0, vehiclePhysics.engineRPM || 800, 1, 0);
@@ -2414,8 +2547,13 @@ function updateHUD(delta) {
                 if (target) {
                     const fee = Math.min(RESCUE_FEE, getMoney());  // không trả dư: nợ trần 1 bình
                     if (fee > 0) addMoney(-fee);
+                    // Tính hướng TRƯỚC khi dịch xe, đồng thời đúng quy ước
+                    // forward (sin yaw, cos yaw) dùng ở phần còn lại: atan2(dx, dz).
+                    // Cũ: dịch xong rồi atan2(0, 0) -> mũi xe luôn quay Bắc.
+                    const rescueDx = target.position.x - bus.group.position.x;
+                    const rescueDz = target.position.z - bus.group.position.z;
                     bus.group.position.set(target.position.x, target.position.y ?? bus.group.position.y, target.position.z);
-                    bus.group.rotation.y = Math.atan2(target.position.z - bus.group.position.z, target.position.x - bus.group.position.x);
+                    bus.group.rotation.y = Math.atan2(rescueDx, rescueDz);
                     vehiclePhysics.speed = 0;
                     playerStuckT = 0;
                     if (window.collisionSystem) window.collisionSystem.update(playerColId, bus.group.position.x, bus.group.position.z, bus.group.position.y);
@@ -2463,8 +2601,17 @@ function updateHUD(delta) {
     }
 
     const passengerCount = passengerSystem?.getPassengerCount?.();
+    // Static HTML luôn ghi "Phú Yên → TP. HCM" -> chọn chiều NAME vẫn hiện
+    // sai tuyến. Span này không có icon, textContent an toàn.
+    const routeEl = document.getElementById('hud-next-dest');
+    if (routeEl) {
+        const routeText = currentDirection === 'south'
+            ? 'TP. HCM → Phú Yên' : 'Phú Yên → TP. HCM';
+        if (routeEl.textContent !== routeText) routeEl.textContent = routeText;
+    }
     ui.update({
-        fps: 1/delta,
+        // __busvn.tick() có thể gọi 2 lần trong cùng 1 ms -> delta = 0.
+        fps: delta > 0 ? 1 / delta : 0,
         speedKmh: vehiclePhysics.currentSpeedKmh,
         speedLimit: csgtManager?.getLimitKmh() ?? null,
         passengers: passengerCount?.onboard || 0,
@@ -2640,8 +2787,12 @@ function loop() {
         }
     } catch (e) {
         console.error("Loop Error:", e);
+    } finally {
+        // `return` khi webglLost từng thoát hẳn function -> rAF ở cuối không
+        // bao giờ chạy; browser restore context xong thì game chết vĩnh viễn.
+        // Đặt rAF ở finally để MỌI đường ra đều xếp frame tiếp theo, đúng 1 lần.
+        window.requestAnimationFrame(loop);
     }
-    window.requestAnimationFrame(loop);
 }
 
 boot();

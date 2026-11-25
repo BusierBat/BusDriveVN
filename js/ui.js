@@ -477,15 +477,8 @@ export function createUI({ map = null, callbacks = {} } = {}) {
         showSettings() { if (els.settingsPanel) els.settingsPanel.style.display = 'block'; },
         hideSettings() { if (els.settingsPanel) els.settingsPanel.style.display = 'none'; },
         setLoading(t, p) { if(els.loadingScreen) { els.loadingScreen.style.display = p < 1 ? 'flex' : 'none'; const bar = document.getElementById('loading-progress-bar'); if(bar) bar.style.width = `${p*100}%`; const tip = document.getElementById('loading-tip'); if(tip) tip.textContent = t; } },
-        hideLoading() { if(els.loadingScreen) els.loadingScreen.style.display = 'none'; },
-        saveSettings() { 
-            return { 
-                graphics: els.selGraphics?.value || 'low', 
-                renderDist: 1, 
-                npcDensity: parseInt(els.rngNpcDensity?.value || 15), 
-                camSens: parseInt(els.rngCamSens?.value || 30), 
-                fov: 70 
-            }; 
-        }
+        hideLoading() { if(els.loadingScreen) els.loadingScreen.style.display = 'none'; }
+        // Persistence thuộc về main.js (saveSettingsToStorage) — không giả vờ
+        // "saveSettings()" ở đây: bản cũ chỉ trả object rác, không ghi gì cả.
     };
 }
