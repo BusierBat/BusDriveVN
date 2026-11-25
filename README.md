@@ -1,4 +1,4 @@
-# ========== BusDriveVN ==========
+# BusDriveVN 
 
 **How to play:** Tự mò
 
@@ -8,4 +8,4 @@
 
 **Performance:** Trust me bro
 
-# ========== HẾT ==========
+# HẾT 
